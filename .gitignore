@@ -1,0 +1,45 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment (uv / venv)
+.venv/
+venv/
+ENV/
+env/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Logs
+logs/*
+!logs/.gitkeep
+
+# Local Environment Variables & Secrets
+.env
+.local.env
+*.env
+
+# Operating System & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Data directory contents (keep directories via .gitkeep)
+# Uncomment these if you want git to ignore generated local data files:
+# data/raw/*
+# !data/raw/.gitkeep
+# data/staging/*
+# !data/staging/.gitkeep
+# data/validated/*
+# !data/validated/.gitkeep
+# data/quarantine/*
+# !data/quarantine/.gitkeep
