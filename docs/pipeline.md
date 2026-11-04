@@ -17,8 +17,10 @@
 ## 2. สถานะปัจจุบันและพัฒนาการของการออกแบบ (Current Status & Key Decisions)
 
 ### 2.1 สถานะปัจจุบันของโปรเจกต์
-- **สิ่งที่ทำเสร็จแล้ว**: กำหนดและสอบทานสัญญาข้อมูลครบทั้ง 4 ฉบับใน `docs/contract/` ได้แก่ [data_contract.md](./contract/data_contract.md), [datadict.md](./contract/datadict.md), [feature_contract.md](./contract/feature_contract.md) และ [target_contract.md](./contract/target_contract.md) พร้อมจัดเตรียมโครงสร้างโฟลเดอร์ตั้งต้น (`config/`, `data/`, `logs/`, `src/`)
-- **ขั้นตอนถัดไป**: เริ่มพัฒนาโค้ด Daily Batch Pipeline ทีละส่วนตามสัญญาข้อมูลที่ล็อกไว้
+- **สิ่งที่ทำเสร็จแล้ว**:
+  1. กำหนดและสอบทานสัญญาข้อมูลครบทั้ง 4 ฉบับใน `docs/contract/` ได้แก่ [data_contract.md](./contract/data_contract.md), [datadict.md](./contract/datadict.md), [feature_contract.md](./contract/feature_contract.md) และ [target_contract.md](./contract/target_contract.md) พร้อมจัดเตรียมโครงสร้างโฟลเดอร์ตั้งต้น (`config/`, `data/`, `logs/`, `src/`)
+  2. **พัฒนา Data Ingestion Pipeline (`src/ingestion/`) เสร็จสมบูรณ์**: ครอบคลุมตั้งแต่การอ่านตั้งค่าจาก `config/ingestion.yaml`, คำนวณปฏิทินวันซื้อขายรวมช่วง Warm-up, ดึงข้อมูลแยกรายสินทรัพย์จาก `yfinance` พร้อมระบบ Retry, เก็บ Raw Snapshot แบบไม่เขียนทับ, แปลงข้อมูลเป็น Schema มาตรฐาน, ตรวจสอบความถูกต้องและคัดแยกข้อมูลเข้า Quarantine, อัปเดตตารางหลัก `market_prices_daily.parquet` แบบ Atomic Upsert, สร้างรายงาน Audit อัตโนมัติ ไปจนถึงตัวตั้งเวลารันหลังตลาดปิด (`scheduler.py`) และชุดทดสอบ (`test_ingestion.py`)
+- **ขั้นตอนถัดไป**: พัฒนา Feature Pipeline (`asset_volatility_features`), Rolling Correlation Pipeline (`asset_rolling_correlations`) และ Target/Label Pipeline (`asset_volatility_labels`) ต่อจากตาราง `market_prices_daily`
 
 ### 2.2 จุดสำคัญที่ได้ปรับปรุงและล็อกสเปกจากช่วงออกแบบ Contract
 1. **ปรับระดับหน่วยข้อมูล (Grain) เป็น `(date, ticker)` ทั้งระบบ**: เปลี่ยนจากการผูก Feature/Target เข้ากับพอร์ตน้ำหนักคงที่ (Equal Weight) มาเป็นระดับรายสินทรัพย์ เพื่อให้เปลี่ยนน้ำหนักพอร์ตได้อิสระ
@@ -76,3 +78,74 @@ flowchart LR
 - **การแยกผลกระทบเมื่อข้อมูลมีปัญหา (Per-Ticker vs. Portfolio Policy)**:
   - **ระดับรายสินทรัพย์**: หากสินทรัพย์ใดไม่ผ่าน Validation จะถูกแยกเข้า Quarantine และหยุดเฉพาะสินทรัพย์นั้น ส่วนสินทรัพย์อื่นที่ผ่านเกณฑ์ยังสร้างคำพยากรณ์รายตัว ($\hat{\sigma}_{i,t}$) ได้ตามปกติ
   - **ระดับพอร์ตโฟลิโอ**: ต้องมีคำพยากรณ์ครบทั้ง 3 สินทรัพย์ และเมทริกซ์สหสัมพันธ์ต้องพร้อมใช้ (`is_corr_ready == True` คือคำนวณจาก 20 วันชุดเดียวกันและเป็น Symmetric & Positive Semidefinite) หากขาดตัวใดตัวหนึ่ง **ระบบจะระงับการคำนวณพอร์ต (`portfolio_vol = Null`, `status = 'INCOMPLETE_INPUTS'`) และแจ้งเตือนบน Dashboard โดยไม่แอบคำนวณจากสินทรัพย์ที่เหลือเพียงบางส่วน**
+
+---
+
+## 5. รายละเอียด Data Ingestion Pipeline ที่พัฒนาเพิ่ม (`src/ingestion/`)
+
+ส่วนงานดึงและเตรียมข้อมูลราคาตลาดรายวัน (`market_prices_daily`) ได้ถูกพัฒนาเป็นโมดูลครบวงจรภายใต้ `src/ingestion/` โดยควบคุมผ่านไฟล์ตั้งค่า [`config/ingestion.yaml`](../config/ingestion.yaml) และปฏิบัติตามข้อกำหนดใน `data_contract.md` อย่างเคร่งครัด
+
+### 5.1 แผนภาพลำดับการทำงานของ Ingestion Pipeline (Execution Flow)
+
+```mermaid
+flowchart TD
+    SCHED["scheduler.py<br>ตรวจวันเปิดตลาด XNYS<br>& รอหลังตลาดปิด + Buffer 30 นาที"] --> RUN["run.py<br>Orchestrator หลัก"]
+    CFG["config.py<br>โหลดและตรวจ config/ingestion.yaml"] --> RUN
+    CAL["calendar.py<br>คำนวณวันเริ่มดึงรวม Warm-up 61 วัน<br>& รายการวันซื้อขายที่คาดหวัง"] --> RUN
+    META_START["run_metadata.py (start_run)<br>ออก run_id, source_batch_id<br>บันทึกสถานะ RUNNING"] --> FETCH["fetch.py<br>ดึงข้อมูล yfinance แยกราย Ticker<br>พร้อม Retry แบบ Exponential Backoff"]
+    RUN --> META_START
+    FETCH --> RAW["raw_storage.py<br>บันทึก Raw Parquet + SHA-256<br>(ห้ามเขียนทับ run เดิม)"]
+    RAW --> TF["transform.py<br>แปลงเวลาเป็น America/New_York<br>คำนวณ Simple/Log Return & Flags"]
+    TF --> VAL["validate.py<br>ตรวจ Schema, ราคา > 0, PK ซ้ำ,<br>วันซื้อขายขาดหาย และ Return Anomaly"]
+    VAL --> QUAR["quarantine.py<br>แยก Ticker ที่ไม่ผ่านเข้า Quarantine<br>และคัดเฉพาะ Ticker ที่ผ่านไป Validated"]
+    QUAR --> PUB["publish.py<br>Atomic Upsert ลงตารางหลัก<br>market_prices_daily.parquet"]
+    PUB --> META_END["run_metadata.py (finish_run)<br>& audit_report.py<br>สรุปสถานะและสร้างรายงาน JSON/MD"]
+```
+
+### 5.2 ตารางสรุปหน้าที่ของแต่ละโมดูลใน `src/ingestion/`
+
+| โมดูล | ฟังก์ชันหลัก | หน้าที่และกลไกสำคัญ |
+| :--- | :--- | :--- |
+| **`config.py`** | `load_config()`, `validate_config()` | โหลดไฟล์ `config/ingestion.yaml` และตรวจสอบความถูกต้องของพารามิเตอร์ทั้งหมด (เช่น ต้องมีครบ `SPY`, `IEF`, `GLD`, `interval == '1d'`, `auto_adjust == True`, `warmup_trading_days > 0`, Timezone ถูกต้อง) |
+| **`calendar.py`** | `build_ingestion_window()` | ใช้ `pandas_market_calendars` (ตลาด `XNYS`) ถอยหลังหาวันเริ่มดึงจริง (`actual_fetch_start_date`) ให้ครอบคลุมช่วง Warm-up 61 วันทำการก่อน `start_date` พร้อมบวก `api_end_date` เพิ่ม 1 วันเพื่อให้ `yfinance` ดึงรวมวันสิ้นสุด และสร้างรายการ `expected_trading_days` |
+| **`run_metadata.py`** | `start_run()`, `finish_run()` | สร้าง `run_id` (`run_YYYYMMDD_HHMMSS_<hex>`) และ `source_batch_id` เก็บเลข Git Commit และเวอร์ชันไลบรารี บันทึกไฟล์แบบ Atomic Write (`.tmp` แล้วแทนที่) ลง `data/audit/<run_id>/run_metadata.json` |
+| **`fetch.py`** | `fetch_ticker()`, `fetch_all()` | ดึงข้อมูลจาก `yfinance` แยกทีละสินทรัพย์ (`auto_adjust=True`, `actions=False`, `repair=False`, `keepna=True`) หากเกิดข้อผิดพลาดเครือข่ายจะลองใหม่สูงสุด `max_attempts` ครั้งด้วย Exponential Backoff ($2^{\text{attempt}-1}$ วินาที) แต่หากไม่มีคอลัมน์ `Close` จะตีเป็น `SCHEMA_ERROR` และหยุดทันทีโดยไม่ Retry |
+| **`raw_storage.py`** | `save_raw_snapshot()` | บันทึก DataFrame ดิบก่อนแปลงลง `data/raw/yfinance/run_id=<run_id>/ticker=<ticker>/data.parquet` พร้อมคำนวณค่าแฮช `SHA-256` เก็บใน `metadata.json` หากบันทึก Raw ของสินทรัพย์ใดไม่สำเร็จ ระบบจะบล็อกสินทรัพย์นั้นไม่ให้เข้าสู่ขั้นถัดไป |
+| **`transform.py`** | `transform_ticker()`, `transform_all()` | แปลง Index เป็นวันที่ตามโซนเวลา `America/New_York` แมป `Close` เป็น `adjusted_close` คำนวณ `simple_return` และ `log_return` แยกรายสินทรัพย์ (แถวแรกเป็น `NaN` ตามธรรมชาติ) ติดธง `is_anomaly_flagged` เมื่อ `abs(simple_return) > 0.20` และติดธง `is_warmup_buffer` สำหรับวันก่อน `start_date` |
+| **`validate.py`** | `validate_ticker()`, `validate_all()` | ตรวจความถูกต้องแยกรายสินทรัพย์: (1) คอลัมน์ครบถ้วน (2) `adjusted_close` ต้องเป็นตัวเลข Finite และ $> 0$ (3) ห้ามมี `(date, ticker)` ซ้ำ (4) มีวันซื้อขายครบตาม `expected_trading_days` (5) `simple_return` และ `log_return` เป็น Null ได้เฉพาะแถวแรกเท่านั้น ส่วนค่ากระโดดเกินเกณฑ์จะบันทึกเป็น `warnings` (`SUCCESS_WITH_WARNING`) โดยไม่ทำให้สินทรัพย์ตกเกณฑ์ |
+| **`quarantine.py`** | `handle_quarantine_and_publish()` | แยกบันทึกข้อมูลที่มีปัญหาลง `data/quarantine/run_id=<run_id>/` โดยแบ่งเป็น `records.json` (Hard Errors ที่บล็อกการ Publish) และ `anomaly_review.json` (Warnings สำหรับตรวจสอบ) ส่วนสินทรัพย์ที่ผ่านเกณฑ์จะถูกจัดเก็บลง `data/validated/run_id=<run_id>/ticker=<ticker>/data.parquet` |
+| **`publish.py`** | `publish_market_prices()` | นำเฉพาะสินทรัพย์ที่ได้สถานะ `PUBLISHED` มาทำ **Upsert** ลงตารางหลัก `data/curated/market_prices_daily.parquet` ตามคีย์ `(date, ticker)` นับจำนวนแถวที่ `inserted`, `updated`, และ `unchanged` โดยเขียนผ่านไฟล์ชั่วคราว `.tmp.parquet` ก่อนใช้ `os.replace()` เพื่อป้องกันไฟล์พังหากระบบขัดข้องกลางคัน |
+| **`audit_report.py`** | `create_run_report()` | รวบรวมสถิติทุกขั้นตอนของแต่ละสินทรัพย์และภาพรวมทั้งระบบ สร้างเป็นรายงานสรุปทั้งรูปแบบ JSON (`run_report.json`) และตาราง Markdown (`run_report.md`) เก็บไว้ในโฟลเดอร์ Audit ของ Run นั้น |
+| **`scheduler.py`** | `run_after_market_close()` | ตรวจสอบว่าวันปัจจุบันเป็นวันทำการของตลาด `XNYS` หรือไม่ (หากเป็นวันหยุดจะบันทึกสถานะ `SKIPPED_NON_TRADING_DAY`) และรอจนกว่าจะเลยเวลาปิดตลาดตามจริงบวกระยะ Buffer (ค่าเริ่มต้น 30 นาที) จึงสั่งรัน `src.ingestion.run` |
+| **`test_ingestion.py`** | ชุดทดสอบ `pytest` | ทดสอบหน่วยย่อย (Unit Tests) ครอบคลุมการคำนวณวัน Warm-up และ `api_end_date`, กลไกการ Retry เมื่อเกิด Timeout, การดักจับ Schema ผิดพลาด, การคำนวณ Return, การแจ้งเตือน Anomaly และการตรวจจับวันขาดหายหรือคีย์ซ้ำ |
+
+### 5.3 โครงสร้างการจัดเก็บข้อมูลและผลลัพธ์ (Storage Layout)
+
+| โฟลเดอร์ / ไฟล์ปลายทาง | รูปแบบไฟล์ | คำอธิบาย |
+| :--- | :--- | :--- |
+| `data/raw/yfinance/run_id=<run_id>/` | `ticker=<T>/data.parquet`, `metadata.json` | ข้อมูลดิบจาก `yfinance` ก่อนแปลง พร้อมค่า `SHA-256` ห้ามเขียนทับซ้ำ |
+| `data/quarantine/run_id=<run_id>/` | `records.json`, `anomaly_review.json`, `summary.json` | แยกเก็บรายการที่ตก Validation (Hard Errors) และรายการที่ติดธงความผันผวนเกิน $\pm 20\%$ |
+| `data/validated/run_id=<run_id>/` | `ticker=<T>/data.parquet` | ข้อมูลรายสินทรัพย์ที่ผ่านการตรวจสอบในรอบรันนั้นและได้รับอนุญาตให้เผยแพร่ (`PUBLISHED`) |
+| `data/curated/market_prices_daily.parquet` | `Parquet` (ตารางหลัก) | ตารางราคาตลาดมาตรฐานที่ผ่านการ Upsert สะสมพร้อมส่งต่อให้ Feature, Correlation และ Target Pipeline |
+| `data/audit/<run_id>/` และ `data/audit/run_id=<run_id>/` | `run_metadata.json`, `publish_report.json`, `run_report.json`, `run_report.md` | ข้อมูล Metadata ของรอบรัน รายงานสรุปผลการรัน สถิติจำนวนแถว และสถานะความพร้อมของพอร์ต (`portfolio_ready`) |
+| `data/audit/scheduler/` | `<YYYY-MM-DD>.json` | บันทึกประวัติการตรวจสอบเวลาเปิด-ปิดตลาดและผลการสั่งรันรายวันของ `scheduler.py` |
+
+### 5.4 สถานะการรันและรหัสคืนค่า (Overall Status & Exit Codes)
+
+ใน `run.py` ระบบจะสรุปสถานะรวมและคืนค่า Exit Code เพื่อให้ระบบตั้งเวลาหรือ CI/CD ตรวจสอบได้ทันที:
+- **`SUCCESS` (Exit Code `0`)**: สินทรัพย์ทั้ง 3 ตัว (`SPY`, `IEF`, `GLD`) ผ่านการตรวจสอบและถูกอัปเดตลงตารางหลักครบถ้วน (`portfolio_ready = True`)
+- **`PARTIAL` (Exit Code `2`)**: มีสินทรัพย์บางตัวผ่านและถูกอัปเดตลงตารางหลัก แต่มีบางตัวถูกบล็อกเข้า Quarantine (`portfolio_ready = False`)
+- **`FAILED` (Exit Code `1`)**: สินทรัพย์ทั้งหมดไม่ผ่านการตรวจสอบ หรือเกิดข้อผิดพลาดระดับระบบ/การตั้งค่า (`portfolio_ready = False`)
+
+### 5.5 คำสั่งสำหรับใช้งานและทดสอบ (CLI Usage)
+
+```bash
+# รัน Ingestion Pipeline ตามไฟล์ตั้งค่า
+python -m src.ingestion.run --config config/ingestion.yaml
+
+# รันผ่านตัวเช็คเวลาปิดตลาด (รอหลังตลาด XNYS ปิด 30 นาที)
+python -m src.ingestion.scheduler --config config/ingestion.yaml --buffer-minutes 30
+
+# รันชุดทดสอบ Unit Tests ของ Ingestion Pipeline
+pytest src/ingestion/test_ingestion.py
+```
