@@ -61,6 +61,7 @@ def transform_ticker(
     )
 
     result = data[["date", "adjusted_close"]].copy()
+    result.index.name = None
     result["ticker"] = ticker
     result = result.sort_values(["ticker", "date"]).reset_index(drop=True)
 

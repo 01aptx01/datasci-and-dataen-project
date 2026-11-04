@@ -1,8 +1,0 @@
-/docs
-Dockerfile
-requirements.txt
-pyproject.toml
-/src
-/logs
-/data
-/config
