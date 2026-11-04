@@ -1,0 +1,33 @@
+project:
+  name: "DSDN Portfolio Volatility"
+
+source:
+  provider: "Yahoo Finance"
+  client: "yfinance"
+  interval: "1d"
+  tickers:
+    - "SPY"
+    - "IEF"
+    - "GLD"
+
+date_range:
+  start_date: "2021-09-27"
+  end_date: "2026-09-25"
+  warmup_trading_days: 61
+
+price:
+  auto_adjust: true
+  canonical_price: "adjusted_close"
+
+calendar:
+  market: "XNYS"
+  market_timezone: "America/New_York"
+
+validation:
+  simple_return_anomaly_threshold: 0.20
+  allow_missing_trading_days: false
+
+execution:
+  mode: "historical"
+  max_attempts: 3
+  timeout_seconds: 15
