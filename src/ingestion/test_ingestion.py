@@ -7,6 +7,7 @@ from src.ingestion.transform import transform_ticker
 from src.ingestion.validate import validate_all
 from src.ingestion.quarantine import handle_quarantine_and_publish
 from src.ingestion.audit_report import create_run_report
+from src.ingestion.raw_storage import save_raw_snapshot
 
 
 @pytest.fixture
@@ -426,3 +427,62 @@ def test_audit_report_appends_to_jsonl(tmp_path):
     assert entry["rows_published"] == 5
     assert "SPY" in entry["tickers"]
     assert entry["tickers"]["SPY"]["status"] == "SUCCESS"
+
+
+def test_save_raw_snapshot_creates_csv_and_manifest(tmp_path, config):
+    import json
+
+    results = {
+        "SPY": {
+            "status": "SUCCESS",
+            "data": pd.DataFrame(
+                {"Close": [100.0], "High": [102.0], "Low": [98.0]},
+                index=pd.to_datetime(["2021-09-27"]),
+            ),
+        }
+    }
+    run_meta = {
+        "run_id": "run_001",
+        "source_batch_id": "batch_001",
+    }
+    window = {
+        "config_start_date": "2021-09-27",
+        "config_end_date": "2021-10-01",
+        "actual_fetch_start_date": "2021-06-28",
+        "api_end_date": "2021-10-02",
+    }
+
+    snapshot = save_raw_snapshot(
+        results=results,
+        run_metadata=run_meta,
+        config=config,
+        ingestion_window=window,
+        root_dir=str(tmp_path / "raw"),
+    )
+
+    batch_dir = tmp_path / "raw" / "batch_001"
+    raw_csv = batch_dir / "raw_prices.csv"
+    manifest_file = batch_dir / "manifest.json"
+
+    assert raw_csv.is_file()
+    assert manifest_file.is_file()
+
+    df_raw = pd.read_csv(raw_csv)
+    assert len(df_raw) == 1
+    assert "ticker" in df_raw.columns
+    assert "Close" in df_raw.columns
+
+    manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+    assert manifest_data["source_batch_id"] == "batch_001"
+    assert manifest_data["sha256"] == snapshot["sha256"]
+    assert manifest_data["rows_fetched_raw"] == 1
+
+    # Overwrite refusal test
+    with pytest.raises(FileExistsError):
+        save_raw_snapshot(
+            results=results,
+            run_metadata=run_meta,
+            config=config,
+            ingestion_window=window,
+            root_dir=str(tmp_path / "raw"),
+        )

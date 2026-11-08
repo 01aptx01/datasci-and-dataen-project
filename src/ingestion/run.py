@@ -40,6 +40,7 @@ def run_pipeline(config_path: str) -> int:
             config=config,
             ingestion_window=window,
         )
+        metadata["raw_snapshot_path"] = snapshot.get("raw_file_path")
 
         # ถ้าบันทึก raw ของ ticker ไม่สำเร็จ ให้บล็อก ticker นั้น
         for ticker, snapshot_info in snapshot["tickers"].items():
