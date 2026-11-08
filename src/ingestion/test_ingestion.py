@@ -227,6 +227,81 @@ def test_validation_detects_missing_day_and_duplicate(config):
 
     ief = report["ticker_results"]["IEF"]
     assert ief["status"] == "FAILED"
-    assert "DUPLICATE_DATE_TICKER_KEY" in ief["error_codes"]
+    assert "DUPLICATE_PRIMARY_KEY" in ief["error_codes"]
     assert "MISSING_EXPECTED_TRADING_DAY" in ief["error_codes"]
     assert ief["missing_days"] == ["2021-09-28"]
+
+
+def test_validation_detects_invalid_high_low(config):
+    # low > high
+    data = pd.DataFrame({
+        "date": pd.to_datetime(["2021-09-27"]).date,
+        "ticker": ["SPY"],
+        "adjusted_close": [100.0],
+        "high": [95.0],
+        "low": [105.0],
+        "simple_return": [None],
+        "log_return": [None],
+        "is_anomaly_flagged": [False],
+        "is_warmup_buffer": [False],
+    })
+
+    report = validate_all(
+        data=data,
+        expected_trading_days=["2021-09-27"],
+        tickers=["SPY"],
+    )
+
+    spy = report["ticker_results"]["SPY"]
+    assert spy["status"] == "FAILED"
+    assert "INVALID_HIGH_LOW" in spy["error_codes"]
+
+
+def test_validation_detects_non_positive_price(config):
+    data = pd.DataFrame({
+        "date": pd.to_datetime(["2021-09-27"]).date,
+        "ticker": ["GLD"],
+        "adjusted_close": [-50.0],
+        "high": [100.0],
+        "low": [-60.0],
+        "simple_return": [None],
+        "log_return": [None],
+        "is_anomaly_flagged": [False],
+        "is_warmup_buffer": [False],
+    })
+
+    report = validate_all(
+        data=data,
+        expected_trading_days=["2021-09-27"],
+        tickers=["GLD"],
+    )
+
+    gld = report["ticker_results"]["GLD"]
+    assert gld["status"] == "FAILED"
+    assert "NON_POSITIVE_PRICE" in gld["error_codes"]
+
+
+def test_validation_detects_invalid_warmup_flag(config):
+    data = pd.DataFrame({
+        "date": pd.to_datetime(["2021-09-26", "2021-09-28"]).date,
+        "ticker": ["SPY", "SPY"],
+        "adjusted_close": [100.0, 102.0],
+        "high": [105.0, 106.0],
+        "low": [98.0, 101.0],
+        "simple_return": [None, 0.02],
+        "log_return": [None, 0.0198],
+        "is_anomaly_flagged": [False, False],
+        # 2021-09-26 is before 2021-09-27, so should be True, but we set False
+        "is_warmup_buffer": [False, False],
+    })
+
+    report = validate_all(
+        data=data,
+        expected_trading_days=["2021-09-26", "2021-09-28"],
+        tickers=["SPY"],
+        config_start_date="2021-09-27",
+    )
+
+    spy = report["ticker_results"]["SPY"]
+    assert spy["status"] == "FAILED"
+    assert "INVALID_WARMUP_FLAG" in spy["error_codes"]

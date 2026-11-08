@@ -63,6 +63,7 @@ def run_pipeline(config_path: str) -> int:
             anomaly_threshold=config["validation"][
                 "simple_return_anomaly_threshold"
             ],
+            config_start_date=window.get("config_start_date"),
         )
 
         # Session 9: กักข้อมูลผิดและกำหนด ticker ที่ publish ได้
@@ -122,7 +123,7 @@ def run_pipeline(config_path: str) -> int:
 
         if metadata["overall_status"] == "SUCCESS":
             return 0
-        if metadata["overall_status"] == "PARTIAL":
+        if metadata["overall_status"] in ("PARTIAL", "PARTIAL_SUCCESS"):
             return 2
         return 1
 
