@@ -40,18 +40,21 @@ def transform_ticker(
     # รองรับ MultiIndex columns ที่อาจได้จาก yfinance บางเวอร์ชัน
     data = raw_data.copy()
     if isinstance(data.columns, pd.MultiIndex):
-        data.columns = [
-            next(
-                (str(level) for level in column if str(level) == "Close"),
-                str(column[-1]),
-            )
-            for column in data.columns
-        ]
+        new_cols = []
+        for col in data.columns:
+            matched = None
+            for level in col:
+                if str(level) in ["Close", "High", "Low", "Open", "Volume"]:
+                    matched = str(level)
+                    break
+            new_cols.append(matched if matched else str(col[-1]))
+        data.columns = new_cols
 
-    if "Close" not in data.columns:
-        raise ValueError(
-            f"TRANSFORM_ERROR: missing Close column for {ticker}"
-        )
+    for required in ["Close", "High", "Low"]:
+        if required not in data.columns:
+            raise ValueError(
+                f"TRANSFORM_ERROR: missing {required} column for {ticker}"
+            )
 
     market_timezone = config["calendar"]["market_timezone"]
     data["date"] = _to_market_date(data.index, market_timezone)
@@ -59,8 +62,14 @@ def transform_ticker(
     data["adjusted_close"] = pd.to_numeric(
         data["Close"], errors="coerce"
     )
+    data["high"] = pd.to_numeric(
+        data["High"], errors="coerce"
+    )
+    data["low"] = pd.to_numeric(
+        data["Low"], errors="coerce"
+    )
 
-    result = data[["date", "adjusted_close"]].copy()
+    result = data[["date", "adjusted_close", "high", "low"]].copy()
     result.index.name = None
     result["ticker"] = ticker
     result = result.sort_values(["ticker", "date"]).reset_index(drop=True)
@@ -105,6 +114,8 @@ def transform_ticker(
         "date",
         "ticker",
         "adjusted_close",
+        "high",
+        "low",
         "simple_return",
         "log_return",
         "is_anomaly_flagged",
@@ -142,9 +153,9 @@ def transform_all(
     if not frames:
         return pd.DataFrame(
             columns=[
-                "date", "ticker", "adjusted_close", "simple_return",
-                "log_return", "is_anomaly_flagged", "is_warmup_buffer",
-                "run_id", "source_batch_id", "ingested_at_utc",
+                "date", "ticker", "adjusted_close", "high", "low",
+                "simple_return", "log_return", "is_anomaly_flagged",
+                "is_warmup_buffer", "run_id", "source_batch_id", "ingested_at_utc",
             ]
         )
 

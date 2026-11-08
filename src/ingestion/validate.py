@@ -8,6 +8,8 @@ REQUIRED_COLUMNS = {
     "date",
     "ticker",
     "adjusted_close",
+    "high",
+    "low",
     "simple_return",
     "log_return",
     "is_anomaly_flagged",

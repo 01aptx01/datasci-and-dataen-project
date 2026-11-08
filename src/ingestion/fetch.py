@@ -40,14 +40,22 @@ def fetch_ticker(
                 raise RuntimeError("Empty response from Yahoo Finance")
 
             # ตรวจ schema ก่อน retry: schema ผิดแก้ด้วยการลองดึงซ้ำไม่ได้
-            if "Close" not in data.columns:
+            col_names = (
+                set(data.columns)
+                if not isinstance(data.columns, pd.MultiIndex)
+                else {str(c) for col in data.columns for c in col}
+            )
+            missing = {"Close", "High", "Low"} - col_names
+            if missing:
                 return {
                     "ticker": ticker,
                     "status": "FAILED",
                     "failure_type": "SCHEMA_ERROR",
                     "rows_fetched": 0,
                     "attempts": attempt,
-                    "errors": errors + ["Missing required column: Close"],
+                    "errors": errors + [
+                        f"Missing required column(s): {', '.join(sorted(missing))}"
+                    ],
                     "data": None,
                 }
 

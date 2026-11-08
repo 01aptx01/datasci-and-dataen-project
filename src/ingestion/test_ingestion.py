@@ -69,7 +69,11 @@ def test_calendar_rejects_start_after_end(config):
 
 def test_fetch_success(monkeypatch, config):
     raw = pd.DataFrame(
-        {"Close": [100.0, 102.0]},
+        {
+            "Close": [100.0, 102.0],
+            "High": [101.0, 103.0],
+            "Low": [99.0, 101.0],
+        },
         index=pd.to_datetime(["2021-09-27", "2021-09-28"]),
     )
     monkeypatch.setattr(
@@ -95,7 +99,7 @@ def test_fetch_retries_timeout(monkeypatch, config):
         if calls["count"] == 1:
             raise TimeoutError("temporary timeout")
         return pd.DataFrame(
-            {"Close": [100.0]},
+            {"Close": [100.0], "High": [101.0], "Low": [99.0]},
             index=pd.to_datetime(["2021-09-27"]),
         )
 
@@ -116,7 +120,7 @@ def test_fetch_retries_timeout(monkeypatch, config):
     assert len(result["errors"]) == 1
 
 
-def test_fetch_fails_when_close_column_missing(monkeypatch, config):
+def test_fetch_fails_when_required_column_missing(monkeypatch, config):
     raw = pd.DataFrame(
         {"Open": [100.0]},
         index=pd.to_datetime(["2021-09-27"]),
@@ -136,9 +140,13 @@ def test_fetch_fails_when_close_column_missing(monkeypatch, config):
     assert result["failure_type"] == "SCHEMA_ERROR"
 
 
-def test_transform_maps_close_and_calculates_returns(config, run_metadata):
+def test_transform_maps_prices_and_calculates_returns(config, run_metadata):
     raw = pd.DataFrame(
-        {"Close": [100.0, 102.0]},
+        {
+            "Close": [100.0, 102.0],
+            "High": [101.0, 103.0],
+            "Low": [99.0, 101.0],
+        },
         index=pd.to_datetime(["2021-09-27", "2021-09-28"]),
     )
     window = {"config_start_date": "2021-09-27"}
@@ -148,9 +156,27 @@ def test_transform_maps_close_and_calculates_returns(config, run_metadata):
     )
 
     assert result.loc[0, "adjusted_close"] == 100.0
+    assert result.loc[0, "high"] == 101.0
+    assert result.loc[0, "low"] == 99.0
     assert pd.isna(result.loc[0, "simple_return"])
     assert result.loc[1, "simple_return"] == pytest.approx(0.02)
-    assert result.loc[1, "log_return"] == pytest.approx(0.0198026)
+    assert result.loc[1, "log_return"] == pytest.approx(0.0198026, rel=1e-4)
+
+    expected_columns = [
+        "date",
+        "ticker",
+        "adjusted_close",
+        "high",
+        "low",
+        "simple_return",
+        "log_return",
+        "is_anomaly_flagged",
+        "is_warmup_buffer",
+        "run_id",
+        "source_batch_id",
+        "ingested_at_utc",
+    ]
+    assert list(result.columns) == expected_columns
 
 
 def test_validation_flags_anomaly_as_warning(config):
@@ -158,6 +184,8 @@ def test_validation_flags_anomaly_as_warning(config):
         "date": pd.to_datetime(["2021-09-27", "2021-09-28"]).date,
         "ticker": ["SPY", "SPY"],
         "adjusted_close": [100.0, 125.0],
+        "high": [105.0, 126.0],
+        "low": [99.0, 120.0],
         "simple_return": [None, 0.25],
         "log_return": [None, 0.22314355],
         "is_anomaly_flagged": [False, True],
@@ -183,6 +211,8 @@ def test_validation_detects_missing_day_and_duplicate(config):
         ]).date,
         "ticker": ["IEF", "IEF"],
         "adjusted_close": [100.0, 101.0],
+        "high": [102.0, 103.0],
+        "low": [99.0, 100.0],
         "simple_return": [None, 0.01],
         "log_return": [None, 0.00995],
         "is_anomaly_flagged": [False, False],
