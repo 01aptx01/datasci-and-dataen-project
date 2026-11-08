@@ -5,6 +5,19 @@ from typing import Any
 import pandas as pd
 
 
+def append_to_ingestion_runs_jsonl(
+    audit_entry: dict[str, Any],
+    jsonl_path: str | Path = "logs/ingestion_runs.jsonl",
+) -> None:
+    """บันทึกสรุปผลการรันลง logs/ingestion_runs.jsonl แบบ append-only (1 JSON Object ต่อ 1 บรรทัด)"""
+    path = Path(jsonl_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as file:
+        file.write(
+            json.dumps(audit_entry, ensure_ascii=False, default=str) + "\n"
+        )
+
+
 def _date_bounds(data: Any) -> tuple[str | None, str | None]:
     """คืนวันที่แรกและสุดท้ายที่พบในข้อมูล"""
     if not isinstance(data, pd.DataFrame) or data.empty:
@@ -26,8 +39,9 @@ def create_run_report(
     quarantine_result: dict[str, Any],
     publish_report: dict[str, Any],
     audit_root: str = "data/audit",
+    jsonl_path: str | Path = "logs/ingestion_runs.jsonl",
 ) -> dict[str, Any]:
-    """สร้าง Audit report รวมของ run และบันทึกเป็น JSON กับ Markdown"""
+    """สร้าง Audit report รวมของ run และบันทึกเป็น JSON กับ Markdown พร้อมลง logs/ingestion_runs.jsonl"""
 
     run_id = run_metadata["run_id"]
     ticker_report = {}
@@ -66,7 +80,7 @@ def create_run_report(
     if all(status == "PUBLISHED" for status in ticker_statuses):
         overall_status = "SUCCESS"
     elif any(status == "PUBLISHED" for status in ticker_statuses):
-        overall_status = "PARTIAL"
+        overall_status = "PARTIAL_SUCCESS"
     else:
         overall_status = "FAILED"
 
@@ -97,6 +111,58 @@ def create_run_report(
             "rows_unchanged": publish_report.get("rows_unchanged", 0),
         },
     }
+
+    # บันทึก logs/ingestion_runs.jsonl 1 บรรทัดตาม Data Contract ข้อ 7
+    contract_tickers = {}
+    error_messages = []
+    total_fetched = 0
+    total_passed = 0
+    total_published = 0
+    total_quarantined = 0
+    total_anomalies = 0
+
+    for ticker, item in ticker_report.items():
+        t_status = "SUCCESS" if item["publish_status"] == "PUBLISHED" else "FAILED"
+        contract_tickers[ticker] = {
+            "status": t_status,
+            "rows_fetched_raw": item["fetched_rows"],
+            "rows_validated_passed": item["rows_validated_passed"],
+            "rows_published": item["rows_published"],
+        }
+        total_fetched += item["fetched_rows"]
+        total_passed += item["rows_validated_passed"]
+        total_published += item["rows_published"]
+        total_quarantined += item["rows_quarantined"] + item["missing_day_events"]
+        total_anomalies += item["anomalies"]
+        if item["error_codes"]:
+            error_messages.append(f"{ticker}: {', '.join(item['error_codes'])}")
+
+    jsonl_entry = {
+        "run_id": run_id,
+        "source_batch_id": run_metadata.get("source_batch_id"),
+        "started_at_utc": run_metadata.get("started_at_utc"),
+        "finished_at_utc": run_metadata.get("finished_at_utc"),
+        "status": overall_status,
+        "config_start_date": run_metadata.get("config_start_date"),
+        "config_end_date": run_metadata.get("config_end_date"),
+        "actual_fetch_start_date": run_metadata.get("actual_fetch_start_date"),
+        "effective_end_date": (
+            run_metadata.get("effective_end_date")
+            or run_metadata.get("config_end_date")
+        ),
+        "raw_snapshot_path": (
+            run_metadata.get("raw_snapshot_path")
+            or report.get("raw_snapshot_path")
+        ),
+        "rows_fetched_raw": total_fetched,
+        "rows_validated_passed": total_passed,
+        "rows_published": total_published,
+        "rows_quarantined": total_quarantined,
+        "rows_anomaly_flagged": total_anomalies,
+        "tickers": contract_tickers,
+        "error_message": "; ".join(error_messages) if error_messages else None,
+    }
+    append_to_ingestion_runs_jsonl(jsonl_entry, jsonl_path=jsonl_path)
 
     output_dir = Path(audit_root) / f"run_id={run_id}"
     output_dir.mkdir(parents=True, exist_ok=True)

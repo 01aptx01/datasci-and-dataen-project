@@ -112,7 +112,7 @@ def finish_run(
     if success_count == len(statuses):
         metadata["overall_status"] = "SUCCESS"
     elif success_count > 0:
-        metadata["overall_status"] = "PARTIAL"
+        metadata["overall_status"] = "PARTIAL_SUCCESS"
     else:
         metadata["overall_status"] = "FAILED"
 

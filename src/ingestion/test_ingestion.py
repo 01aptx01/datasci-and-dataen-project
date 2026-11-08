@@ -6,6 +6,7 @@ from src.ingestion.fetch import fetch_ticker
 from src.ingestion.transform import transform_ticker
 from src.ingestion.validate import validate_all
 from src.ingestion.quarantine import handle_quarantine_and_publish
+from src.ingestion.audit_report import create_run_report
 
 
 @pytest.fixture
@@ -348,3 +349,80 @@ def test_quarantine_appends_to_csv(tmp_path):
     assert "detected_at_utc" in df_quarantine.columns
     assert df_quarantine.iloc[0]["reason"] == "NON_POSITIVE_PRICE"
     assert df_quarantine.iloc[0]["source_batch_id"] == "yf_test_batch"
+
+
+def test_audit_report_appends_to_jsonl(tmp_path):
+    import json
+
+    metadata = {
+        "run_id": "run_test_audit",
+        "source_batch_id": "yf_test_batch",
+        "started_at_utc": "2026-09-24T01:00:00Z",
+        "finished_at_utc": "2026-09-24T01:00:05Z",
+        "config_start_date": "2021-09-27",
+        "config_end_date": "2021-10-01",
+        "actual_fetch_start_date": "2021-06-28",
+        "api_end_date": "2021-10-02",
+        "tickers": {"SPY": {"status": "SUCCESS"}},
+    }
+    fetch_results = {
+        "SPY": {
+            "rows_fetched": 5,
+            "attempts": 1,
+            "data": pd.DataFrame(index=pd.to_datetime(["2021-09-27"])),
+        }
+    }
+    validation_report = {
+        "ticker_results": {
+            "SPY": {
+                "rows_checked": 5,
+                "rows_passed": 5,
+                "status": "SUCCESS",
+                "warnings": [],
+                "error_codes": [],
+            }
+        }
+    }
+    quarantine_result = {
+        "ticker_summary": {
+            "SPY": {
+                "publish_status": "PUBLISHED",
+                "rows_published": 5,
+                "quarantined_records": 0,
+                "missing_day_events": 0,
+            }
+        }
+    }
+    publish_report = {
+        "table": "data/curated/market_prices_daily.parquet",
+        "portfolio_ready": True,
+        "rows_inserted": 5,
+        "rows_updated": 0,
+        "rows_unchanged": 0,
+    }
+
+    jsonl_file = tmp_path / "ingestion_runs.jsonl"
+    report = create_run_report(
+        run_metadata=metadata,
+        fetch_results=fetch_results,
+        validation_report=validation_report,
+        quarantine_result=quarantine_result,
+        publish_report=publish_report,
+        audit_root=str(tmp_path / "audit"),
+        jsonl_path=str(jsonl_file),
+    )
+
+    assert report["overall_status"] == "SUCCESS"
+    assert jsonl_file.is_file()
+
+    with jsonl_file.open("r", encoding="utf-8") as f:
+        lines = f.readlines()
+    assert len(lines) == 1
+
+    entry = json.loads(lines[0])
+    assert entry["run_id"] == "run_test_audit"
+    assert entry["status"] == "SUCCESS"
+    assert entry["rows_fetched_raw"] == 5
+    assert entry["rows_published"] == 5
+    assert "SPY" in entry["tickers"]
+    assert entry["tickers"]["SPY"]["status"] == "SUCCESS"

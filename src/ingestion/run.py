@@ -12,7 +12,10 @@ from src.ingestion.transform import transform_all
 from src.ingestion.validate import validate_all
 from src.ingestion.quarantine import handle_quarantine_and_publish
 from src.ingestion.publish import publish_market_prices
-from src.ingestion.audit_report import create_run_report
+from src.ingestion.audit_report import (
+    create_run_report,
+    append_to_ingestion_runs_jsonl,
+)
 
 
 def run_pipeline(config_path: str) -> int:
@@ -128,7 +131,7 @@ def run_pipeline(config_path: str) -> int:
             return 2
         return 1
 
-    except Exception:
+    except Exception as error:
         logging.exception("Pipeline ล้มเหลว")
 
         # บันทึกสถานะ FAILED หากสร้าง run metadata ไปแล้ว
@@ -138,7 +141,34 @@ def run_pipeline(config_path: str) -> int:
                     ticker: "FAILED"
                     for ticker in metadata.get("tickers", {})
                 }
-                finish_run(metadata, failed_statuses, audit_dir)
+                metadata = finish_run(metadata, failed_statuses, audit_dir)
+                append_to_ingestion_runs_jsonl({
+                    "run_id": metadata["run_id"],
+                    "source_batch_id": metadata.get("source_batch_id"),
+                    "started_at_utc": metadata.get("started_at_utc"),
+                    "finished_at_utc": metadata.get("finished_at_utc"),
+                    "status": "FAILED",
+                    "config_start_date": metadata.get("config_start_date"),
+                    "config_end_date": metadata.get("config_end_date"),
+                    "actual_fetch_start_date": metadata.get("actual_fetch_start_date"),
+                    "effective_end_date": metadata.get("effective_end_date") or metadata.get("config_end_date"),
+                    "raw_snapshot_path": metadata.get("raw_snapshot_path"),
+                    "rows_fetched_raw": 0,
+                    "rows_validated_passed": 0,
+                    "rows_published": 0,
+                    "rows_quarantined": 0,
+                    "rows_anomaly_flagged": 0,
+                    "tickers": {
+                        t: {
+                            "status": "FAILED",
+                            "rows_fetched_raw": 0,
+                            "rows_validated_passed": 0,
+                            "rows_published": 0,
+                        }
+                        for t in metadata.get("tickers", {})
+                    },
+                    "error_message": f"PIPELINE_ERROR: {error}",
+                })
             except Exception:
                 logging.exception("บันทึกสถานะ FAILED ไม่สำเร็จ")
 
