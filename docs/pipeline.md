@@ -107,34 +107,35 @@ flowchart TD
 | โมดูล | ฟังก์ชันหลัก | หน้าที่และกลไกสำคัญ |
 | :--- | :--- | :--- |
 | **`config.py`** | `load_config()`, `validate_config()` | โหลดไฟล์ `config/ingestion.yaml` และตรวจสอบความถูกต้องของพารามิเตอร์ทั้งหมด (เช่น ต้องมีครบ `SPY`, `IEF`, `GLD`, `interval == '1d'`, `auto_adjust == True`, `warmup_trading_days > 0`, Timezone ถูกต้อง) |
-| **`calendar.py`** | `build_ingestion_window()` | ใช้ `pandas_market_calendars` (ตลาด `XNYS`) ถอยหลังหาวันเริ่มดึงจริง (`actual_fetch_start_date`) ให้ครอบคลุมช่วง Warm-up 61 วันทำการก่อน `start_date` พร้อมบวก `api_end_date` เพิ่ม 1 วันเพื่อให้ `yfinance` ดึงรวมวันสิ้นสุด และสร้างรายการ `expected_trading_days` |
-| **`run_metadata.py`** | `start_run()`, `finish_run()` | สร้าง `run_id` (`run_YYYYMMDD_HHMMSS_<hex>`) และ `source_batch_id` เก็บเลข Git Commit และเวอร์ชันไลบรารี บันทึกไฟล์แบบ Atomic Write (`.tmp` แล้วแทนที่) ลง `data/audit/<run_id>/run_metadata.json` |
-| **`fetch.py`** | `fetch_ticker()`, `fetch_all()` | ดึงข้อมูลจาก `yfinance` แยกทีละสินทรัพย์ (`auto_adjust=True`, `actions=False`, `repair=False`, `keepna=True`) หากเกิดข้อผิดพลาดเครือข่ายจะลองใหม่สูงสุด `max_attempts` ครั้งด้วย Exponential Backoff ($2^{\text{attempt}-1}$ วินาที) แต่หากไม่มีคอลัมน์ `Close` จะตีเป็น `SCHEMA_ERROR` และหยุดทันทีโดยไม่ Retry |
-| **`raw_storage.py`** | `save_raw_snapshot()` | บันทึก DataFrame ดิบก่อนแปลงลง `data/raw/yfinance/run_id=<run_id>/ticker=<ticker>/data.parquet` พร้อมคำนวณค่าแฮช `SHA-256` เก็บใน `metadata.json` หากบันทึก Raw ของสินทรัพย์ใดไม่สำเร็จ ระบบจะบล็อกสินทรัพย์นั้นไม่ให้เข้าสู่ขั้นถัดไป |
-| **`transform.py`** | `transform_ticker()`, `transform_all()` | แปลง Index เป็นวันที่ตามโซนเวลา `America/New_York` แมป `Close` เป็น `adjusted_close` คำนวณ `simple_return` และ `log_return` แยกรายสินทรัพย์ (แถวแรกเป็น `NaN` ตามธรรมชาติ) ติดธง `is_anomaly_flagged` เมื่อ `abs(simple_return) > 0.20` และติดธง `is_warmup_buffer` สำหรับวันก่อน `start_date` |
-| **`validate.py`** | `validate_ticker()`, `validate_all()` | ตรวจความถูกต้องแยกรายสินทรัพย์: (1) คอลัมน์ครบถ้วน (2) `adjusted_close` ต้องเป็นตัวเลข Finite และ $> 0$ (3) ห้ามมี `(date, ticker)` ซ้ำ (4) มีวันซื้อขายครบตาม `expected_trading_days` (5) `simple_return` และ `log_return` เป็น Null ได้เฉพาะแถวแรกเท่านั้น ส่วนค่ากระโดดเกินเกณฑ์จะบันทึกเป็น `warnings` (`SUCCESS_WITH_WARNING`) โดยไม่ทำให้สินทรัพย์ตกเกณฑ์ |
-| **`quarantine.py`** | `handle_quarantine_and_publish()` | แยกบันทึกข้อมูลที่มีปัญหาลง `data/quarantine/run_id=<run_id>/` โดยแบ่งเป็น `records.json` (Hard Errors ที่บล็อกการ Publish) และ `anomaly_review.json` (Warnings สำหรับตรวจสอบ) ส่วนสินทรัพย์ที่ผ่านเกณฑ์จะถูกจัดเก็บลง `data/validated/run_id=<run_id>/ticker=<ticker>/data.parquet` |
-| **`publish.py`** | `publish_market_prices()` | นำเฉพาะสินทรัพย์ที่ได้สถานะ `PUBLISHED` มาทำ **Upsert** ลงตารางหลัก `data/curated/market_prices_daily.parquet` ตามคีย์ `(date, ticker)` นับจำนวนแถวที่ `inserted`, `updated`, และ `unchanged` โดยเขียนผ่านไฟล์ชั่วคราว `.tmp.parquet` ก่อนใช้ `os.replace()` เพื่อป้องกันไฟล์พังหากระบบขัดข้องกลางคัน |
-| **`audit_report.py`** | `create_run_report()` | รวบรวมสถิติทุกขั้นตอนของแต่ละสินทรัพย์และภาพรวมทั้งระบบ สร้างเป็นรายงานสรุปทั้งรูปแบบ JSON (`run_report.json`) และตาราง Markdown (`run_report.md`) เก็บไว้ในโฟลเดอร์ Audit ของ Run นั้น |
-| **`scheduler.py`** | `run_after_market_close()` | ตรวจสอบว่าวันปัจจุบันเป็นวันทำการของตลาด `XNYS` หรือไม่ (หากเป็นวันหยุดจะบันทึกสถานะ `SKIPPED_NON_TRADING_DAY`) และรอจนกว่าจะเลยเวลาปิดตลาดตามจริงบวกระยะ Buffer (ค่าเริ่มต้น 30 นาที) จึงสั่งรัน `src.ingestion.run` |
-| **`test_ingestion.py`** | ชุดทดสอบ `pytest` | ทดสอบหน่วยย่อย (Unit Tests) ครอบคลุมการคำนวณวัน Warm-up และ `api_end_date`, กลไกการ Retry เมื่อเกิด Timeout, การดักจับ Schema ผิดพลาด, การคำนวณ Return, การแจ้งเตือน Anomaly และการตรวจจับวันขาดหายหรือคีย์ซ้ำ |
+| **`calendar.py`** | `build_ingestion_window()`, `get_effective_end_date()` | ใช้ `pandas_market_calendars` (ตลาด `XNYS`) ถอยหลังหาวันเริ่มดึงจริง (`actual_fetch_start_date`) ให้ครอบคลุมช่วง Warm-up 61 วันทำการก่อน `start_date` พร้อมคำนวณ `effective_end_date` ไม่ให้เกินวันซื้อขายล่าสุดที่ตลาดปิดจริง และบวก `api_end_date` เพิ่ม 1 วันสำหรับ yfinance |
+| **`run_metadata.py`** | `start_run()`, `finish_run()` | สร้าง `run_id` (`run_YYYYMMDD_HHMMSS_<hex>`) และ `source_batch_id` เก็บเลข Git Commit และเวอร์ชันไลบรารี บันทึกไฟล์ลง `data/audit/<run_id>/run_metadata.json` |
+| **`fetch.py`** | `fetch_ticker()`, `fetch_all()` | ดึงข้อมูลจาก `yfinance` แยกทีละสินทรัพย์ (`auto_adjust=True`, `actions=False`, `repair=False`, `keepna=True`) ตรวจคอลัมน์ราคา `Close`, `High`, `Low` หากเกิดข้อผิดพลาดเครือข่ายจะลองใหม่สูงสุด `max_attempts` ครั้งด้วย Exponential Backoff |
+| **`raw_storage.py`** | `save_raw_snapshot()` | บันทึก DataFrame ดิบก่อนแปลงลง `data/raw/<source_batch_id>/raw_prices.csv` พร้อมสร้าง `manifest.json` เก็บค่าแฮช `SHA-256` และเวอร์ชัน `yfinance` ตาม Data Contract ข้อ 3 โดยไม่เขียนทับ Snapshot เดิม |
+| **`transform.py`** | `transform_ticker()`, `transform_all()` | แปลง Index เป็นวันที่ตามโซนเวลา `America/New_York` แมป `Close`, `High`, `Low` เป็น Schema มาตรฐาน 12 คอลัมน์ คัดกรองวันที่ไม่เกิน `effective_end_date` คำนวณ `simple_return` และ `log_return` แยกรายสินทรัพย์ ติดธง `is_anomaly_flagged` และ `is_warmup_buffer` |
+| **`validate.py`** | `validate_ticker()`, `validate_all()` | ตรวจความถูกต้องแยกรายสินทรัพย์: (1) คอลัมน์ครบ 12 ตัว (2) ราคา Finite และ $> 0$ (`NON_POSITIVE_PRICE`) (3) `low <= adjusted_close <= high` (`INVALID_HIGH_LOW`) (4) `is_warmup_buffer` ตรงกับวันก่อน `start_date` (`INVALID_WARMUP_FLAG`) (5) PK ไม่ซ้ำ (`DUPLICATE_PRIMARY_KEY`) (6) วันซื้อขายครบตาม `expected_trading_days` (7) Returns เป็น Null ได้เฉพาะแถวแรก |
+| **`quarantine.py`** | `handle_quarantine_and_publish()` | บันทึกรายการที่ไม่ผ่าน Hard Fail ลงใน **`logs/quarantine.csv`** แบบ Append-only (7 คอลัมน์มาตรฐาน) พร้อมแยกเก็บ JSON per-run และคัดเฉพาะ Ticker ที่ผ่านไป Validated |
+| **`publish.py`** | `publish_market_prices()` | นำเฉพาะสินทรัพย์ที่ได้สถานะ `PUBLISHED` มาทำ **Atomic Upsert** ลงตารางหลัก `data/curated/market_prices_daily.parquet` ตามคีย์ `(date, ticker)` นับจำนวนแถวที่ `inserted`, `updated`, และ `unchanged` |
+| **`audit_report.py`** | `create_run_report()` | รวบรวมสถิติทุกขั้นตอน สร้างรายงาน JSON/MD และบันทึกผลการรัน 1 บรรทัดลงใน **`logs/ingestion_runs.jsonl`** แบบ Append-only ตาม Data Contract ข้อ 7 |
+| **`scheduler.py`** | `run_after_market_close()` | ตรวจสอบวันเปิดทำการของตลาด `XNYS` และรอจนกว่าจะเลยเวลาปิดตลาดตามจริงบวกระยะ Buffer ก่อนสั่งรัน Ingestion |
+| **`test_ingestion.py`** | ชุดทดสอบ `pytest` | ทดสอบครอบคลุมการคำนวณ Warm-up และ `effective_end_date`, การดักจับ Schema/ราคา/High-Low/Warmup Flag, การเขียน Quarantine CSV และ Audit JSONL |
 
 ### 5.3 โครงสร้างการจัดเก็บข้อมูลและผลลัพธ์ (Storage Layout)
 
 | โฟลเดอร์ / ไฟล์ปลายทาง | รูปแบบไฟล์ | คำอธิบาย |
 | :--- | :--- | :--- |
-| `data/raw/yfinance/run_id=<run_id>/` | `ticker=<T>/data.parquet`, `metadata.json` | ข้อมูลดิบจาก `yfinance` ก่อนแปลง พร้อมค่า `SHA-256` ห้ามเขียนทับซ้ำ |
-| `data/quarantine/run_id=<run_id>/` | `records.json`, `anomaly_review.json`, `summary.json` | แยกเก็บรายการที่ตก Validation (Hard Errors) และรายการที่ติดธงความผันผวนเกิน $\pm 20\%$ |
+| `data/raw/<source_batch_id>/` | `raw_prices.csv`, `manifest.json` | ข้อมูลดิบรวมทุก Ticker พร้อม Manifest และค่าแฮช `SHA-256` ตาม Data Contract ข้อ 3 |
+| `logs/quarantine.csv` | `CSV` (Append-only) | ไฟล์บันทึกข้อมูล/เหตุการณ์ที่ไม่ผ่าน Hard Validation พร้อม `run_id`, `source_batch_id`, `reason` |
+| `logs/ingestion_runs.jsonl` | `JSONL` (Append-only) | บันทึกประวัติและสถิติจำนวนแถวของการรันทุกรอบ 1 Run ต่อ 1 บรรทัด JSON Object |
 | `data/validated/run_id=<run_id>/` | `ticker=<T>/data.parquet` | ข้อมูลรายสินทรัพย์ที่ผ่านการตรวจสอบในรอบรันนั้นและได้รับอนุญาตให้เผยแพร่ (`PUBLISHED`) |
-| `data/curated/market_prices_daily.parquet` | `Parquet` (ตารางหลัก) | ตารางราคาตลาดมาตรฐานที่ผ่านการ Upsert สะสมพร้อมส่งต่อให้ Feature, Correlation และ Target Pipeline |
-| `data/audit/<run_id>/` และ `data/audit/run_id=<run_id>/` | `run_metadata.json`, `publish_report.json`, `run_report.json`, `run_report.md` | ข้อมูล Metadata ของรอบรัน รายงานสรุปผลการรัน สถิติจำนวนแถว และสถานะความพร้อมของพอร์ต (`portfolio_ready`) |
-| `data/audit/scheduler/` | `<YYYY-MM-DD>.json` | บันทึกประวัติการตรวจสอบเวลาเปิด-ปิดตลาดและผลการสั่งรันรายวันของ `scheduler.py` |
+| `data/curated/market_prices_daily.parquet` | `Parquet` (ตารางหลัก) | ตารางราคาตลาดมาตรฐาน 12 คอลัมน์ที่ผ่านการ Upsert สะสมพร้อมส่งต่อให้ Feature และ Target Pipeline |
+| `data/audit/<run_id>/` และ `data/audit/run_id=<run_id>/` | `run_metadata.json`, `publish_report.json`, `run_report.json`, `run_report.md` | รายงานสรุปผลการรันและสถิติจำนวนแถวประจำรอบ |
+| `data/audit/scheduler/` | `<YYYY-MM-DD>.json` | บันทึกประวัติการตรวจสอบเวลาเปิด-ปิดตลาดของ `scheduler.py` |
 
 ### 5.4 สถานะการรันและรหัสคืนค่า (Overall Status & Exit Codes)
 
 ใน `run.py` ระบบจะสรุปสถานะรวมและคืนค่า Exit Code เพื่อให้ระบบตั้งเวลาหรือ CI/CD ตรวจสอบได้ทันที:
 - **`SUCCESS` (Exit Code `0`)**: สินทรัพย์ทั้ง 3 ตัว (`SPY`, `IEF`, `GLD`) ผ่านการตรวจสอบและถูกอัปเดตลงตารางหลักครบถ้วน (`portfolio_ready = True`)
-- **`PARTIAL` (Exit Code `2`)**: มีสินทรัพย์บางตัวผ่านและถูกอัปเดตลงตารางหลัก แต่มีบางตัวถูกบล็อกเข้า Quarantine (`portfolio_ready = False`)
+- **`PARTIAL_SUCCESS` (Exit Code `2`)**: มีสินทรัพย์บางตัวผ่านและถูกอัปเดตลงตารางหลัก แต่มีบางตัวถูกบล็อกเข้า Quarantine (`portfolio_ready = False`)
 - **`FAILED` (Exit Code `1`)**: สินทรัพย์ทั้งหมดไม่ผ่านการตรวจสอบ หรือเกิดข้อผิดพลาดระดับระบบ/การตั้งค่า (`portfolio_ready = False`)
 
 ### 5.5 คำสั่งสำหรับใช้งานและทดสอบ (CLI Usage)

@@ -18,9 +18,19 @@ htmlcov/
 .tox/
 .nox/
 
-# Logs
+# Logs & Audit evidence
 logs/*
 !logs/.gitkeep
+!logs/quarantine.csv
+!logs/ingestion_runs.jsonl
+
+# Data generated at runtime (keep folder structure via .gitkeep)
+data/*
+!data/**/.gitkeep
+
+# Temporary & atomic write swap files
+*.tmp
+*.tmp.parquet
 
 # Local Environment Variables & Secrets
 .env

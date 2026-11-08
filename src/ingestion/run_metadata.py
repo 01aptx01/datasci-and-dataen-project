@@ -77,6 +77,10 @@ def start_run(
         },
         "config_start_date": ingestion_window["config_start_date"],
         "config_end_date": ingestion_window["config_end_date"],
+        "effective_end_date": (
+            ingestion_window.get("effective_end_date")
+            or ingestion_window["config_end_date"]
+        ),
         "actual_fetch_start_date": ingestion_window["actual_fetch_start_date"],
         "api_end_date": ingestion_window["api_end_date"],
         "auto_adjust": config["price"]["auto_adjust"],

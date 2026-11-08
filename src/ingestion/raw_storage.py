@@ -108,6 +108,10 @@ def save_raw_snapshot(
         "interval": config["source"]["interval"],
         "requested_start_date": ingestion_window["config_start_date"],
         "requested_end_date": ingestion_window["config_end_date"],
+        "effective_end_date": (
+            ingestion_window.get("effective_end_date")
+            or ingestion_window["config_end_date"]
+        ),
         "actual_fetch_start_date": ingestion_window["actual_fetch_start_date"],
         "api_end_date": ingestion_window["api_end_date"],
         "downloaded_at_utc": datetime.now(timezone.utc).isoformat(),

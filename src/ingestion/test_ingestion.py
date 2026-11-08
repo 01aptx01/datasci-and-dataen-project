@@ -70,6 +70,39 @@ def test_calendar_rejects_start_after_end(config):
         build_ingestion_window(config)
 
 
+def test_calendar_caps_future_end_date_to_effective_end_date(config):
+    config["date_range"]["end_date"] = "2035-01-01"
+    window = build_ingestion_window(config)
+
+    assert window["effective_end_date"] < "2035-01-01"
+    assert window["expected_trading_days"][-1] == window["effective_end_date"]
+    assert window["api_end_date"] > window["effective_end_date"]
+
+
+def test_transform_filters_dates_after_effective_end(config, run_metadata):
+    raw = pd.DataFrame(
+        {
+            "Close": [100.0, 102.0, 105.0],
+            "High": [101.0, 103.0, 106.0],
+            "Low": [99.0, 101.0, 104.0],
+        },
+        index=pd.to_datetime(["2021-09-27", "2021-09-28", "2021-09-30"]),
+    )
+    window = {
+        "config_start_date": "2021-09-27",
+        "config_end_date": "2021-09-30",
+        "effective_end_date": "2021-09-28",
+    }
+
+    result = transform_ticker(
+        "SPY", raw, config, run_metadata, window
+    )
+
+    # 2021-09-30 should be filtered out
+    assert len(result) == 2
+    assert str(result.loc[1, "date"]) == "2021-09-28"
+
+
 def test_fetch_success(monkeypatch, config):
     raw = pd.DataFrame(
         {

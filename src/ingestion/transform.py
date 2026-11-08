@@ -74,6 +74,15 @@ def transform_ticker(
     result["ticker"] = ticker
     result = result.sort_values(["ticker", "date"]).reset_index(drop=True)
 
+    # คัดกรองวันที่ได้รับไม่เกิน effective_end_date ตาม Contract ข้อ 2.1
+    effective_end_str = (
+        ingestion_window.get("effective_end_date")
+        or ingestion_window.get("config_end_date")
+    )
+    if effective_end_str:
+        effective_end = pd.Timestamp(effective_end_str).date()
+        result = result[result["date"] <= effective_end].reset_index(drop=True)
+
     # คำนวณ return แยก ticker; แถวแรกจึงไม่มีราคาก่อนหน้าและเป็น null
     previous_price = result.groupby("ticker")["adjusted_close"].shift(1)
     result["simple_return"] = result["adjusted_close"].div(previous_price) - 1
