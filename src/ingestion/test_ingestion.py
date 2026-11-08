@@ -5,6 +5,7 @@ from src.ingestion.calendar import build_ingestion_window
 from src.ingestion.fetch import fetch_ticker
 from src.ingestion.transform import transform_ticker
 from src.ingestion.validate import validate_all
+from src.ingestion.quarantine import handle_quarantine_and_publish
 
 
 @pytest.fixture
@@ -305,3 +306,45 @@ def test_validation_detects_invalid_warmup_flag(config):
     spy = report["ticker_results"]["SPY"]
     assert spy["status"] == "FAILED"
     assert "INVALID_WARMUP_FLAG" in spy["error_codes"]
+
+
+def test_quarantine_appends_to_csv(tmp_path):
+    data = pd.DataFrame({
+        "date": pd.to_datetime(["2021-09-27"]).date,
+        "ticker": ["SPY"],
+        "adjusted_close": [-10.0],
+        "high": [100.0],
+        "low": [90.0],
+        "simple_return": [None],
+        "log_return": [None],
+        "is_anomaly_flagged": [False],
+        "is_warmup_buffer": [False],
+    })
+
+    validation_report = validate_all(
+        data=data,
+        expected_trading_days=["2021-09-27"],
+        tickers=["SPY"],
+    )
+
+    csv_file = tmp_path / "quarantine.csv"
+    handle_quarantine_and_publish(
+        data=data,
+        validation_report=validation_report,
+        tickers=["SPY"],
+        run_id="run_test_quarantine",
+        source_batch_id="yf_test_batch",
+        quarantine_root=str(tmp_path / "quarantine"),
+        publish_root=str(tmp_path / "publish"),
+        quarantine_csv_path=str(csv_file),
+    )
+
+    assert csv_file.is_file()
+    df_quarantine = pd.read_csv(csv_file)
+    assert len(df_quarantine) >= 1
+    assert "run_id" in df_quarantine.columns
+    assert "source_batch_id" in df_quarantine.columns
+    assert "reason" in df_quarantine.columns
+    assert "detected_at_utc" in df_quarantine.columns
+    assert df_quarantine.iloc[0]["reason"] == "NON_POSITIVE_PRICE"
+    assert df_quarantine.iloc[0]["source_batch_id"] == "yf_test_batch"

@@ -1,3 +1,5 @@
+import csv
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any
@@ -5,13 +7,54 @@ from typing import Any
 import pandas as pd
 
 
+QUARANTINE_COLUMNS = [
+    "run_id",
+    "source_batch_id",
+    "date",
+    "ticker",
+    "raw_value",
+    "reason",
+    "detected_at_utc",
+]
+
+
+def append_to_quarantine_csv(
+    records: list[dict[str, Any]],
+    csv_path: str | Path = "logs/quarantine.csv",
+) -> None:
+    """บันทึกรายการที่ตก validation ลง logs/quarantine.csv แบบ append-only ตาม Data Contract"""
+    if not records:
+        return
+
+    path = Path(csv_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_exists = path.is_file() and path.stat().st_size > 0
+
+    with path.open("a", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=QUARANTINE_COLUMNS)
+        if not file_exists:
+            writer.writeheader()
+        for record in records:
+            row = {
+                col: (
+                    record.get(col)
+                    if record.get(col) is not None
+                    else ""
+                )
+                for col in QUARANTINE_COLUMNS
+            }
+            writer.writerow(row)
+
+
 def handle_quarantine_and_publish(
     data: pd.DataFrame,
     validation_report: dict[str, Any],
     tickers: list[str],
     run_id: str,
+    source_batch_id: str | None = None,
     quarantine_root: str = "data/quarantine",
     publish_root: str = "data/validated",
+    quarantine_csv_path: str = "logs/quarantine.csv",
 ) -> dict[str, Any]:
     run_quarantine_dir = Path(quarantine_root) / f"run_id={run_id}"
     run_publish_dir = Path(publish_root) / f"run_id={run_id}"
@@ -27,6 +70,7 @@ def handle_quarantine_and_publish(
     quarantine_records = []
     anomaly_records = []
     summary = {}
+    detected_at_utc = datetime.now(timezone.utc).isoformat()
 
     for ticker in tickers:
         result = ticker_results.get(ticker, {})
@@ -37,8 +81,16 @@ def handle_quarantine_and_publish(
         for item in result.get("quarantine", []):
             quarantine_records.append({
                 "run_id": run_id,
+                "source_batch_id": source_batch_id or "",
                 "ticker": ticker,
-                **item,
+                "date": item.get("date", ""),
+                "raw_value": (
+                    item.get("raw_value")
+                    if item.get("raw_value") is not None
+                    else ""
+                ),
+                "reason": item.get("reason", ""),
+                "detected_at_utc": detected_at_utc,
             })
 
         for item in result.get("warnings", []):
@@ -79,6 +131,9 @@ def handle_quarantine_and_publish(
             "blocked_reasons": errors if blocked else [],
         }
 
+    # บันทึกลง canonical logs/quarantine.csv แบบ append-only
+    append_to_quarantine_csv(quarantine_records, quarantine_csv_path)
+
     # แยก hard-error quarantine ออกจาก anomaly review queue
     (run_quarantine_dir / "records.json").write_text(
         json.dumps(quarantine_records, indent=2, ensure_ascii=False, default=str),
@@ -96,10 +151,13 @@ def handle_quarantine_and_publish(
 
     output = {
         "run_id": run_id,
+        "source_batch_id": source_batch_id,
         "ticker_summary": summary,
         "portfolio_ready": portfolio_ready,
         "portfolio_status": "READY" if portfolio_ready else "BLOCKED",
         "quarantine_path": str(run_quarantine_dir),
+        "quarantine_csv": str(quarantine_csv_path),
+        "quarantined_records_count": len(quarantine_records),
         "publish_path": str(run_publish_dir),
     }
 

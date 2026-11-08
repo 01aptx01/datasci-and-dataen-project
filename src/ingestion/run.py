@@ -72,6 +72,7 @@ def run_pipeline(config_path: str) -> int:
             validation_report=validation_report,
             tickers=config["source"]["tickers"],
             run_id=metadata["run_id"],
+            source_batch_id=metadata.get("source_batch_id"),
         )
 
         # Session 10: upsert เฉพาะ ticker ที่ผ่าน
