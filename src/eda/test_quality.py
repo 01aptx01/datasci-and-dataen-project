@@ -1,0 +1,162 @@
+"""ทดสอบตัวตรวจ EDA ด้วยข้อมูลจำลอง โดยไม่แตะข้อมูลตลาดจริงของโปรเจกต์"""
+
+import numpy as np
+import pandas as pd
+import pandas_market_calendars as mcal
+import pytest
+
+from src.eda.quality import add_historical_rv, inspect_historical_rv, inspect_market_prices
+
+
+@pytest.fixture
+def sample():
+    """สร้างข้อมูล 3 สินทรัพย์ โดยให้ 61 วันแรกเป็นช่วง warm-up"""
+    days = mcal.get_calendar("XNYS").schedule("2024-01-02", "2024-06-01").index[:90]
+    config = {
+        "source": {"tickers": ["SPY", "IEF", "GLD"]},
+        "date_range": {"start_date": days[61].strftime("%Y-%m-%d")},
+        "validation": {"simple_return_anomaly_threshold": 0.20},
+    }
+    frames = []
+    for index, ticker in enumerate(config["source"]["tickers"]):
+        prices = (100 + index * 40) * np.exp(np.cumsum(np.sin(np.arange(len(days))) * 0.01 + 0.001))
+        simple = np.r_[np.nan, prices[1:] / prices[:-1] - 1]
+        logs = np.r_[np.nan, np.log(prices[1:] / prices[:-1])]
+        frames.append(pd.DataFrame({
+            "date": days, "ticker": ticker, "adjusted_close": prices,
+            "high": prices + 1, "low": prices - 1,
+            "simple_return": simple, "log_return": logs,
+            "is_warmup_buffer": np.arange(len(days)) < 61,
+            "is_anomaly_flagged": False, "run_id": "run_test",
+            "source_batch_id": "batch_test", "ingested_at_utc": pd.Timestamp("2024-06-02", tz="UTC"),
+        }))
+    return pd.concat(frames, ignore_index=True), config, days
+
+
+def report(data, config, days):
+    return inspect_market_prices(data, config, days)[1]
+
+
+def test_valid_data_passes_without_mutating_input(sample):
+    data, config, days = sample
+    original = data.copy(deep=True)
+    sorted_data, checks = inspect_market_prices(data.sample(frac=1, random_state=4), config, days)
+    assert checks.status.eq("PASS").all()
+    pd.testing.assert_frame_equal(data, original)
+    assert inspect_historical_rv(add_historical_rv(sorted_data)).status.eq("PASS").all()
+
+
+@pytest.mark.parametrize("missing", ["first", "last", "middle", "ticker"])
+def test_detects_missing_boundaries_internal_days_and_entire_ticker(sample, missing):
+    data, config, days = sample
+    if missing == "ticker":
+        broken = data.loc[data.ticker.ne("IEF")]
+    else:
+        day = days[{"first": 0, "last": -1, "middle": 70}[missing]]
+        broken = data.loc[data.date.ne(day)]
+    checks = report(broken, config, days)
+    failures = checks.loc[checks.check.eq("missing_trading_sessions") & checks.status.eq("FAIL")]
+    assert len(failures) == (1 if missing == "ticker" else 3)
+    assert failures.issues.eq(len(days) if missing == "ticker" else 1).all()
+
+
+@pytest.mark.parametrize("kind,check", [
+    ("duplicate", "duplicate_primary_key"),
+    ("weekend", "unexpected_sessions"),
+    ("zero", "positive_finite:adjusted_close"),
+    ("infinite", "positive_finite:high"),
+    ("outside_range", "high_low_consistency"),
+    ("warmup", "warmup_flag_matches_config"),
+    ("flag", "anomaly_flag_matches_threshold"),
+    ("null_return", "log_return:validity"),
+    ("wrong_return", "simple_return:formula"),
+    ("first_return", "log_return:validity"),
+    ("numeric_dtype", "numeric_dtypes"),
+    ("flag_dtype", "boolean_dtypes"),
+    ("bad_date", "valid_session_date"),
+])
+def test_detects_corruption(sample, kind, check):
+    data, config, days = sample
+    broken = data.copy(deep=True)
+    if kind == "duplicate":
+        broken = pd.concat([broken, broken.iloc[[2]]], ignore_index=True)
+    elif kind == "weekend":
+        broken.loc[2, "date"] = pd.Timestamp("2024-01-06")
+    elif kind == "zero":
+        broken.loc[2, "adjusted_close"] = 0
+    elif kind == "infinite":
+        broken.loc[2, "high"] = np.inf
+    elif kind == "outside_range":
+        broken.loc[2, "adjusted_close"] = broken.loc[2, "high"] + 2
+    elif kind == "warmup":
+        broken.loc[2, "is_warmup_buffer"] = False
+    elif kind == "flag":
+        broken.loc[2, "is_anomaly_flagged"] = True
+    elif kind == "null_return":
+        broken.loc[2, "log_return"] = np.nan
+    elif kind == "wrong_return":
+        broken.loc[2, "simple_return"] += 0.01
+    elif kind == "first_return":
+        broken.loc[0, "log_return"] = 0
+    elif kind == "numeric_dtype":
+        broken["adjusted_close"] = broken.adjusted_close.astype(str)
+    elif kind == "flag_dtype":
+        broken["is_warmup_buffer"] = broken.is_warmup_buffer.astype(int)
+    elif kind == "bad_date":
+        broken.loc[2, "date"] = pd.NaT
+    checks = report(broken, config, days)
+    assert checks.loc[checks.check.eq(check), "status"].eq("FAIL").any()
+
+
+def test_missing_column_has_clear_error(sample):
+    data, config, days = sample
+    with pytest.raises(ValueError, match="Missing required columns.*log_return"):
+        report(data.drop(columns="log_return"), config, days)
+
+
+def test_real_extreme_return_is_a_warning_not_a_failure(sample):
+    data, config, days = sample
+    data.loc[2, "adjusted_close"] *= 1.5
+    data["high"] = data.adjusted_close + 1
+    data["low"] = data.adjusted_close - 1
+    previous = data.groupby("ticker").adjusted_close.shift()
+    data["simple_return"] = data.adjusted_close / previous - 1
+    data["log_return"] = np.log(data.adjusted_close / previous)
+    data["is_anomaly_flagged"] = data.simple_return.abs().gt(0.20)
+    assert data.is_anomaly_flagged.any()
+    assert report(data, config, days).status.eq("PASS").all()
+
+
+def test_rv_reference_detects_std_formula_and_missing_analysis_value(sample):
+    data, _, _ = sample
+    data = add_historical_rv(data)
+    data["rv_20d"] = data.groupby("ticker").log_return.transform(
+        lambda values: values.rolling(20).std() * np.sqrt(252)
+    )
+    data.loc[data.index[-1], "rv_60d"] = np.nan
+    checks = inspect_historical_rv(data)
+    assert checks.loc[checks.window.eq(20), "formula_mismatches"].gt(0).all()
+    assert checks.loc[checks.window.eq(60), "invalid_analysis_rows"].sum() == 1
+
+
+def test_rv_uses_only_past_values_and_stays_within_ticker(sample):
+    data, _, days = sample
+    original = add_historical_rv(data)
+    data.loc[data.ticker.eq("IEF") & data.date.ge(days[75]), "log_return"] = 10
+    changed = add_historical_rv(data)
+    unaffected = changed.ticker.ne("IEF") | changed.date.lt(days[75])
+    pd.testing.assert_frame_equal(
+        original.loc[unaffected, ["rv_5d", "rv_20d", "rv_60d"]],
+        changed.loc[unaffected, ["rv_5d", "rv_20d", "rv_60d"]],
+    )
+
+
+def test_insufficient_warmup_is_not_filled_with_zero(sample):
+    data, _, days = sample
+    short = data.loc[data.date.ge(days[50])].copy()
+    # จำลองแถวแรกของข้อมูลช่วงสั้น ซึ่งไม่มีราคาก่อนหน้าให้คำนวณ return
+    short.loc[short.groupby("ticker").head(1).index, "log_return"] = np.nan
+    calculated = add_historical_rv(short)
+    checks = inspect_historical_rv(calculated)
+    assert checks.loc[checks.window.eq(60), "invalid_analysis_rows"].gt(0).all()
+    assert calculated.rv_60d.isna().all()
