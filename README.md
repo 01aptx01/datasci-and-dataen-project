@@ -105,7 +105,9 @@ uv run --locked --no-dev --group eda jupyter lab
 ทั้งสองเล่มอ่าน curated Parquet เดิมและรันแยก kernel กันได้ ไม่ต้องส่งตัวแปร
 ระหว่าง notebook และไม่แก้ราคาหรือเขียนทับ curated ใช้ config ให้ตรงกับช่วงข้อมูล
 และ warm-up ใน `config/ingestion.yaml` หากยังไม่มี Parquet ให้รัน ingestion ก่อน
-ข้อมูลถูกสร้างในเครื่องและไม่ได้รวมใน Git ส่วนการเทียบ raw ใน `00` ต้องมี snapshot
+ข้อมูลถูกสร้างในเครื่องและไม่ได้รวมใน Git Schema ปัจจุบันต้องมี `open` จาก `Open`
+ในโหมด `auto_adjust=True`; หาก Parquet เดิมไม่มีคอลัมน์นี้ ให้สร้างใหม่ผ่าน ingestion
+ก่อนเปิด notebook ห้ามใช้ราคาปิดแทนราคาเปิด ส่วนการเทียบ raw ใน `00` ต้องมี snapshot
 กับ manifest ของ batch ที่เกี่ยวข้อง แต่ไม่ต้องอ่าน audit report ของ pipeline
 
 เครื่องมือรัน notebook อัตโนมัติ (`nbclient`, `nbformat`) ประกาศไว้ในกลุ่ม `dev`

@@ -7,6 +7,7 @@ import pandas as pd
 REQUIRED_COLUMNS = {
     "date",
     "ticker",
+    "open",
     "adjusted_close",
     "high",
     "low",
@@ -66,9 +67,9 @@ def validate_ticker(
     if df["date"].isna().any():
         errors.append("INVALID_DATE")
 
-    # 1. Price Validity: adjusted_close, high, low เป็น Finite และ > 0
+    # 1. ราคาทั้ง OHLC ต้องเป็น finite และมากกว่า 0
     tol = 1e-4
-    for col in ["adjusted_close", "high", "low"]:
+    for col in ["open", "adjusted_close", "high", "low"]:
         price = pd.to_numeric(df[col], errors="coerce")
         valid = price.notna() & np.isfinite(price) & (price > 0)
         if not valid.all():
@@ -81,7 +82,8 @@ def validate_ticker(
                     "raw_value": f"{col}={df.at[index, col]}",
                 })
 
-    # 2. High/Low Consistency: low <= adjusted_close <= high และ low <= high
+    # 2. ราคาเปิดและปิดต้องอยู่ระหว่าง low กับ high บนฐานปรับราคาเดียวกัน
+    op = pd.to_numeric(df["open"], errors="coerce")
     ac = pd.to_numeric(df["adjusted_close"], errors="coerce")
     hi = pd.to_numeric(df["high"], errors="coerce")
     lo = pd.to_numeric(df["low"], errors="coerce")
@@ -89,6 +91,8 @@ def validate_ticker(
         (lo <= hi + tol)
         & (lo - tol <= ac)
         & (ac <= hi + tol)
+        & (lo - tol <= op)
+        & (op <= hi + tol)
     )
     if not valid_hl.all():
         errors.append("INVALID_HIGH_LOW")
@@ -97,7 +101,7 @@ def validate_ticker(
                 "ticker": ticker,
                 "date": str(df.at[index, "date"]),
                 "reason": "INVALID_HIGH_LOW",
-                "raw_value": f"low={lo.at[index]}, adjusted_close={ac.at[index]}, high={hi.at[index]}",
+                "raw_value": f"low={lo.at[index]}, open={op.at[index]}, adjusted_close={ac.at[index]}, high={hi.at[index]}",
             })
 
     # 3. Warm-up Flag: is_warmup_buffer == (date < config.start_date)

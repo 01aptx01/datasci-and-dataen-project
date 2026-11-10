@@ -8,7 +8,7 @@
 ## 0. เอกสารที่ต้องอ่านร่วมกัน
 
 - [README.md](./README.md) — ภาพรวมระบบและขอบเขตที่ตกลงกัน
-- [data_contract.md](./data_contract.md) — ที่มาและการตรวจสอบ `market_prices_daily` (12 คอลัมน์ รวม `high`, `low`, `is_warmup_buffer`)
+- [data_contract.md](./data_contract.md) — ที่มาและการตรวจสอบ `market_prices_daily` (13 คอลัมน์ รวม `open`, `high`, `low`, `is_warmup_buffer`)
 - [datadict.md](./datadict.md) — **แหล่งอ้างอิงกลาง** ของชื่อคอลัมน์, Data Type, Grain, Key, Unit และ Nullable
 - [target_contract.md](./target_contract.md) — Forward 5-day Realized Volatility และ Label Maturity
 - [prediction_contract.md](./prediction_contract.md) — การนำ Features ไปสร้าง/บันทึก Forecast และการประเมินเมื่อรู้ผลจริง
@@ -21,7 +21,7 @@
 |---|---|
 | **Input** | ตาราง `market_prices_daily` ที่ผ่าน Data Contract; ใช้ `date`, `ticker`, `adjusted_close`, `log_return`, `simple_return`, `is_warmup_buffer` และ Metadata ที่จำเป็น |
 | **Source of truth สำหรับ Returns** | ใช้ `adjusted_close` เป็นราคาต้นทาง; ตรวจสอบว่าค่า `log_return` ใน Price Table สอดคล้องกับสูตรก่อนนำไปคำนวณต่อ |
-| **`high` และ `low`** | รับไว้ใน `market_prices_daily` เพื่อการตรวจสอบคุณภาพราคา แต่ **ไม่ใช่ Core Features** ในสเปกนี้ และไม่เพิ่มลง Model Matrix อัตโนมัติ |
+| **`open`, `high` และ `low`** | รับไว้ใน `market_prices_daily` เพื่อเก็บข้อมูลราคาและตรวจสอบคุณภาพ แต่ **ไม่ใช่ Core Features** ในสเปกนี้ และไม่เพิ่มลง Model Matrix อัตโนมัติ |
 | **Output 1** | `asset_volatility_features`: **1 แถว / `(date, ticker)`** (18 คอลัมน์ตาม `datadict.md`) |
 | **Output 2** | `asset_rolling_correlations`: **1 แถว / `date`** (8 คอลัมน์ตาม `datadict.md`) |
 | **Assets** | `SPY`, `IEF`, `GLD` เท่านั้น |
@@ -103,7 +103,7 @@ r_{i,t}=\ln\left(\frac{P(i,t)}{P(i,t-1)}\right)$$
 - เรียงข้อมูลตาม `(ticker, date)` และคำนวณ `shift(k)`, Rolling Functions **ภายในแต่ละ `ticker` เท่านั้น**; Window สิ้นสุดที่ `t` (รวมวัน `t`) และมี `min_periods=n`
 - คำนวณเฉพาะจากราคาที่ผ่าน Validation; หากวันซื้อขายที่ควรมีขาดหาย ไม่เลื่อนหน้าต่างย้อนข้ามวันนั้นเงียบ ๆ เพื่อให้ได้จำนวนแถวครบ
 - ห้ามใช้ `shift(-k)`, Centered Rolling, `bfill` หรือฟังก์ชันใดที่นำค่าจากอนาคตเข้ามาสร้าง Features
-- ไม่ใช้ `high`/`low` เพื่อสร้าง Feature เพิ่มเองใน MVP; หากจะใช้ ต้องปรับ Contract, Dictionary และ Test ก่อน
+- ไม่ใช้ `open`/`high`/`low` เพื่อสร้าง Feature เพิ่มเองใน MVP; หากจะใช้ ต้องปรับ Contract, Dictionary และ Test ก่อน
 
 ---
 
@@ -213,7 +213,7 @@ r_{i,t}=\ln\left(\frac{P(i,t)}{P(i,t-1)}\right)$$
 
 ## 9. Acceptance Criteria — Feature Pipeline
 
-- [ ] รับข้อมูล `market_prices_daily` ตาม Data Contract รวม `high`, `low`, `is_warmup_buffer` ได้ แต่ไม่เพิ่ม `high/low` เป็น Core Features
+- [ ] รับข้อมูล `market_prices_daily` ตาม Data Contract รวม `open`, `high`, `low`, `is_warmup_buffer` ได้ แต่ไม่เพิ่ม `open/high/low` เป็น Core Features
 - [ ] สร้าง `asset_volatility_features` **18 คอลัมน์** และ `asset_rolling_correlations` **8 คอลัมน์** ตาม Dictionary โดยไม่เพิ่มตาราง
 - [ ] Core Features **8 ตัว** ถูกต้องตามสูตร/Lookback/หน่วย และแยกคำนวณ SPY, IEF, GLD
 - [ ] B1 ใช้ `rv_20d` โดยตรง; B2 ใช้ Core 8 ตัว; Experimental Features เป็นตัวเลือก

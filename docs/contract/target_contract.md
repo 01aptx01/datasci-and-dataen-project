@@ -9,7 +9,7 @@
 
 - [README.md](./README.md) — ภาพรวมระบบและ 5 ตารางหลัก
 - [data_contract.md](./data_contract.md) — Canonical Price (`adjusted_close`), Returns, วันซื้อขาย และ Data Quality
-- [datadict.md](./datadict.md) — **Single Source of Truth ของ Schema 12 คอลัมน์**, Type, Nullable และ Primary Key
+- [datadict.md](./datadict.md) — **Single Source of Truth ของ Schema**, Type, Nullable และ Primary Key
 - [feature_contract.md](./feature_contract.md) — Historical Features, Rolling Correlation และ Point-in-Time Rules
 - [prediction_contract.md](./prediction_contract.md) — การบันทึก/ใช้คำทำนายและผล Evaluation (จะต้องปรับ Final ให้ตรงกับ 5 ตาราง)
 
@@ -20,7 +20,7 @@
 | รายการ | ข้อตกลง |
 |---|---|
 | **Input** | `market_prices_daily` ซึ่งผ่าน Validation แล้ว; ใช้ `date`, `ticker`, `adjusted_close` / `log_return` และ Source Metadata |
-| **Canonical Price** | ใช้ `adjusted_close` ซึ่งมาจาก `yfinance` โหมด `auto_adjust=True` สำหรับคำนวณผลตอบแทน; `high` / `low` มีไว้ตรวจคุณภาพราคา **ไม่ใช้คำนวณ Target** |
+| **Canonical Price** | ใช้ `adjusted_close` ซึ่งมาจาก `yfinance` โหมด `auto_adjust=True` สำหรับคำนวณผลตอบแทน; `open` / `high` / `low` มีไว้เก็บข้อมูลราคาและตรวจคุณภาพ **ไม่ใช้คำนวณ Target** |
 | **Output** | `asset_volatility_labels` (**12 คอลัมน์** ตาม `datadict.md`) |
 | **Grain / Primary Key** | 1 แถวต่อ `(date, ticker)`; `date` คือวันทำนายอ้างอิง $t$ และ `ticker` เป็นหนึ่งใน `SPY`, `IEF`, `GLD` |
 | **Target** | `target_realized_vol_5d` = Annualized Realized Volatility ที่คำนวณจากผลตอบแทนจริง **5 วันซื้อขายถัดไป** ($t+1$ ถึง $t+5$) |

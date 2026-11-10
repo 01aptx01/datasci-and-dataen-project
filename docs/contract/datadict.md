@@ -41,13 +41,14 @@
 ตารางผลลัพธ์จากกระบวนการ Data Ingestion & Initial Transformation ตามที่กำหนดใน [data_contract.md](./data_contract.md)
 - **ระดับหน่วยข้อมูล (Grain)**: 1 แถว แทนข้อมูลราคาและผลตอบแทนของ 1 สินทรัพย์ (`ticker`) ณ 1 วันซื้อขาย (`date`)
 - **Primary Key**: `(date, ticker)`
-- **Mapping ราคา:** `adjusted_close`, `high` และ `low` มาจาก `Close`, `High`, `Low` ของ `yfinance` ในโหมด `auto_adjust=True` เดียวกัน; ผลตอบแทนและ Features/Targets หลักยังคำนวณจาก `adjusted_close` เท่านั้น
+- **Mapping ราคา:** `open`, `adjusted_close`, `high` และ `low` มาจาก `Open`, `Close`, `High`, `Low` ของ `yfinance` ในโหมด `auto_adjust=True` เดียวกัน; ผลตอบแทนและ Features/Targets หลักยังคำนวณจาก `adjusted_close` เท่านั้น
 - **สถานะ Warm-up:** `is_warmup_buffer` ของตารางนี้คำนวณจาก `date < config.start_date` และต้องสอดคล้องกับคอลัมน์ชื่อเดียวกันใน `asset_volatility_features`
 
 | Table | Column | Type | Unit / Format | Meaning & Example | Role | Nullable |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `market_prices_daily` | `date` | `DATE` | `YYYY-MM-DD` | วันเปิดทำการซื้อขายของตลาดหลักทรัพย์สหรัฐฯ (NYSE/NASDAQ) ณ วัน $t$ (เช่น `'2024-03-15'`) | Primary Key | No |
 | `market_prices_daily` | `ticker` | `VARCHAR(16)` | uppercase string | รหัสหลักทรัพย์ (`'SPY'`, `'IEF'`, `'GLD'`) | Primary Key | No |
+| `market_prices_daily` | `open` | `FLOAT` | USD | ราคาเปิดจาก `Open` ของ `yfinance` ในโหมด `auto_adjust=True` บนฐานปรับราคาเดียวกับ `adjusted_close`; ต้องเป็น Finite, มากกว่า 0 และ `low <= open <= high` (เผื่อ Floating-point tolerance) | Price / Quality Input | No |
 | `market_prices_daily` | `adjusted_close` | `FLOAT` | USD | ราคาปิดที่ปรับปรุง Corporate Actions (ปันผล, แตกพาร์) จากคอลัมน์ `Close` ของ `yfinance` เมื่อตั้ง `auto_adjust=True` (เช่น `510.25`) | Price Input | No |
 | `market_prices_daily` | `high` | `FLOAT` | USD | ราคาสูงสุดรายวันที่ได้จาก `High` ของ `yfinance` ในโหมด `auto_adjust=True` จึงอยู่บนฐานปรับราคาเดียวกับ `adjusted_close`; ต้อง `high >= adjusted_close` (เผื่อ Floating-point tolerance) | Price / Quality Input | No |
 | `market_prices_daily` | `low` | `FLOAT` | USD | ราคาต่ำสุดรายวันที่ได้จาก `Low` ของ `yfinance` ในโหมด `auto_adjust=True` จึงอยู่บนฐานปรับราคาเดียวกับ `adjusted_close`; ต้อง `low <= adjusted_close` (เผื่อ Floating-point tolerance) | Price / Quality Input | No |
@@ -230,7 +231,7 @@
 
 ## 8. หมายเหตุการปรับเอกสารตามลำดับงาน
 
-- `data_contract.md` **v1.0.1** สอดคล้องกับ `market_prices_daily` 12 คอลัมน์ รวม `high`, `low`, `is_warmup_buffer` แล้ว
+- `data_contract.md` สอดคล้องกับ `market_prices_daily` 13 คอลัมน์ รวม `open`, `high`, `low`, `is_warmup_buffer` แล้ว
 - `feature_contract.md` ยังต้องปรับคำว่า Baseline ให้แยก B1 (ใช้ `rv_20d` โดยตรง) กับ Online ML (ใช้ 8 Core Features) และชี้ Input Manifest เมื่อใช้หลาย Source Batches
 - `target_contract.md` ฉบับถัดไปต้องเปลี่ยน `label_as_of_utc` เป็น `record_created_at_utc` + `label_matured_at_utc` เพื่อให้ Pending Labels ใช้ได้จริง
 - `prediction_contract.md` ที่มีอยู่เป็น **Draft v0.1.0** และกล่าวถึง `prediction_evaluations` รวมถึง Revision/Publication System; เมื่อทำ Final ต้องปรับให้สอดคล้องกับ **ตาราง Predictions 1 ตาราง + `outputs/evaluation.csv`** และ **Prediction Schema แบบ MVP ใน Dictionary นี้**

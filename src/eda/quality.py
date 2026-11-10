@@ -5,7 +5,7 @@ import pandas as pd
 from pandas.api.types import is_bool_dtype, is_numeric_dtype
 
 
-PRICE_COLUMNS = ["adjusted_close", "high", "low"]
+PRICE_COLUMNS = ["open", "adjusted_close", "high", "low"]
 RETURN_COLUMNS = ["simple_return", "log_return"]
 FLAG_COLUMNS = ["is_anomaly_flagged", "is_warmup_buffer"]
 REQUIRED_COLUMNS = [
@@ -31,7 +31,7 @@ def inspect_market_prices(data, config, expected_trading_days):
     def record(check, ticker, count, examples=""):
         rows.append({
             "check": check, "ticker": ticker, "issues": int(count),
-            "status": "PASS" if count == 0 else "FAIL", "examples": examples,
+            "status": "PASS" if count == 0 else "FAIL", "examples": "—" if count == 0 else examples,
         })
 
     def check_rows(check, mask, ticker="ALL"):
@@ -73,6 +73,8 @@ def inspect_market_prices(data, config, expected_trading_days):
         df.low.le(df.high + tol)
         & df.adjusted_close.ge(df.low - tol)
         & df.adjusted_close.le(df.high + tol)
+        & df.open.ge(df.low - tol)
+        & df.open.le(df.high + tol)
     ))
     start = pd.Timestamp(config["date_range"]["start_date"])
     check_rows("warmup_flag_matches_config", df.is_warmup_buffer.ne(df.date.lt(start)))

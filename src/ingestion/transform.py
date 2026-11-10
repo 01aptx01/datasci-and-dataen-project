@@ -50,7 +50,7 @@ def transform_ticker(
             new_cols.append(matched if matched else str(col[-1]))
         data.columns = new_cols
 
-    for required in ["Close", "High", "Low"]:
+    for required in ["Open", "Close", "High", "Low"]:
         if required not in data.columns:
             raise ValueError(
                 f"TRANSFORM_ERROR: missing {required} column for {ticker}"
@@ -62,6 +62,7 @@ def transform_ticker(
     data["adjusted_close"] = pd.to_numeric(
         data["Close"], errors="coerce"
     )
+    data["open"] = pd.to_numeric(data["Open"], errors="coerce")
     data["high"] = pd.to_numeric(
         data["High"], errors="coerce"
     )
@@ -69,7 +70,7 @@ def transform_ticker(
         data["Low"], errors="coerce"
     )
 
-    result = data[["date", "adjusted_close", "high", "low"]].copy()
+    result = data[["date", "open", "adjusted_close", "high", "low"]].copy()
     result.index.name = None
     result["ticker"] = ticker
     result = result.sort_values(["ticker", "date"]).reset_index(drop=True)
@@ -122,6 +123,7 @@ def transform_ticker(
     columns = [
         "date",
         "ticker",
+        "open",
         "adjusted_close",
         "high",
         "low",
@@ -162,7 +164,7 @@ def transform_all(
     if not frames:
         return pd.DataFrame(
             columns=[
-                "date", "ticker", "adjusted_close", "high", "low",
+                "date", "ticker", "open", "adjusted_close", "high", "low",
                 "simple_return", "log_return", "is_anomaly_flagged",
                 "is_warmup_buffer", "run_id", "source_batch_id", "ingested_at_utc",
             ]

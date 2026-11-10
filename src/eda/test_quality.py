@@ -23,7 +23,7 @@ def sample():
         simple = np.r_[np.nan, prices[1:] / prices[:-1] - 1]
         logs = np.r_[np.nan, np.log(prices[1:] / prices[:-1])]
         frames.append(pd.DataFrame({
-            "date": days, "ticker": ticker, "adjusted_close": prices,
+            "date": days, "ticker": ticker, "open": prices - .2, "adjusted_close": prices,
             "high": prices + 1, "low": prices - 1,
             "simple_return": simple, "log_return": logs,
             "is_warmup_buffer": np.arange(len(days)) < 61,
@@ -114,9 +114,36 @@ def test_missing_column_has_clear_error(sample):
         report(data.drop(columns="log_return"), config, days)
 
 
+@pytest.mark.parametrize("opening,check", [
+    (0, "positive_finite:open"), (np.nan, "positive_finite:open"),
+    (np.inf, "positive_finite:open"), (1000, "high_low_consistency"),
+])
+def test_detects_invalid_open(sample, opening, check):
+    data, config, days = sample
+    data.loc[2, "open"] = opening
+    checks = report(data, config, days)
+    assert checks.loc[checks.check.eq(check), "status"].eq("FAIL").all()
+
+
+def test_open_required_and_examples_describe_only_problems(sample):
+    data, config, days = sample
+    with pytest.raises(ValueError, match="Missing required columns.*open"):
+        report(data.drop(columns="open"), config, days)
+    checks = report(data, config, days)
+    assert checks.examples.eq("—").all()
+    broken = data.loc[data.date.ne(days[70])]
+    checks = report(broken, config, days)
+    failures = checks.loc[checks.status.eq("FAIL")]
+    assert failures.issues.gt(0).all()
+    assert failures.examples.ne("—").all()
+    missing_days = failures.loc[failures.check.eq("missing_trading_sessions"), "examples"]
+    assert missing_days.str.contains(days[70].strftime("%Y-%m-%d"), regex=False).all()
+
+
 def test_real_extreme_return_is_a_warning_not_a_failure(sample):
     data, config, days = sample
     data.loc[2, "adjusted_close"] *= 1.5
+    data["open"] = data.adjusted_close - .2
     data["high"] = data.adjusted_close + 1
     data["low"] = data.adjusted_close - 1
     previous = data.groupby("ticker").adjusted_close.shift()

@@ -82,7 +82,7 @@ def test_calendar_caps_future_end_date_to_effective_end_date(config):
 def test_transform_filters_dates_after_effective_end(config, run_metadata):
     raw = pd.DataFrame(
         {
-            "Close": [100.0, 102.0, 105.0],
+            "Open": [100.0, 102.0, 105.0], "Close": [100.0, 102.0, 105.0],
             "High": [101.0, 103.0, 106.0],
             "Low": [99.0, 101.0, 104.0],
         },
@@ -106,7 +106,7 @@ def test_transform_filters_dates_after_effective_end(config, run_metadata):
 def test_fetch_success(monkeypatch, config):
     raw = pd.DataFrame(
         {
-            "Close": [100.0, 102.0],
+            "Open": [99.5, 101.5], "Close": [100.0, 102.0],
             "High": [101.0, 103.0],
             "Low": [99.0, 101.0],
         },
@@ -135,7 +135,7 @@ def test_fetch_retries_timeout(monkeypatch, config):
         if calls["count"] == 1:
             raise TimeoutError("temporary timeout")
         return pd.DataFrame(
-            {"Close": [100.0], "High": [101.0], "Low": [99.0]},
+            {"Open": [100.0], "Close": [100.0], "High": [101.0], "Low": [99.0]},
             index=pd.to_datetime(["2021-09-27"]),
         )
 
@@ -179,7 +179,7 @@ def test_fetch_fails_when_required_column_missing(monkeypatch, config):
 def test_transform_maps_prices_and_calculates_returns(config, run_metadata):
     raw = pd.DataFrame(
         {
-            "Close": [100.0, 102.0],
+            "Open": [99.5, 101.5], "Close": [100.0, 102.0],
             "High": [101.0, 103.0],
             "Low": [99.0, 101.0],
         },
@@ -191,6 +191,8 @@ def test_transform_maps_prices_and_calculates_returns(config, run_metadata):
         "SPY", raw, config, run_metadata, window
     )
 
+    assert result.loc[0, "open"] == 99.5
+    assert result.loc[1, "open"] == 101.5
     assert result.loc[0, "adjusted_close"] == 100.0
     assert result.loc[0, "high"] == 101.0
     assert result.loc[0, "low"] == 99.0
@@ -201,6 +203,7 @@ def test_transform_maps_prices_and_calculates_returns(config, run_metadata):
     expected_columns = [
         "date",
         "ticker",
+        "open",
         "adjusted_close",
         "high",
         "low",
@@ -215,11 +218,48 @@ def test_transform_maps_prices_and_calculates_returns(config, run_metadata):
     assert list(result.columns) == expected_columns
 
 
+def test_fetch_requires_open(monkeypatch, config):
+    raw = pd.DataFrame(
+        {"Close": [100.0], "High": [101.0], "Low": [99.0]},
+        index=pd.to_datetime(["2021-09-27"]),
+    )
+    monkeypatch.setattr("src.ingestion.fetch.yf.download", lambda **kwargs: raw)
+    result = fetch_ticker("SPY", config, {
+        "actual_fetch_start_date": "2021-09-27", "api_end_date": "2021-09-29",
+    })
+    assert result["failure_type"] == "SCHEMA_ERROR"
+    assert "Open" in result["errors"][-1]
+
+
+def test_transform_requires_open(config, run_metadata):
+    raw = pd.DataFrame(
+        {"Close": [100.0], "High": [101.0], "Low": [99.0]},
+        index=pd.to_datetime(["2021-09-27"]),
+    )
+    with pytest.raises(ValueError, match="missing Open"):
+        transform_ticker("SPY", raw, config, run_metadata, {"config_start_date": "2021-09-27"})
+
+
+@pytest.mark.parametrize("opening,code", [
+    (0, "NON_POSITIVE_PRICE"), (-1, "NON_POSITIVE_PRICE"),
+    (float('nan'), "NON_POSITIVE_PRICE"), (float('inf'), "NON_POSITIVE_PRICE"),
+    (98, "INVALID_HIGH_LOW"), (102, "INVALID_HIGH_LOW"),
+])
+def test_validation_rejects_invalid_open(config, run_metadata, opening, code):
+    raw = pd.DataFrame(
+        {"Open": [opening], "Close": [100.0], "High": [101.0], "Low": [99.0]},
+        index=pd.to_datetime(["2021-09-27"]),
+    )
+    data = transform_ticker("SPY", raw, config, run_metadata, {"config_start_date": "2021-09-27"})
+    result = validate_all(data=data, expected_trading_days=["2021-09-27"], tickers=["SPY"])
+    assert code in result["ticker_results"]["SPY"]["error_codes"]
+
+
 def test_validation_flags_anomaly_as_warning(config):
     data = pd.DataFrame({
         "date": pd.to_datetime(["2021-09-27", "2021-09-28"]).date,
         "ticker": ["SPY", "SPY"],
-        "adjusted_close": [100.0, 125.0],
+        "open": [100.0, 125.0], "adjusted_close": [100.0, 125.0],
         "high": [105.0, 126.0],
         "low": [99.0, 120.0],
         "simple_return": [None, 0.25],
@@ -246,7 +286,7 @@ def test_validation_detects_missing_day_and_duplicate(config):
             "2021-09-27", "2021-09-27",
         ]).date,
         "ticker": ["IEF", "IEF"],
-        "adjusted_close": [100.0, 101.0],
+        "open": [100.0, 101.0], "adjusted_close": [100.0, 101.0],
         "high": [102.0, 103.0],
         "low": [99.0, 100.0],
         "simple_return": [None, 0.01],
@@ -273,7 +313,7 @@ def test_validation_detects_invalid_high_low(config):
     data = pd.DataFrame({
         "date": pd.to_datetime(["2021-09-27"]).date,
         "ticker": ["SPY"],
-        "adjusted_close": [100.0],
+        "open": [100.0], "adjusted_close": [100.0],
         "high": [95.0],
         "low": [105.0],
         "simple_return": [None],
@@ -297,7 +337,7 @@ def test_validation_detects_non_positive_price(config):
     data = pd.DataFrame({
         "date": pd.to_datetime(["2021-09-27"]).date,
         "ticker": ["GLD"],
-        "adjusted_close": [-50.0],
+        "open": [-50.0], "adjusted_close": [-50.0],
         "high": [100.0],
         "low": [-60.0],
         "simple_return": [None],
@@ -321,7 +361,7 @@ def test_validation_detects_invalid_warmup_flag(config):
     data = pd.DataFrame({
         "date": pd.to_datetime(["2021-09-26", "2021-09-28"]).date,
         "ticker": ["SPY", "SPY"],
-        "adjusted_close": [100.0, 102.0],
+        "open": [100.0, 102.0], "adjusted_close": [100.0, 102.0],
         "high": [105.0, 106.0],
         "low": [98.0, 101.0],
         "simple_return": [None, 0.02],
@@ -347,7 +387,7 @@ def test_quarantine_appends_to_csv(tmp_path):
     data = pd.DataFrame({
         "date": pd.to_datetime(["2021-09-27"]).date,
         "ticker": ["SPY"],
-        "adjusted_close": [-10.0],
+        "open": [-10.0], "adjusted_close": [-10.0],
         "high": [100.0],
         "low": [90.0],
         "simple_return": [None],
@@ -469,7 +509,7 @@ def test_save_raw_snapshot_creates_csv_and_manifest(tmp_path, config):
         "SPY": {
             "status": "SUCCESS",
             "data": pd.DataFrame(
-                {"Close": [100.0], "High": [102.0], "Low": [98.0]},
+                {"Open": [100.0], "Close": [100.0], "High": [102.0], "Low": [98.0]},
                 index=pd.to_datetime(["2021-09-27"]),
             ),
         }
