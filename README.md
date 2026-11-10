@@ -95,10 +95,18 @@ uv run --locked --no-dev --group eda jupyter lab
 `.venv/Scripts/python.exe` บน Windows หรือ `.venv/bin/python` บน macOS/Linux
 ส่วน `requirements.txt` export รวมกลุ่ม EDA แล้วสำหรับผู้ใช้ pip
 
-Notebook `notebooks/01_eda_market_prices.ipynb` อ่านข้อมูล curated และตรวจวันซื้อขาย
-ตามช่วงวันที่กับ warm-up ใน `config/ingestion.yaml` จึงควรใช้ config ให้ตรงกับข้อมูล
-หากยังไม่มี Parquet ให้รัน ingestion ก่อน ข้อมูลถูกสร้างในเครื่องและไม่ได้รวมใน Git
-Notebook ไม่ต้องอ่าน audit metadata และไม่แก้ราคาหรือเขียนทับ curated
+อ่าน notebook ตามลำดับ:
+
+1. `notebooks/00_data_quality.ipynb` — ตรวจโครงสร้าง วันซื้อขาย ค่าว่าง ราคา
+   สูตร return/RV และเทียบวันสุดขั้วกับ raw snapshot
+2. `notebooks/01_eda_market_prices.ipynb` — วิเคราะห์การกระจาย RV20
+   ความผันผวนรายปี ความสัมพันธ์ sensitivity ของ distribution และ ACF แบบย่อ
+
+ทั้งสองเล่มอ่าน curated Parquet เดิมและรันแยก kernel กันได้ ไม่ต้องส่งตัวแปร
+ระหว่าง notebook และไม่แก้ราคาหรือเขียนทับ curated ใช้ config ให้ตรงกับช่วงข้อมูล
+และ warm-up ใน `config/ingestion.yaml` หากยังไม่มี Parquet ให้รัน ingestion ก่อน
+ข้อมูลถูกสร้างในเครื่องและไม่ได้รวมใน Git ส่วนการเทียบ raw ใน `00` ต้องมี snapshot
+กับ manifest ของ batch ที่เกี่ยวข้อง แต่ไม่ต้องอ่าน audit report ของ pipeline
 
 เครื่องมือรัน notebook อัตโนมัติ (`nbclient`, `nbformat`) ประกาศไว้ในกลุ่ม `dev`
 สำหรับงานพัฒนาและตรวจสอบ ติดตั้งพร้อม EDA ด้วย `uv sync --locked --group eda --group dev`
