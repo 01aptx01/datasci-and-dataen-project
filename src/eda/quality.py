@@ -255,3 +255,28 @@ def annual_correlations(analysis, tickers, pairs):
             row[f'{a}-{b}'] = complete[a].corr(complete[b]) if len(complete) >= 2 and complete[a].nunique() > 1 and complete[b].nunique() > 1 else np.nan
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def sample_acf(values, max_lag=20):
+    """คำนวณ ACF ด้วยค่าเฉลี่ยทั้งชุดและตัวหารเดียวทุก lag โดยไม่ปรับ n-k"""
+    x = np.asarray(values, dtype=float)
+    if x.ndim != 1 or not np.isfinite(x).all():
+        raise ValueError('ACF ต้องใช้ข้อมูลหนึ่งมิติที่เป็น finite ทั้งหมด')
+    if not isinstance(max_lag, (int, np.integer)) or max_lag < 0:
+        raise ValueError('max_lag ต้องเป็นจำนวนเต็มไม่ติดลบ')
+    result = np.full(max_lag + 1, np.nan)
+    if len(x) < 2:
+        return result
+    # ปรับสเกลก่อนคำนวณเพื่อรักษาความแม่นยำเมื่อข้อมูลมีขนาดเล็ก
+    scale = np.max(np.abs(x))
+    if scale == 0:
+        return result
+    scaled = x / scale
+    centered = scaled - scaled.mean()
+    denominator = np.dot(centered, centered)
+    if denominator == 0:
+        return result
+    result[0] = 1.0
+    for lag in range(1, min(max_lag, len(x) - 1) + 1):
+        result[lag] = np.dot(centered[lag:], centered[:-lag]) / denominator
+    return result

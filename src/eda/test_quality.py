@@ -239,3 +239,52 @@ def test_rv_remains_continuous_across_year():
     data = pd.DataFrame({'date':dates, 'ticker':['A']*3, 'log_return':[0.01,0.02,0.03]})
     result = add_historical_rv(data, windows=(2,))
     assert result.rv_2d.iloc[-1] == pytest.approx(np.sqrt(252*(.02**2+.03**2)/2))
+
+
+def test_sample_acf_known_values_and_no_input_mutation():
+    from src.eda.quality import sample_acf
+    values = np.array([1., 2., 3., 4.])
+    original = values.copy()
+    assert sample_acf(values, 3) == pytest.approx([1., .25, -.30, -.45])
+    np.testing.assert_array_equal(values, original)
+
+
+def test_sample_acf_constant_short_and_long_lags():
+    from src.eda.quality import sample_acf
+    assert np.isnan(sample_acf([3., 3., 3.], 4)).all()
+    assert np.isnan(sample_acf([], 4)).all()
+    assert np.isnan(sample_acf([2.], 4)).all()
+    result = sample_acf([1., 2.], 4)
+    assert result[0] == 1 and np.isnan(result[2:]).all()
+
+
+@pytest.mark.parametrize('invalid', [np.nan, np.inf, -np.inf])
+def test_sample_acf_rejects_nonfinite(invalid):
+    from src.eda.quality import sample_acf
+    with pytest.raises(ValueError, match='finite'):
+        sample_acf([1., invalid, 3.])
+
+
+def test_sample_acf_translation_scale_and_small_values():
+    from src.eda.quality import sample_acf
+    values = np.array([1., 2., 3., 4.])
+    expected = sample_acf(values, 3)
+    for transformed in (values + 35, values * -3, values * 1e-6, values * 1e-12):
+        np.testing.assert_allclose(sample_acf(transformed, 3), expected, atol=1e-12)
+
+
+def test_notebook_acf_preparation_sorts_and_separates_tickers():
+    import json
+    from pathlib import Path
+    from src.eda.quality import sample_acf
+    notebook = json.loads((Path(__file__).resolve().parents[2] / 'notebooks' / '01_eda_market_prices.ipynb').read_text(encoding='utf-8'))
+    source = next(''.join(c['source']) for c in notebook['cells'] if ''.join(c['source']).startswith('# เตรียม ACF'))
+    dates = pd.date_range('2024-01-02', periods=4)
+    frame = pd.concat([pd.DataFrame({'date':dates, 'ticker':t, 'log_return':v}) for t,v in [('SPY',[1.,2.,3.,4.]), ('IEF',[4.,1.,2.,3.]), ('GLD',[1.,4.,2.,3.])]]).sample(frac=1, random_state=1)
+    ns = {'pd':pd, 'np':np, 'analysis':frame, 'expected_sessions':dates, 'start_date':dates[0], 'end_date':dates[-1], 'config':{'source':{'tickers':['SPY','IEF','GLD']}}}
+    exec(compile(source, '<notebook ACF>', 'exec'), ns)
+    np.testing.assert_allclose(ns['acf_values'][('SPY','Return')][:4], sample_acf([1.,2.,3.,4.], 3))
+    np.testing.assert_allclose(ns['acf_values'][('IEF','Return')][:4], sample_acf([4.,1.,2.,3.], 3))
+    ns['analysis'] = frame.drop(frame.index[0])
+    with pytest.raises(ValueError, match='วันซื้อขาย'):
+        exec(compile(source, '<notebook ACF>', 'exec'), ns)
