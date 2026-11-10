@@ -160,3 +160,53 @@ def test_insufficient_warmup_is_not_filled_with_zero(sample):
     checks = inspect_historical_rv(calculated)
     assert checks.loc[checks.window.eq(60), "invalid_analysis_rows"].gt(0).all()
     assert calculated.rv_60d.isna().all()
+
+@pytest.mark.parametrize("price", [0.0, -1.0, np.nan, np.inf, -np.inf])
+@pytest.mark.parametrize("position", [0, 1])
+def test_raw_return_rejects_invalid_prices(price, position):
+    from src.eda.quality import raw_price_returns
+    prices = [100.0, 105.0]
+    prices[position] = price
+    assert raw_price_returns(*prices) is None
+
+
+def test_raw_return_computes_simple_and_log():
+    from src.eda.quality import raw_price_returns
+    assert raw_price_returns(100.0, 105.0) == pytest.approx((0.05, np.log(1.05)))
+
+
+def test_sensitivity_uses_union_and_preserves_input():
+    from src.eda.quality import distribution_sensitivity, correlation_sensitivity
+    dates = pd.date_range('2024-01-01', periods=6)
+    data = pd.concat([pd.DataFrame({'date': dates, 'ticker': t, 'log_return': v}) for t, v in [
+        ('A', [1, 2, 3, 4, 5, 6]), ('B', [2, 4, 1, 5, 3, 6])]], ignore_index=True)
+    events = pd.DataFrame({'ticker': ['A', 'A', 'B', 'B'], 'date': [dates[0], dates[1], dates[0], dates[2]], 'rank': [1, 2, 1, 2]})
+    original = data.copy(deep=True)
+    dist = distribution_sensitivity(data, events)
+    assert dist.loc[(dist.ticker == 'A') & (dist.case == 'top-5'), 'n'].iloc[0] == 4
+    corr = correlation_sensitivity(data, events, [('A', 'B')]).set_index('case')
+    assert corr.loc['top-1', 'excluded'] == 1
+    assert corr.loc['top-5', 'excluded'] == 3
+    assert corr.loc['top-5', 'correlation'] == pytest.approx(data.pivot(index='date', columns='ticker', values='log_return').iloc[3:].corr().loc['A','B'])
+    pd.testing.assert_frame_equal(data, original)
+
+
+def test_correlation_unavailable_for_constant_or_insufficient_data():
+    from src.eda.quality import correlation_sensitivity
+    data = pd.DataFrame({'date': [1, 2, 1, 2], 'ticker': ['A','A','B','B'], 'log_return': [1.,1.,2.,3.]})
+    events = pd.DataFrame({'date': [1,2], 'ticker': ['A','B'], 'rank': [1,1]})
+    assert correlation_sensitivity(data, events, [('A','B')]).correlation.isna().all()
+
+
+def test_peak_rv_window_contribution_and_zero():
+    from src.eda.quality import peak_rv_contributions
+    data = pd.DataFrame({'date': pd.date_range('2024-01-01', periods=4), 'ticker': ['A']*4,
+        'log_return': [0.,1.,2.,0.], 'simple_return': [0.,1.,2.,0.],
+        'is_warmup_buffer': [True,True,False,False], 'rv_2d': [np.nan,1.,3.,2.]})
+    events = pd.DataFrame({'ticker':['A'], 'date':[data.date.iloc[2]], 'rank':[1]})
+    result = peak_rv_contributions(data, events, (2,)).iloc[0]
+    assert result['count'] == 2 and result['start'] == data.date.iloc[1]
+    assert result['sum_r2'] == 5 and result['largest_share_pct'] == 80 and result['top5_share_pct'] == 80
+    data['log_return'] = 0.; data['rv_2d'] = [np.nan,0.,0.,0.]
+    result = peak_rv_contributions(data, events, (2,)).iloc[0]
+    assert result['end'] == data.date.iloc[2] and np.isnan(result['largest_share_pct'])
