@@ -210,3 +210,32 @@ def test_peak_rv_window_contribution_and_zero():
     data['log_return'] = 0.; data['rv_2d'] = [np.nan,0.,0.,0.]
     result = peak_rv_contributions(data, events, (2,)).iloc[0]
     assert result['end'] == data.date.iloc[2] and np.isnan(result['largest_share_pct'])
+
+
+def test_annual_coverage_distinguishes_partial_from_missing():
+    from src.eda.quality import annual_coverage
+    dates = pd.to_datetime(['2023-12-28','2023-12-29','2024-01-02','2024-01-03','2024-01-04'])
+    data = pd.DataFrame({'date': dates[[1,2,4]], 'ticker': ['A']*3})
+    original = data.copy(deep=True)
+    result = annual_coverage(data, dates, dates[1], dates[-1], ['A']).set_index('year')
+    assert result.loc[2023, 'partial'] and result.loc[2023, 'missing_days'] == 0
+    assert not result.loc[2024, 'partial'] and result.loc[2024, 'missing_days'] == 1
+    pd.testing.assert_frame_equal(data, original)
+
+
+def test_annual_correlation_uses_common_dates_and_handles_constants():
+    from src.eda.quality import annual_correlations
+    dates = pd.date_range('2024-01-01', periods=4)
+    data = pd.concat([pd.DataFrame({'date': dates, 'ticker': t, 'log_return': v}) for t,v in [
+        ('A',[1.,2.,3.,4.]), ('B',[1.,4.,2.,3.]), ('C',[1.,np.nan,1.,1.])]])
+    result = annual_correlations(data, ['A','B','C'], [('A','B'),('A','C')]).iloc[0]
+    assert result.common_days == 3
+    assert result['A-B'] == pytest.approx(np.corrcoef([1,3,4], [1,2,3])[0,1])
+    assert np.isnan(result['A-C'])
+
+
+def test_rv_remains_continuous_across_year():
+    dates = pd.to_datetime(['2023-12-28','2023-12-29','2024-01-02'])
+    data = pd.DataFrame({'date':dates, 'ticker':['A']*3, 'log_return':[0.01,0.02,0.03]})
+    result = add_historical_rv(data, windows=(2,))
+    assert result.rv_2d.iloc[-1] == pytest.approx(np.sqrt(252*(.02**2+.03**2)/2))

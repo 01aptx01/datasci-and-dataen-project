@@ -226,3 +226,32 @@ def correlation_sensitivity(analysis, events, pairs):
                 base = corr
             rows.append(dict(pair=f'{a}-{b}', case=f'top-{k}', n=len(remaining), excluded=len(actual), correlation=corr, delta=corr-base))
     return pd.DataFrame(rows)
+
+
+def annual_coverage(analysis, market_sessions, start, end, tickers):
+    """แยกปีไม่เต็มตามขอบเขตจากวันซื้อขายที่ขาดจริง"""
+    start, end = pd.Timestamp(start), pd.Timestamp(end)
+    sessions = pd.DatetimeIndex(pd.to_datetime(market_sessions)).tz_localize(None).normalize()
+    rows = []
+    for year in range(start.year, end.year + 1):
+        full = sessions[sessions.year == year]
+        expected = full[(full >= start) & (full <= end)]
+        partial = len(expected) != len(full)
+        for ticker in tickers:
+            observed = pd.DatetimeIndex(analysis.loc[(analysis.ticker == ticker) & (analysis.date.dt.year == year), 'date'])
+            rows.append(dict(year=year, ticker=ticker, days=len(observed), first=observed.min(), last=observed.max(),
+                             expected_days=len(expected), missing_days=len(expected.difference(observed)), partial=partial))
+    return pd.DataFrame(rows)
+
+
+def annual_correlations(analysis, tickers, pairs):
+    """คำนวณ Pearson จากวันร่วมที่ครบทุกสินทรัพย์ภายในแต่ละปี"""
+    wide = analysis.pivot(index='date', columns='ticker', values='log_return').reindex(columns=tickers).sort_index()
+    rows = []
+    for year, group in wide.groupby(wide.index.year):
+        complete = group.dropna()
+        row = {'year': year, 'common_days': len(complete)}
+        for a, b in pairs:
+            row[f'{a}-{b}'] = complete[a].corr(complete[b]) if len(complete) >= 2 and complete[a].nunique() > 1 and complete[b].nunique() > 1 else np.nan
+        rows.append(row)
+    return pd.DataFrame(rows)
