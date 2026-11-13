@@ -136,7 +136,7 @@ def _normalise_input(prices: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise FeaturePipelineError(f"market_prices_daily is missing required columns: {', '.join(missing)}")
 
-    data = prices.loc[:, INPUT_COLUMNS].copy()
+    data = prices.loc[:, list(INPUT_COLUMNS)].copy()
     data["date"] = data["date"].map(_as_date)
     if data["date"].isna().any():
         raise FeaturePipelineError("date contains an invalid market date")
@@ -422,7 +422,7 @@ def build_feature_tables(
         rolling_std = close.rolling(window=20, min_periods=20).std(ddof=0)
         features["bb_width_20d"] = 4.0 * rolling_std.div(rolling_mean)
         features["is_model_ready"] = np.isfinite(
-            features.loc[:, CORE_FEATURE_COLUMNS].to_numpy(dtype=float)
+            features.loc[:, list(CORE_FEATURE_COLUMNS)].to_numpy(dtype=float)
         ).all(axis=1)
         features["is_warmup_buffer"] = group["is_warmup_buffer"].astype(bool)
         features["feature_set_version"] = config.feature_set_version
