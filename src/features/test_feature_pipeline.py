@@ -72,6 +72,15 @@ def sample_prices():
 
 
 @pytest.fixture
+def temp_workspace():
+    data_directory = Path.cwd() / "data"
+    data_directory.mkdir(exist_ok=True)
+    directory = data_directory / f".feature-test-{uuid4().hex}"
+    directory.mkdir()
+    return directory
+
+
+@pytest.fixture
 def feature_config(sample_prices):
     api = feature_api()
     dates = tuple(sorted(sample_prices["date"].unique()))
@@ -292,13 +301,12 @@ def test_rejects_non_psd_correlation_matrix():
 
 
 def test_parquet_publish_is_idempotent_and_blocks_silent_conflicts(
-    sample_prices, feature_config
+    sample_prices, feature_config, temp_workspace
 ):
     api = feature_api()
     storage = import_module("src.features.storage")
     features, correlations = build(api, sample_prices, feature_config, "feat_first")
-    tmp_path = Path.cwd() / f"storage-test-{uuid4().hex}"
-    tmp_path.mkdir()
+    tmp_path = temp_workspace
     feature_path = tmp_path / "asset_volatility_features.parquet"
     correlation_path = tmp_path / "asset_rolling_correlations.parquet"
     manifest_path = tmp_path / "run_id=feat_first" / "manifest.json"
@@ -334,11 +342,12 @@ def test_parquet_publish_is_idempotent_and_blocks_silent_conflicts(
         )
 
 
-def test_configured_pipeline_reads_parquet_and_writes_lineage_manifest(sample_prices):
+def test_configured_pipeline_reads_parquet_and_writes_lineage_manifest(
+    sample_prices, temp_workspace
+):
     api = feature_api()
     runner = import_module("src.features.run")
-    root = Path.cwd() / f"cli-test-{uuid4().hex}"
-    root.mkdir()
+    root = temp_workspace
     input_path = root / "market_prices_daily.parquet"
     sample_prices.to_parquet(input_path, index=False)
     dates = sorted(sample_prices["date"].unique())
