@@ -5,7 +5,7 @@
 - **`IEF`** (iShares 7-10 Year Treasury Bond ETF)
 - **`GLD`** (SPDR Gold Shares)
 
-ระบบรองรับการดึงข้อมูลจาก Yahoo Finance (`yfinance`), การคำนวณผลตอบแทน (Simple & Log Return), การตรวจสอบคุณภาพข้อมูลตาม Data Contract, การกักกันข้อมูลผิดปกติ (Quarantine) และการบันทึก Audit Report ทุกขั้นตอน
+ระบบรองรับการดึงข้อมูลจาก Yahoo Finance (`yfinance`), การคำนวณผลตอบแทน (Simple & Log Return), การตรวจสอบคุณภาพข้อมูลตาม Data Contract, การกักกันข้อมูลผิดปกติ (Quarantine), การบันทึก Audit Report และ Feature Engineering แบบ point-in-time สำหรับความผันผวนรายสินทรัพย์กับ Correlation ของพอร์ต
 
 ---
 
@@ -18,6 +18,7 @@
    - [5.1 รัน Ingestion Pipeline หลัก](#51-รัน-ingestion-pipeline-หลัก)
    - [5.2 รันผ่าน Market Scheduler (ตรวจสอบเวลาตลาดปิด)](#52-รันผ่าน-market-scheduler-ตรวจสอบเวลาตลาดปิด)
    - [5.3 รัน Unit Tests](#53-รัน-unit-tests)
+   - [5.4 รัน Feature Engineering Pipeline](#54-รัน-feature-engineering-pipeline)
 6. [โครงสร้างข้อมูลผลลัพธ์ (Data Output Structure)](#โครงสร้างข้อมูลผลลัพธ์-data-output-structure)
 
 ---
@@ -205,7 +206,7 @@ python -m src.ingestion.scheduler --config config/ingestion.yaml --buffer-minute
 
 ### 5.3 รัน Unit Tests
 
-รันชุดทดสอบเพื่อตรวจความถูกต้องของ Calendar Window, Fetching, Transformations และ Contract Validation:
+รันชุดทดสอบเพื่อตรวจความถูกต้องของ Calendar Window, Fetching, Transformations, Contract Validation และ Feature Engineering:
 
 ```bash
 # รันผ่าน python -m pytest เพื่อให้โหลด root path (src) ได้อย่างถูกต้อง
@@ -219,6 +220,37 @@ python -m pytest src/ingestion/test_ingestion.py -v
 
 ---
 
+### 5.4 รัน Feature Engineering Pipeline
+
+Feature Pipeline อ่าน `market_prices_daily.parquet` ที่ผ่าน Data Contract แล้วสร้าง Features ตาม
+[Feature Contract](docs/contract/feature_contract.md) และ [Data Dictionary](docs/contract/datadict.md)
+โดยใช้ข้อมูลถึงวันอ้างอิงเท่านั้น
+
+ตรวจค่าใน `config/features.yaml` ให้ตรงกับช่วงข้อมูลจริงก่อนรัน:
+
+```bash
+python -m src.features.run --config config/features.yaml
+```
+
+ค่าเริ่มต้นอ่าน `data/curated/market_prices_daily.parquet`, ใช้ปฏิทิน XNYS ตรวจวันซื้อขายและช่วง Warm-up
+61 วันก่อน `feature.start_date`, แล้วเผยแพร่ Parquet สองตารางพร้อม Manifest ที่เก็บ SHA-256 ของ Input
+และ Config รวมถึง `source_batch_id` ที่ใช้ในแต่ละ Ticker
+
+- `asset_volatility_features` มี 18 คอลัมน์: 8 Core Features, `rsi_14d` และ `bb_width_20d` ซึ่งเป็น Experimental Features และคอลัมน์สถานะ/Lineage
+- `asset_rolling_correlations` มี 8 คอลัมน์ โดย Correlation ทั้ง 3 คู่คำนวณจากผลตอบแทน 20 วันชุดเดียวกันและตรวจ PSD ก่อนตั้ง `is_corr_ready=True`
+- ใช้เฉพาะแถว `is_model_ready=True` และ `is_warmup_buffer=False` สำหรับ Train/Evaluation; `is_model_ready` ไม่ขึ้นกับ Target หรือ Experimental Features
+- `bb_width_20d` ใช้ส่วนเบี่ยงเบนมาตรฐานแบบ Population จากราคาปิด 20 จุด; Correlation เป็น Historical Proxy จากอดีต ไม่ใช่การพยากรณ์ Correlation อนาคต
+- การรันซ้ำจะ Upsert ตาม Primary Key โดยไม่สร้างแถวซ้ำ หากค่าธุรกิจของ Key เดิมเปลี่ยน Pipeline จะหยุดก่อนเผยแพร่; ให้ตรวจ Input ก่อน แล้วจึงใช้ `--overwrite-conflicts` เมื่อตั้งใจแทนค่าจริง
+
+ทดสอบ Feature Pipeline:
+
+```bash
+python -m pytest src/features/test_feature_pipeline.py -v
+```
+
+
+---
+
 ## โครงสร้างข้อมูลผลลัพธ์ (Data Output Structure)
 
 เมื่อ Pipeline ทำงานเสร็จสมบูรณ์ ข้อมูลจะถูกจัดเก็บตามโครงสร้างดังนี้:
@@ -226,7 +258,12 @@ python -m pytest src/ingestion/test_ingestion.py -v
 | โฟลเดอร์ / ไฟล์ | รายละเอียด |
 | :--- | :--- |
 | `data/curated/market_prices_daily.parquet` | ข้อมูลราคาและผลตอบแทนมาตรฐานที่ผ่านการ Validate แล้ว (พร้อมใช้งานในขั้นตอน Feature Engineering) |
+| `data/curated/asset_volatility_features.parquet` | Feature รายวันของ SPY, IEF และ GLD ตาม Schema 18 คอลัมน์ |
+| `data/curated/asset_rolling_correlations.parquet` | Correlation ย้อนหลัง 20 วันของ ETF ทั้งสามตาม Schema 8 คอลัมน์ |
 | `data/raw/yfinance/run_id=<run_id>/` | Snapshot ข้อมูลดิบที่ดาวน์โหลดจาก Yahoo Finance แยกตามราย Ticker ในรูปแบบ Parquet และ `metadata.json` |
 | `data/quarantine/run_id=<run_id>/` | ข้อมูลแถวหรือ Ticker ที่ไม่ผ่านการตรวจสอบ Contract พร้อม `records.json` และ `anomaly_review.json` |
 | `data/audit/run_id=<run_id>/` | รายงานสรุปผลการรันประจำรอบ ได้แก่ `run_report.json`, `run_report.md` และ `run_metadata.json` |
+| `data/audit/features/run_id=<run_id>/manifest.json` | Input/Config checksums, source batches, Feature Version และเส้นทาง Output ของ Feature Run |
 | `data/audit/scheduler/<date>.json` | Log การตรวจสอบสถานะตลาดและการทำงานของ Scheduler ประจำวัน |
+
+---
