@@ -1,0 +1,24 @@
+feature:
+  start_date: "2021-09-27"
+  end_date: "2026-09-25"
+  warmup_trading_days: 61
+  tickers:
+    - "SPY"
+    - "IEF"
+    - "GLD"
+  feature_set_version: "2.0.0"
+  # Optional for an isolated run. If omitted, the XNYS calendar is used.
+  expected_trading_days:
+
+calendar:
+  market: "XNYS"
+
+paths:
+  input: "data/curated/market_prices_daily.parquet"
+  features: "data/curated/asset_volatility_features.parquet"
+  correlations: "data/curated/asset_rolling_correlations.parquet"
+  manifest_dir: "data/audit/features"
+
+publish:
+  overwrite_conflicts: false
+
