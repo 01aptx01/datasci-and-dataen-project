@@ -101,7 +101,7 @@
 
 | Table | Column | Type | Unit / Format | Meaning & Example | Role | Nullable |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `asset_volatility_features` | `is_model_ready` | `BOOLEAN` | boolean flag | ระบุว่าแถวข้อมูลของ `ticker` นั้นผ่านช่วง Warm-up และมี **Core Features ครบทั้ง 8 คอลัมน์** โดยไม่มี `Null` แล้ว (`True`/`False`) | Status (Filter only, not in $X$) | No |
+| `asset_volatility_features` | `is_model_ready` | `BOOLEAN` | boolean flag | ระบุว่า **Core Features ทั้ง 8 คอลัมน์มีค่า finite และไม่เป็น `Null`**; อาจเป็น `True` ได้แม้อยู่ใน Warm-up โดยการกรอง `is_warmup_buffer=False` ทำแยกต่างหากเมื่อนำไป Train/Evaluate | Status (Filter only, not in $X$) | No |
 | `asset_volatility_features` | `is_warmup_buffer` | `BOOLEAN` | boolean flag | ระบุว่าแถวข้อมูลนี้อยู่ในช่วงดึงเผื่อ Warm-up ก่อนวันเริ่มวิเคราะห์ (`date < config.start_date`) เพื่อป้องกันไม่ให้นำวัน Buffer เข้าสู่การวัดผลโมเดล | Status (Filter only, not in $X$) | No |
 | `asset_volatility_features` | `feature_set_version` | `VARCHAR(16)` | semver | เวอร์ชันของสเปก Feature ที่ใช้คำนวณ (เช่น `'2.0.0'`) | Metadata | No |
 | `asset_volatility_features` | `run_id` | `VARCHAR(64)` | UUID / run string | รหัสการสั่งรัน Feature Pipeline ในรอบนั้น (Pipeline Execution Run ID เช่น `'feat_run_20260925_001'`) เพื่ออ้างอิงกลับไปยัง Config ของการรัน | Metadata / Lineage | No |
@@ -232,7 +232,7 @@
 ## 8. หมายเหตุการปรับเอกสารตามลำดับงาน
 
 - `data_contract.md` สอดคล้องกับ `market_prices_daily` 13 คอลัมน์ รวม `open`, `high`, `low`, `is_warmup_buffer` แล้ว
-- `feature_contract.md` ยังต้องปรับคำว่า Baseline ให้แยก B1 (ใช้ `rv_20d` โดยตรง) กับ Online ML (ใช้ 8 Core Features) และชี้ Input Manifest เมื่อใช้หลาย Source Batches
+- `feature_contract.md` ระบุแล้วว่า B1 ใช้ `rv_20d` โดยตรง, B2 ใช้ Core Features 8 ตัว และการติดตามหลาย Source Batches ทำผ่าน Input Manifest ของ run
 - `target_contract.md` ฉบับถัดไปต้องเปลี่ยน `label_as_of_utc` เป็น `record_created_at_utc` + `label_matured_at_utc` เพื่อให้ Pending Labels ใช้ได้จริง
 - `prediction_contract.md` ที่มีอยู่เป็น **Draft v0.1.0** และกล่าวถึง `prediction_evaluations` รวมถึง Revision/Publication System; เมื่อทำ Final ต้องปรับให้สอดคล้องกับ **ตาราง Predictions 1 ตาราง + `outputs/evaluation.csv`** และ **Prediction Schema แบบ MVP ใน Dictionary นี้**
 - การแก้ Metadata/Schema จริงต้องแก้เอกสารที่เกี่ยวข้องและ Tests ให้ตรงกัน; **Final ในที่นี้หมายถึงสเปกที่ตกลงใช้ ไม่ใช่หลักฐานว่ารัน Pipeline ผ่านแล้ว**

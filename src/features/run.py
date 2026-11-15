@@ -7,8 +7,7 @@ import logging
 import re
 import sys
 import uuid
-from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,9 +18,17 @@ from src.features.pipeline import (
     FeatureConfig,
     FeaturePipelineError,
     build_feature_tables,
-    validate_price_data,
+    collect_feature_warnings,
+    filter_corrupted_feature_tickers,
 )
 from src.features.storage import publish_feature_outputs
+from src.features.transactions import (
+    prepare_feature_transaction,
+    reconcile_feature_quarantine,
+    recover_pending_feature_runs,
+    update_transaction_status,
+    verify_published_feature_run,
+)
 
 
 def load_config(config_path: str | Path) -> dict[str, Any]:
@@ -86,48 +93,6 @@ def load_config(config_path: str | Path) -> dict[str, Any]:
     }
 
 
-def _expected_market_sessions(
-    data: pd.DataFrame,
-    config: FeatureConfig,
-) -> tuple[Any, ...]:
-    try:
-        import pandas_market_calendars as market_calendars
-    except ImportError as error:
-        raise FeaturePipelineError(
-            "pandas-market-calendars is required to validate the complete XNYS session sequence"
-        ) from error
-
-    dates = pd.to_datetime(data["date"], errors="coerce")
-    if dates.isna().any() or dates.empty:
-        raise FeaturePipelineError("market_prices_daily contains invalid dates")
-    calendar = market_calendars.get_calendar(config.market)
-    search_start = config.start_date - timedelta(
-        days=max(30, config.warmup_trading_days * 3)
-    )
-    effective_end = config.end_date or dates.max().date()
-    schedule = calendar.schedule(
-        start_date=min(search_start, dates.min().date()),
-        end_date=effective_end,
-    )
-    all_sessions = tuple(pd.Timestamp(value).date() for value in schedule.index)
-    if not all_sessions:
-        raise FeaturePipelineError("no exchange sessions overlap the input price range")
-    warmup_sessions = tuple(day for day in all_sessions if day < config.start_date)
-    if len(warmup_sessions) < config.warmup_trading_days:
-        raise FeaturePipelineError(
-            f"calendar returned fewer than {config.warmup_trading_days} warm-up sessions"
-        )
-    required_start = warmup_sessions[-config.warmup_trading_days]
-    actual_start = dates.min().date()
-    expected_start = min(actual_start, required_start)
-    sessions = tuple(
-        day
-        for day in all_sessions
-        if expected_start <= day <= effective_end
-    )
-    return sessions
-
-
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -136,13 +101,18 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _iso_market_date(value: Any) -> str:
+    return pd.Timestamp(value).date().isoformat()
+
+
 def _source_summary(data: pd.DataFrame) -> dict[str, Any]:
     summary = {}
     for ticker, group in data.groupby("ticker", sort=True):
         batches = sorted(str(value) for value in group["source_batch_id"].dropna().unique())
+        dates = pd.to_datetime(group["date"], errors="coerce")
         summary[ticker] = {
-            "start_date": min(group["date"]).isoformat(),
-            "end_date": max(group["date"]).isoformat(),
+            "start_date": _iso_market_date(dates.min()),
+            "end_date": _iso_market_date(dates.max()),
             "rows": int(len(group)),
             "source_batch_ids": batches,
         }
@@ -154,24 +124,53 @@ def _source_snapshot_manifest(data: pd.DataFrame) -> list[dict[str, Any]]:
     for batch_id, group in data.groupby("source_batch_id", sort=True):
         batch_id = str(batch_id)
         safe_batch_id = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", batch_id)
-        if safe_batch_id:
-            batch_dir = Path("data/raw") / batch_id
-            manifest_path = batch_dir / "manifest.json"
-            raw_file_path = batch_dir / "raw_prices.csv"
-        else:
-            manifest_path = None
-            raw_file_path = None
+        if safe_batch_id is None:
+            raise FeaturePipelineError(
+                f"source snapshot batch id is not path-safe: {batch_id}"
+            )
 
-        snapshot_manifest = {}
-        status = "NOT_FOUND"
-        if manifest_path is not None and manifest_path.is_file():
-            try:
-                snapshot_manifest = json.loads(
-                    manifest_path.read_text(encoding="utf-8")
-                )
-                status = "AVAILABLE"
-            except (OSError, json.JSONDecodeError):
-                status = "UNREADABLE"
+        manifest_path = Path("data/raw") / batch_id / "manifest.json"
+        if not manifest_path.is_file():
+            raise FeaturePipelineError(
+                f"Raw Snapshot manifest is missing for source_batch_id {batch_id}: "
+                f"{manifest_path}"
+            )
+        try:
+            snapshot_manifest = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise FeaturePipelineError(
+                f"Raw Snapshot manifest is unreadable for source_batch_id {batch_id}: "
+                f"{manifest_path}"
+            ) from error
+        if not isinstance(snapshot_manifest, dict):
+            raise FeaturePipelineError(
+                f"Raw Snapshot manifest must be a JSON object for source_batch_id {batch_id}"
+            )
+        if snapshot_manifest.get("source_batch_id") != batch_id:
+            raise FeaturePipelineError(
+                f"Raw Snapshot manifest source_batch_id does not match curated input batch {batch_id}"
+            )
+
+        raw_file_path = snapshot_manifest.get("raw_file_path")
+        if not isinstance(raw_file_path, str) or not raw_file_path.strip():
+            raise FeaturePipelineError(
+                f"Raw Snapshot raw_file_path is missing for source_batch_id {batch_id}"
+            )
+        if not Path(raw_file_path).is_file():
+            raise FeaturePipelineError(
+                f"Raw Snapshot raw_file_path does not exist for source_batch_id {batch_id}: "
+                f"{raw_file_path}"
+            )
+
+        raw_file_sha256 = snapshot_manifest.get("sha256")
+        if not isinstance(raw_file_sha256, str) or re.fullmatch(
+            r"[0-9a-fA-F]{64}", raw_file_sha256
+        ) is None:
+            raise FeaturePipelineError(
+                f"Raw Snapshot sha256 must be 64 hexadecimal characters for source_batch_id {batch_id}"
+            )
 
         snapshots.append(
             {
@@ -180,21 +179,17 @@ def _source_snapshot_manifest(data: pd.DataFrame) -> list[dict[str, Any]]:
                     str(value) for value in group["run_id"].dropna().unique()
                 ),
                 "tickers": sorted(str(value) for value in group["ticker"].unique()),
-                "start_date": min(group["date"]).isoformat(),
-                "end_date": max(group["date"]).isoformat(),
+                "start_date": _iso_market_date(
+                    pd.to_datetime(group["date"], errors="coerce").min()
+                ),
+                "end_date": _iso_market_date(
+                    pd.to_datetime(group["date"], errors="coerce").max()
+                ),
                 "rows": int(len(group)),
-                "raw_file_path": (
-                    snapshot_manifest.get("raw_file_path")
-                    if snapshot_manifest
-                    else None if raw_file_path is None else str(raw_file_path).replace("\\", "/")
-                ),
-                "snapshot_manifest_path": (
-                    None
-                    if manifest_path is None
-                    else str(manifest_path).replace("\\", "/")
-                ),
-                "raw_file_sha256": snapshot_manifest.get("sha256"),
-                "manifest_status": status,
+                "raw_file_path": raw_file_path.replace("\\", "/"),
+                "snapshot_manifest_path": str(manifest_path).replace("\\", "/"),
+                "raw_file_sha256": raw_file_sha256,
+                "manifest_status": "AVAILABLE",
             }
         )
     return snapshots
@@ -206,27 +201,49 @@ def run_feature_pipeline(
     overwrite_conflicts: bool | None = None,
 ) -> dict[str, Any]:
     settings = load_config(config_path)
+    effective_run_id = run_id if run_id is not None else (
+        "feat_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
+    )
+    if not isinstance(effective_run_id, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", effective_run_id
+    ):
+        raise FeaturePipelineError("run_id must be path-safe and at most 64 characters")
+    recovered_runs = recover_pending_feature_runs(settings["manifest_dir"])
+    manifest_path = (
+        settings["manifest_dir"] / f"run_id={effective_run_id}" / "manifest.json"
+    )
+    if manifest_path.parent.exists():
+        raise FeaturePipelineError(
+            f"run_id already has a manifest directory: {manifest_path.parent}"
+        )
+
     input_path: Path = settings["input_path"]
     if not input_path.is_file():
         raise FileNotFoundError(f"market_prices_daily Parquet not found: {input_path}")
 
     source = pd.read_parquet(input_path)
     feature_config: FeatureConfig = settings["feature_config"]
-    if feature_config.expected_trading_days is None:
-        sessions = _expected_market_sessions(source, feature_config)
-        feature_config = replace(feature_config, expected_trading_days=sessions)
-    validated = validate_price_data(source, feature_config)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    effective_run_id = run_id or (
-        "feat_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
-    )
     features, correlations = build_feature_tables(
-        validated,
+        source,
         feature_config,
         run_id=effective_run_id,
         feature_as_of_utc=timestamp,
     )
+    source_snapshots = _source_snapshot_manifest(source)
+    resolved_expected_days = tuple(correlations["date"])
+    feature_warnings = collect_feature_warnings(features)
+    features, failed_tickers, quarantine_records = filter_corrupted_feature_tickers(
+        features
+    )
+    for record in quarantine_records:
+        record["run_id"] = effective_run_id
+        record["detected_at_utc"] = timestamp
+    if features.empty:
+        raise FeaturePipelineError(
+            "all ticker features failed quality checks; no feature output was published"
+        )
 
     config_file: Path = settings["config_path"]
     manifest = {
@@ -238,19 +255,30 @@ def run_feature_pipeline(
             "table": "market_prices_daily",
             "path": str(input_path),
             "sha256": _sha256_file(input_path),
-            "rows": int(len(validated)),
-            "start_date": min(validated["date"]).isoformat(),
-            "end_date": max(validated["date"]).isoformat(),
-            "sources_by_ticker": _source_summary(validated),
-            "source_snapshots": _source_snapshot_manifest(validated),
+            "rows": int(len(source)),
+            "start_date": _iso_market_date(
+                pd.to_datetime(source["date"], errors="coerce").min()
+            ),
+            "end_date": _iso_market_date(
+                pd.to_datetime(source["date"], errors="coerce").max()
+            ),
+            "sources_by_ticker": _source_summary(source),
+            "source_snapshots": source_snapshots,
         },
         "config": {
             "path": str(config_file),
             "sha256": _sha256_file(config_file),
             "values": settings["raw"],
             "expected_trading_days": [
-                day.isoformat() for day in feature_config.expected_trading_days or ()
+                day.isoformat() for day in resolved_expected_days
             ],
+        },
+        "quality": {
+            "failed_tickers": failed_tickers,
+            "quarantine_records": len(quarantine_records),
+            "warnings": feature_warnings,
+            "results_path": str(manifest_path.parent / "quality_results.parquet"),
+            "finding_count": len(quarantine_records) + len(feature_warnings),
         },
         "outputs": {
             "asset_volatility_features": {
@@ -269,12 +297,30 @@ def run_feature_pipeline(
             "Rolling correlations are a historical proxy, not a forecast of future correlation.",
         ],
     }
-    manifest_path = settings["manifest_dir"] / f"run_id={effective_run_id}" / "manifest.json"
     allow_overwrite = (
         settings["overwrite_conflicts"]
         if overwrite_conflicts is None
         else overwrite_conflicts
     )
+    quarantine_path = Path("logs/quarantine.csv")
+    quality_path = manifest_path.parent / "quality_results.parquet"
+    transaction_path = manifest_path.parent / "transaction.json"
+
+    def prepare_transaction() -> None:
+        prepare_feature_transaction(
+            manifest_path.parent,
+            effective_run_id,
+            timestamp,
+            quarantine_records,
+            feature_warnings,
+            quarantine_path,
+            settings["features_path"],
+            settings["correlations_path"],
+            manifest_path,
+            len(features),
+            len(correlations),
+        )
+
     report = publish_feature_outputs(
         features,
         correlations,
@@ -283,13 +329,24 @@ def run_feature_pipeline(
         manifest_path,
         manifest,
         overwrite_conflicts=allow_overwrite,
+        before_replace=prepare_transaction,
     )
+    verify_published_feature_run(json.loads(transaction_path.read_text(encoding="utf-8")))
+    update_transaction_status(transaction_path, "OUTPUTS_PUBLISHED")
+    reconcile_feature_quarantine(quality_path, quarantine_path)
+    update_transaction_status(transaction_path, "COMMITTED")
     return {
         "run_id": effective_run_id,
         **report,
+        "failed_tickers": failed_tickers,
+        "quarantine_records": len(quarantine_records),
+        "feature_warning_count": len(feature_warnings),
         "features_path": str(settings["features_path"]),
         "correlations_path": str(settings["correlations_path"]),
         "manifest_path": str(manifest_path),
+        "quality_results_path": str(quality_path),
+        "transaction_status": "COMMITTED",
+        "recovered_run_ids": recovered_runs,
     }
 
 

@@ -143,7 +143,7 @@ $$r_{i,t}=\ln\!\left(\frac{P_{i,t}}{P_{i,t-1}}\right)=\ln(1+R_{i,t})$$
 | Date Validity | วันที่ถูกต้อง อยู่ในขอบเขตที่ขอ และเรียงเพิ่มขึ้นหลัง Sort | **Hard Fail** |
 | Primary Key | `(date, ticker)` ไม่ซ้ำในชุดที่เผยแพร่ | **Hard Fail** |
 | Price Validity | `open`, `adjusted_close`, `high`, `low` เป็น Finite และ `> 0` ทุกค่า | **Hard Fail** |
-| High/Low Consistency | `low <= open <= high`, `low <= adjusted_close <= high` และ `low <= high` (ยอมให้คลาดเคลื่อนระดับ Floating-point เล็กน้อย) | **Hard Fail** |
+| High/Low Consistency | `low <= high + 1e-4`, `low - 1e-4 <= open <= high + 1e-4` และ `low - 1e-4 <= adjusted_close <= high + 1e-4` โดย `1e-4` เป็น **absolute tolerance ในหน่วยราคา** เดียวกับข้อมูลต้นทาง ไม่ใช่เปอร์เซ็นต์ | **Hard Fail** |
 | Warm-up Flag | `is_warmup_buffer` เป็น Boolean และเท่ากับ `(date < config.start_date)` | **Hard Fail** |
 | Return Validity | Returns คำนวณถูกต้อง ไม่มี `Inf`/`NaN` นอกแถวแรก | **Hard Fail** |
 | Trading Day Completeness | ไม่มีวันซื้อขายที่ควรมีแต่ขาดข้อมูล (เฉพาะวันที่ข้อมูลพร้อมแล้ว) | **Hard Fail** |
@@ -152,6 +152,8 @@ $$r_{i,t}=\ln\!\left(\frac{P_{i,t}}{P_{i,t-1}}\right)=\ln(1+R_{i,t})$$
 **หมายเหตุเรื่อง Anomaly:** กรณีเพิ่มขึ้นหรือลดลงเกิน 20% ให้ตั้ง `is_anomaly_flagged=True` และนับใน Audit แต่ไม่ลบ/Quarantine/หยุด Pipeline อัตโนมัติ เพราะอาจเป็นเหตุการณ์ตลาดจริง หากตรวจสอบต่อแล้วพบว่าข้อมูลผิดจริง จึงแก้ปัญหาตามหลักฐานและประมวลผลใหม่ โดยเก็บ Raw เดิมไว้
 
 ### 5.1 เมื่อเจอ Hard Fail
+
+กติกา per-ticker/quarantine ในหัวข้อนี้ใช้กับ Data Quality Gates ของ **Ingestion** ก่อนเผยแพร่ `market_prices_daily` เท่านั้น หาก Feature Pipeline พบ expected market session ขาดภายหลังจากอ่าน curated input ที่ผ่าน Ingestion แล้ว ให้ใช้กติกา run-level failure ใน [Feature Contract §8.3](./feature_contract.md#83-quality-gate-ที่ต้องทดสอบ): log ticker/วันที่, หยุด Feature run ทั้งหมดก่อน publish และไม่ทำ quarantine ซ้ำใน Feature stage
 
 - บันทึกรายการผิดลง `logs/quarantine.csv` **หากระบุ Ticker/วันที่หรือเหตุการณ์ที่ผิดได้** (รวมกรณีวันที่ควรมีแต่ไม่มีแถว Raw)
 - **หยุดเผยแพร่ข้อมูลของ Ticker นั้นสำหรับรอบที่กำลังประมวลผล** ทั้งชุด ไม่ส่งชุดใหม่ของ Ticker นั้นไปสร้าง Feature/Target/Prediction

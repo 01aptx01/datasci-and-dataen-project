@@ -226,6 +226,8 @@ Feature Pipeline อ่าน `market_prices_daily.parquet` ที่ผ่า�
 [Feature Contract](docs/contract/feature_contract.md) และ [Data Dictionary](docs/contract/datadict.md)
 โดยใช้ข้อมูลถึงวันอ้างอิงเท่านั้น
 
+อ่านรายละเอียดการตรวจ Input, สูตร, Warm-up/Readiness, Correlation, Quality Checks และ Lineage ได้ที่ [คู่มือ `src/features`](src/features/README.md)
+
 ตรวจค่าใน `config/features.yaml` ให้ตรงกับช่วงข้อมูลจริงก่อนรัน:
 
 ```bash

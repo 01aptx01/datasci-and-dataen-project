@@ -1,8 +1,8 @@
 from importlib import import_module
 from importlib.util import find_spec
 from dataclasses import replace
+import json
 from pathlib import Path
-from uuid import uuid4
 
 import numpy as np
 import pandas as pd
@@ -17,8 +17,14 @@ def feature_api():
     return import_module("src.features.pipeline")
 
 
-def make_prices(periods=65, start_date_index=60, mode="varied"):
-    dates = pd.bdate_range("2024-01-02", periods=periods).date
+def make_prices(periods=65, start_date_index=61, mode="varied"):
+    import pandas_market_calendars as market_calendars
+
+    sessions = market_calendars.get_calendar("XNYS").schedule(
+        start_date="2024-01-02",
+        end_date="2025-01-01",
+    ).index
+    dates = sessions.date[:periods]
     frames = []
     for asset_index, ticker in enumerate(("SPY", "IEF", "GLD")):
         index = np.arange(periods, dtype=float)
@@ -72,20 +78,11 @@ def sample_prices():
 
 
 @pytest.fixture
-def temp_workspace():
-    data_directory = Path.cwd() / "data"
-    data_directory.mkdir(exist_ok=True)
-    directory = data_directory / f".feature-test-{uuid4().hex}"
-    directory.mkdir()
-    return directory
-
-
-@pytest.fixture
 def feature_config(sample_prices):
     api = feature_api()
     dates = tuple(sorted(sample_prices["date"].unique()))
     return api.FeatureConfig(
-        start_date=dates[60],
+        start_date=dates[61],
         expected_trading_days=dates,
     )
 
@@ -99,6 +96,47 @@ def build(api, prices, config, run_id="feat_run_test"):
     )
 
 
+def write_feature_config(root, input_path, dates):
+    config_path = root / "features.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "feature": {
+                    "start_date": dates[61].isoformat(),
+                    "tickers": ["SPY", "IEF", "GLD"],
+                    "feature_set_version": "2.0.0",
+                    "expected_trading_days": [day.isoformat() for day in dates],
+                },
+                "calendar": {"market": "XNYS"},
+                "paths": {
+                    "input": str(input_path),
+                    "features": str(root / "asset_volatility_features.parquet"),
+                    "correlations": str(root / "asset_rolling_correlations.parquet"),
+                    "manifest_dir": str(root / "audit"),
+                },
+                "publish": {"overwrite_conflicts": False},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    for day in dates:
+        batch_id = f"batch_{day:%Y%m%d}"
+        batch_dir = root / "data" / "raw" / batch_id
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        raw_path = batch_dir / "raw_prices.csv"
+        raw_path.write_text("date,ticker\n", encoding="utf-8")
+        manifest = {
+            "source_batch_id": batch_id,
+            "raw_file_path": raw_path.relative_to(root).as_posix(),
+            "sha256": "a" * 64,
+        }
+        (batch_dir / "manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+    return config_path
+
+
 def test_feature_pipeline_module_is_available():
     assert find_spec("src.features.pipeline") is not None
 
@@ -109,6 +147,73 @@ def test_example_config_loads():
     assert settings["feature_config"].end_date.isoformat() == "2026-09-25"
     assert settings["feature_config"].warmup_trading_days == 61
     assert settings["input_path"].as_posix() == "data/curated/market_prices_daily.parquet"
+
+
+def test_feature_config_rejects_less_than_contract_warmup_days(sample_prices):
+    api = feature_api()
+    dates = tuple(sorted(sample_prices["date"].unique()))
+
+    with pytest.raises(api.FeaturePipelineError, match="at least 61"):
+        api.FeatureConfig(
+            start_date=dates[61],
+            warmup_trading_days=60,
+            expected_trading_days=dates,
+        )
+
+
+def test_explicit_sessions_must_include_contract_warmup_days(sample_prices):
+    api = feature_api()
+    dates = tuple(sorted(sample_prices["date"].unique()))
+    config = api.FeatureConfig(
+        start_date=dates[60],
+        expected_trading_days=dates,
+    )
+
+    with pytest.raises(api.FeaturePipelineError, match="at least 61 warm-up sessions"):
+        api.build_feature_tables(sample_prices, config, run_id="short_warmup_test")
+
+
+def test_explicit_sessions_must_match_configured_market_calendar(sample_prices):
+    api = feature_api()
+    dates = tuple(sorted(sample_prices["date"].unique()))
+    saturday = pd.Timestamp("2024-01-06").date()
+    config = api.FeatureConfig(
+        start_date=dates[61],
+        expected_trading_days=tuple(sorted((*dates, saturday))),
+    )
+
+    with pytest.raises(api.FeaturePipelineError, match="must match.*market calendar"):
+        api.build_feature_tables(sample_prices, config, run_id="non_session_override")
+
+
+def test_rejects_naive_ingested_at_timestamp(sample_prices, feature_config):
+    api = feature_api()
+    invalid = sample_prices.copy()
+    invalid["ingested_at_utc"] = invalid["ingested_at_utc"].dt.tz_localize(None)
+
+    with pytest.raises(api.FeaturePipelineError, match="timezone-aware"):
+        api.build_feature_tables(invalid, feature_config, run_id="naive_ingestion_time")
+
+
+def test_ohlc_tolerance_accepts_small_rounding_difference(sample_prices, feature_config):
+    api = feature_api()
+    invalid = sample_prices.copy()
+    row = invalid.index[0]
+    invalid.loc[row, "low"] = invalid.loc[row, "adjusted_close"] + 5e-5
+
+    api.build_feature_tables(invalid, feature_config, run_id="ohlc_within_tolerance")
+
+
+def test_ohlc_tolerance_rejects_difference_above_contract_limit(
+    sample_prices, feature_config
+):
+    api = feature_api()
+    invalid = sample_prices.copy()
+    row = invalid.index[0]
+    invalid.loc[row, "low"] = invalid.loc[row, "adjusted_close"] + 1.1e-4
+
+    with pytest.raises(api.FeaturePipelineError, match="input OHLC values"):
+        api.build_feature_tables(invalid, feature_config, run_id="ohlc_outside_tolerance")
 
 
 def test_output_schemas_formulas_and_readiness(sample_prices, feature_config):
@@ -124,24 +229,24 @@ def test_output_schemas_formulas_and_readiness(sample_prices, feature_config):
     assert len(correlations) == sample_prices["date"].nunique()
 
     source = sample_prices.query("ticker == 'SPY'").sort_values("date").reset_index(drop=True)
-    row = features.query("ticker == 'SPY'").sort_values("date").iloc[60]
+    row = features.query("ticker == 'SPY'").sort_values("date").iloc[61]
     spy_features = features.query("ticker == 'SPY'").sort_values("date").reset_index(drop=True)
-    expected_rv60 = np.sqrt(252 / 60 * np.square(source["log_return"].iloc[1:61]).sum())
-    assert row["ret_1d_t"] == pytest.approx(source["log_return"].iloc[60])
-    assert row["ret_lag_1d"] == pytest.approx(source["log_return"].iloc[59])
-    assert row["ret_lag_2d"] == pytest.approx(source["log_return"].iloc[58])
+    expected_rv60 = np.sqrt(252 / 60 * np.square(source["log_return"].iloc[2:62]).sum())
+    assert row["ret_1d_t"] == pytest.approx(source["log_return"].iloc[61])
+    assert row["ret_lag_1d"] == pytest.approx(source["log_return"].iloc[60])
+    assert row["ret_lag_2d"] == pytest.approx(source["log_return"].iloc[59])
     assert row["ret_trailing_5d"] == pytest.approx(
-        source["adjusted_close"].iloc[60] / source["adjusted_close"].iloc[55] - 1
+        source["adjusted_close"].iloc[61] / source["adjusted_close"].iloc[56] - 1
     )
     assert row["ret_trailing_20d"] == pytest.approx(
-        source["adjusted_close"].iloc[60] / source["adjusted_close"].iloc[40] - 1
+        source["adjusted_close"].iloc[61] / source["adjusted_close"].iloc[41] - 1
     )
-    expected_rv5 = np.sqrt(252 / 5 * np.square(source["log_return"].iloc[56:61]).sum())
-    expected_rv20 = np.sqrt(252 / 20 * np.square(source["log_return"].iloc[41:61]).sum())
+    expected_rv5 = np.sqrt(252 / 5 * np.square(source["log_return"].iloc[57:62]).sum())
+    expected_rv20 = np.sqrt(252 / 20 * np.square(source["log_return"].iloc[42:62]).sum())
     expected_bb_width = (
         4
-        * source["adjusted_close"].iloc[41:61].std(ddof=0)
-        / source["adjusted_close"].iloc[41:61].mean()
+        * source["adjusted_close"].iloc[42:62].std(ddof=0)
+        / source["adjusted_close"].iloc[42:62].mean()
     )
     assert row["rv_5d"] == pytest.approx(expected_rv5)
     assert row["rv_20d"] == pytest.approx(expected_rv20)
@@ -157,10 +262,52 @@ def test_output_schemas_formulas_and_readiness(sample_prices, feature_config):
     assert pd.isna(spy_features.loc[59, "rv_60d"])
 
 
+def test_feature_warnings_flag_contract_limits_without_dropping_rows(
+    sample_prices, feature_config
+):
+    api = feature_api()
+    features, _ = build(api, sample_prices, feature_config)
+    row_index = features.index[
+        features["ticker"].eq("SPY") & features["ret_1d_t"].notna()
+    ][0]
+    features.loc[row_index, "ret_1d_t"] = 0.16
+
+    warnings = api.collect_feature_warnings(features)
+
+    assert warnings == [
+        {
+            "date": features.loc[row_index, "date"].isoformat(),
+            "ticker": "SPY",
+            "feature": "ret_1d_t",
+            "value": 0.16,
+            "lower_bound": -0.15,
+            "upper_bound": 0.15,
+        }
+    ]
+    assert len(features) == len(sample_prices)
+    assert features.loc[row_index, "ret_1d_t"] == 0.16
+
+
+def test_build_feature_tables_checks_xnys_sessions_without_explicit_days(sample_prices):
+    api = feature_api()
+    dates = tuple(sorted(sample_prices["date"].unique()))
+    missing_day = dates[20]
+    prices = sample_prices.loc[sample_prices["date"] != missing_day].copy()
+    prices["is_warmup_buffer"] = prices["date"].map(lambda day: day < dates[-1])
+    config = api.FeatureConfig(
+        start_date=dates[-1],
+        end_date=dates[-1],
+        warmup_trading_days=61,
+    )
+
+    with pytest.raises(api.FeaturePipelineError, match="missing expected trading days"):
+        api.build_feature_tables(prices, config, run_id="feature_calendar_test")
+
+
 def test_features_do_not_change_when_future_rows_are_added(sample_prices, feature_config):
     api = feature_api()
     ticker = "IEF"
-    t = sorted(sample_prices["date"].unique())[53]
+    t = sorted(sample_prices["date"].unique())[62]
     before = sample_prices.loc[(sample_prices["ticker"] == ticker) & (sample_prices["date"] <= t)]
     before_dates = tuple(sorted(before["date"].unique()))
     before_config = replace(feature_config, expected_trading_days=before_dates)
@@ -244,6 +391,43 @@ def test_rejects_warmup_mismatch_and_missing_expected_session(sample_prices, fea
         api.build_feature_tables(missing_session, feature_config, run_id="test")
 
 
+def test_run_aborts_without_publish_when_market_session_is_missing(
+    sample_prices, tmp_path, monkeypatch, caplog
+):
+    runner = import_module("src.features.run")
+    missing_date = sorted(sample_prices["date"].unique())[10]
+    incomplete_prices = sample_prices.loc[
+        ~(
+            sample_prices["ticker"].eq("IEF")
+            & sample_prices["date"].eq(missing_date)
+        )
+    ]
+    input_path = tmp_path / "market_prices_daily.parquet"
+    incomplete_prices.to_parquet(input_path, index=False)
+    dates = sorted(sample_prices["date"].unique())
+    config_path = write_feature_config(tmp_path, input_path, dates)
+
+    features_path = tmp_path / "asset_volatility_features.parquet"
+    correlations_path = tmp_path / "asset_rolling_correlations.parquet"
+    features_path.write_bytes(b"previous-features")
+    correlations_path.write_bytes(b"previous-correlations")
+    quarantine_path = tmp_path / "logs" / "quarantine.csv"
+    quarantine_path.parent.mkdir(parents=True)
+    quarantine_path.write_bytes(b"existing-quarantine-records")
+    original_files = {
+        path: path.read_bytes()
+        for path in (features_path, correlations_path, quarantine_path)
+    }
+    run_id = "missing_session_abort_test"
+    monkeypatch.chdir(tmp_path)
+
+    assert runner.main(["--config", str(config_path), "--run-id", run_id]) == 1
+
+    assert f"missing expected trading days for ticker IEF: {missing_date.isoformat()}" in caplog.text
+    assert all(path.read_bytes() == contents for path, contents in original_files.items())
+    assert not (tmp_path / "audit" / f"run_id={run_id}").exists()
+
+
 def test_rejects_missing_schema_and_invalid_prices(sample_prices, feature_config):
     api = feature_api()
     missing_column = sample_prices.drop(columns=["source_batch_id"])
@@ -301,12 +485,11 @@ def test_rejects_non_psd_correlation_matrix():
 
 
 def test_parquet_publish_is_idempotent_and_blocks_silent_conflicts(
-    sample_prices, feature_config, temp_workspace
+    sample_prices, feature_config, tmp_path
 ):
     api = feature_api()
     storage = import_module("src.features.storage")
     features, correlations = build(api, sample_prices, feature_config, "feat_first")
-    tmp_path = temp_workspace
     feature_path = tmp_path / "asset_volatility_features.parquet"
     correlation_path = tmp_path / "asset_rolling_correlations.parquet"
     manifest_path = tmp_path / "run_id=feat_first" / "manifest.json"
@@ -342,38 +525,158 @@ def test_parquet_publish_is_idempotent_and_blocks_silent_conflicts(
         )
 
 
-def test_configured_pipeline_reads_parquet_and_writes_lineage_manifest(
-    sample_prices, temp_workspace
+def test_publish_migrates_legacy_iso_timestamps_to_utc_parquet_types(
+    sample_prices, feature_config, tmp_path
+):
+    api = feature_api()
+    storage = import_module("src.features.storage")
+    features, correlations = build(api, sample_prices, feature_config, "feat_legacy")
+    feature_path = tmp_path / "asset_volatility_features.parquet"
+    correlation_path = tmp_path / "asset_rolling_correlations.parquet"
+    manifest_path = tmp_path / "run_id=feat_migrated" / "manifest.json"
+
+    legacy_features = features.assign(
+        feature_as_of_utc=features["feature_as_of_utc"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+    legacy_correlations = correlations.assign(
+        computed_at_utc=correlations["computed_at_utc"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+    legacy_features.to_parquet(feature_path, index=False)
+    legacy_correlations.to_parquet(correlation_path, index=False)
+
+    storage.publish_feature_outputs(
+        features.assign(run_id="feat_migrated"),
+        correlations.assign(run_id="feat_migrated"),
+        feature_path,
+        correlation_path,
+        manifest_path,
+        {"run_id": "feat_migrated"},
+    )
+
+    migrated_features = pd.read_parquet(feature_path)
+    migrated_correlations = pd.read_parquet(correlation_path)
+    assert isinstance(migrated_features["feature_as_of_utc"].dtype, pd.DatetimeTZDtype)
+    assert str(migrated_features["feature_as_of_utc"].dtype.tz) == "UTC"
+    assert isinstance(migrated_correlations["computed_at_utc"].dtype, pd.DatetimeTZDtype)
+    assert str(migrated_correlations["computed_at_utc"].dtype.tz) == "UTC"
+
+
+def test_interrupted_output_replacement_restores_previous_files(tmp_path, monkeypatch):
+    storage = import_module("src.features.storage")
+    feature_path = tmp_path / "features.parquet"
+    correlation_path = tmp_path / "correlations.parquet"
+    feature_path.write_bytes(b"previous-features")
+    correlation_path.write_bytes(b"previous-correlations")
+    previous = {
+        feature_path: feature_path.read_bytes(),
+        correlation_path: correlation_path.read_bytes(),
+    }
+    staged_features = tmp_path / "features.tmp.parquet"
+    staged_correlations = tmp_path / "correlations.tmp.parquet"
+    staged_features.write_bytes(b"new-features")
+    staged_correlations.write_bytes(b"new-correlations")
+    journal_path = tmp_path / "publish-transaction.json"
+    real_replace = storage.os.replace
+
+    def interrupt_after_first_publish(source, target):
+        result = real_replace(source, target)
+        if Path(target) == feature_path and Path(source) == staged_features:
+            raise KeyboardInterrupt("simulated process interruption")
+        return result
+
+    monkeypatch.setattr(storage.os, "replace", interrupt_after_first_publish)
+    with pytest.raises(KeyboardInterrupt, match="simulated process interruption"):
+        storage._replace_files_atomically(
+            {feature_path: staged_features, correlation_path: staged_correlations},
+            journal_path,
+        )
+
+    monkeypatch.setattr(storage.os, "replace", real_replace)
+    journal = storage.recover_publish_journal(journal_path)
+
+    assert journal["status"] == "ROLLED_BACK"
+    assert {path: path.read_bytes() for path in previous} == previous
+
+
+def test_publish_rejects_timezone_naive_legacy_timestamp(
+    sample_prices, feature_config, tmp_path
+):
+    api = feature_api()
+    storage = import_module("src.features.storage")
+    features, correlations = build(api, sample_prices, feature_config, "feat_legacy_naive")
+    feature_path = tmp_path / "asset_volatility_features.parquet"
+    correlation_path = tmp_path / "asset_rolling_correlations.parquet"
+    manifest_path = tmp_path / "run_id=feat_rejected_naive" / "manifest.json"
+
+    legacy_features = features.assign(
+        feature_as_of_utc=features["feature_as_of_utc"].dt.strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+    )
+    legacy_features.to_parquet(feature_path, index=False)
+    correlations.to_parquet(correlation_path, index=False)
+    existing_bytes = {
+        path: path.read_bytes() for path in (feature_path, correlation_path)
+    }
+
+    with pytest.raises(api.FeaturePipelineError, match="explicit timezone"):
+        storage.publish_feature_outputs(
+            features.assign(run_id="feat_rejected_naive"),
+            correlations.assign(run_id="feat_rejected_naive"),
+            feature_path,
+            correlation_path,
+            manifest_path,
+            {"run_id": "feat_rejected_naive"},
+        )
+
+    assert all(path.read_bytes() == contents for path, contents in existing_bytes.items())
+    assert not manifest_path.exists()
+
+
+def test_publish_rejects_dictionary_type_mismatches(
+    sample_prices, feature_config, tmp_path
+):
+    api = feature_api()
+    storage = import_module("src.features.storage")
+    features, correlations = build(api, sample_prices, feature_config, "feat_types")
+
+    string_dates = features.assign(date=features["date"].astype(str))
+    with pytest.raises(api.FeaturePipelineError, match="date must contain DATE values"):
+        storage.publish_feature_outputs(
+            string_dates,
+            correlations,
+            tmp_path / "date_features.parquet",
+            tmp_path / "date_correlations.parquet",
+            tmp_path / "date_manifest.json",
+            {"run_id": "date_types"},
+        )
+
+    string_features = features.copy()
+    string_features["rv_20d"] = string_features["rv_20d"].map(
+        lambda value: None if pd.isna(value) else str(value)
+    )
+    with pytest.raises(api.FeaturePipelineError, match="rv_20d must be numeric"):
+        storage.publish_feature_outputs(
+            string_features,
+            correlations,
+            tmp_path / "numeric_features.parquet",
+            tmp_path / "numeric_correlations.parquet",
+            tmp_path / "numeric_manifest.json",
+            {"run_id": "numeric_types"},
+        )
+
+
+def test_pipeline_manifest_includes_snapshot_path_and_checksum(
+    sample_prices, tmp_path, monkeypatch
 ):
     api = feature_api()
     runner = import_module("src.features.run")
-    root = temp_workspace
+    root = tmp_path
     input_path = root / "market_prices_daily.parquet"
     sample_prices.to_parquet(input_path, index=False)
     dates = sorted(sample_prices["date"].unique())
-    config_path = root / "features.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "feature": {
-                    "start_date": dates[60].isoformat(),
-                    "tickers": ["SPY", "IEF", "GLD"],
-                    "feature_set_version": "2.0.0",
-                    "expected_trading_days": [day.isoformat() for day in dates],
-                },
-                "calendar": {"market": "XNYS"},
-                "paths": {
-                    "input": str(input_path),
-                    "features": str(root / "asset_volatility_features.parquet"),
-                    "correlations": str(root / "asset_rolling_correlations.parquet"),
-                    "manifest_dir": str(root / "audit"),
-                },
-                "publish": {"overwrite_conflicts": False},
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
+    config_path = write_feature_config(root, input_path, dates)
+    monkeypatch.chdir(root)
 
     report = runner.run_feature_pipeline(config_path, run_id="feat_cli_test")
     manifest_path = root / "audit" / "run_id=feat_cli_test" / "manifest.json"
@@ -383,10 +686,365 @@ def test_configured_pipeline_reads_parquet_and_writes_lineage_manifest(
     assert Path(report["correlations_path"]).is_file()
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     assert manifest["input"]["sha256"]
+    assert manifest["input"]["start_date"] == dates[0].isoformat()
+    assert manifest["input"]["end_date"] == dates[-1].isoformat()
     assert manifest["input"]["sources_by_ticker"]["SPY"]["source_batch_ids"]
+    assert manifest["input"]["sources_by_ticker"]["SPY"]["start_date"] == dates[0].isoformat()
     snapshot = manifest["input"]["source_snapshots"][0]
     assert snapshot["source_batch_id"].startswith("batch_")
     assert snapshot["raw_file_path"].startswith("data/raw/")
     assert snapshot["snapshot_manifest_path"].endswith("/manifest.json")
+    assert snapshot["manifest_status"] == "AVAILABLE"
+    assert len(snapshot["raw_file_sha256"]) == 64
+    assert all(
+        item["manifest_status"] == "AVAILABLE"
+        and len(item["raw_file_sha256"]) == 64
+        for item in manifest["input"]["source_snapshots"]
+    )
     assert manifest["outputs"]["asset_volatility_features"]["columns"] == api.FEATURE_COLUMNS
+    transaction = json.loads(
+        (manifest_path.parent / "transaction.json").read_text(encoding="utf-8")
+    )
+    quality_results = pd.read_parquet(
+        manifest_path.parent / "quality_results.parquet"
+    )
+    assert transaction["status"] == "COMMITTED"
+    assert transaction["expected_quarantine_records"] == 0
+    assert quality_results.empty
+
+    features_written = pd.read_parquet(report["features_path"])
+    correlations_written = pd.read_parquet(report["correlations_path"])
+    assert isinstance(features_written["feature_as_of_utc"].dtype, pd.DatetimeTZDtype)
+    assert str(features_written["feature_as_of_utc"].dtype.tz) == "UTC"
+    assert isinstance(correlations_written["computed_at_utc"].dtype, pd.DatetimeTZDtype)
+    assert str(correlations_written["computed_at_utc"].dtype.tz) == "UTC"
+    manifest_before = manifest_path.read_text(encoding="utf-8")
+    with pytest.raises(api.FeaturePipelineError, match="run_id already has a manifest"):
+        runner.run_feature_pipeline(config_path, run_id="feat_cli_test")
+    assert manifest_path.read_text(encoding="utf-8") == manifest_before
+
+
+def test_run_id_cannot_escape_the_manifest_directory(sample_prices, tmp_path):
+    runner = import_module("src.features.run")
+    input_path = tmp_path / "market_prices_daily.parquet"
+    sample_prices.to_parquet(input_path, index=False)
+    dates = sorted(sample_prices["date"].unique())
+    config_path = write_feature_config(tmp_path, input_path, dates)
+
+    with pytest.raises(runner.FeaturePipelineError, match="run_id must be path-safe"):
+        runner.run_feature_pipeline(config_path, run_id="../outside")
+
+
+@pytest.mark.parametrize(
+    "lineage_problem",
+    [
+        "missing_manifest",
+        "unreadable_manifest",
+        "mismatched_source_batch_id",
+        "missing_raw_file_path",
+        "missing_raw_file",
+        "invalid_sha256",
+    ],
+)
+def test_lineage_failure_prevents_publish_and_orphan_quarantine(
+    sample_prices, feature_config, tmp_path, monkeypatch, lineage_problem
+):
+    api = feature_api()
+    runner = import_module("src.features.run")
+    input_path = tmp_path / "market_prices_daily.parquet"
+    sample_prices.to_parquet(input_path, index=False)
+    dates = sorted(sample_prices["date"].unique())
+    config_path = write_feature_config(tmp_path, input_path, dates)
+
+    batch_id = sorted(sample_prices["source_batch_id"].unique())[0]
+    batch_dir = tmp_path / "data" / "raw" / batch_id
+    snapshot_manifest_path = batch_dir / "manifest.json"
+    if lineage_problem == "missing_manifest":
+        snapshot_manifest_path.unlink()
+    elif lineage_problem == "unreadable_manifest":
+        snapshot_manifest_path.write_text("{", encoding="utf-8")
+    else:
+        snapshot_manifest = json.loads(
+            snapshot_manifest_path.read_text(encoding="utf-8")
+        )
+        if lineage_problem == "mismatched_source_batch_id":
+            snapshot_manifest["source_batch_id"] = "different_batch"
+        elif lineage_problem == "missing_raw_file_path":
+            snapshot_manifest.pop("raw_file_path")
+        elif lineage_problem == "missing_raw_file":
+            snapshot_manifest["raw_file_path"] = (
+                f"data/raw/{batch_id}/missing_raw_prices.csv"
+            )
+        elif lineage_problem == "invalid_sha256":
+            snapshot_manifest["sha256"] = "not-a-sha256"
+        snapshot_manifest_path.write_text(
+            json.dumps(snapshot_manifest), encoding="utf-8"
+        )
+
+    previous_features, previous_correlations = build(
+        api, sample_prices, feature_config, "feat_previous"
+    )
+    features_path = tmp_path / "asset_volatility_features.parquet"
+    correlations_path = tmp_path / "asset_rolling_correlations.parquet"
+    previous_features.to_parquet(features_path, index=False)
+    previous_correlations.to_parquet(correlations_path, index=False)
+    quarantine_path = tmp_path / "logs" / "quarantine.csv"
+    quarantine_path.parent.mkdir(parents=True)
+    quarantine_path.write_text(
+        "run_id,source_batch_id,date,ticker,raw_value,reason,detected_at_utc\n"
+        "previous_run,previous_batch,2024-01-02,SPY,,EXISTING,2026-11-14T00:00:00Z\n",
+        encoding="utf-8",
+    )
+    previous_files = {
+        path: path.read_bytes()
+        for path in (features_path, correlations_path, quarantine_path)
+    }
+
+    build_tables = runner.build_feature_tables
+    corrupted_date = dates[62]
+
+    def build_with_corrupted_core(*args, **kwargs):
+        features, correlations = build_tables(*args, **kwargs)
+        row = features.index[
+            features["ticker"].eq("SPY") & features["date"].eq(corrupted_date)
+        ][0]
+        features.loc[row, "rv_20d"] = np.nan
+        features.loc[row, "is_model_ready"] = False
+        return features, correlations
+
+    monkeypatch.setattr(runner, "build_feature_tables", build_with_corrupted_core)
+    monkeypatch.chdir(tmp_path)
+    run_id = "lineage_failure_test"
+
+    with pytest.raises(api.FeaturePipelineError, match=batch_id):
+        runner.run_feature_pipeline(config_path, run_id=run_id)
+
+    assert all(path.read_bytes() == contents for path, contents in previous_files.items())
+    assert not (tmp_path / "audit" / f"run_id={run_id}").exists()
+
+
+def test_publish_conflict_does_not_append_orphan_quarantine(
+    sample_prices, feature_config, tmp_path, monkeypatch
+):
+    api = feature_api()
+    runner = import_module("src.features.run")
+    input_path = tmp_path / "market_prices_daily.parquet"
+    sample_prices.to_parquet(input_path, index=False)
+    dates = sorted(sample_prices["date"].unique())
+    config_path = write_feature_config(tmp_path, input_path, dates)
+    previous_features, previous_correlations = build(
+        api, sample_prices, feature_config, "feat_previous"
+    )
+    features_path = tmp_path / "asset_volatility_features.parquet"
+    correlations_path = tmp_path / "asset_rolling_correlations.parquet"
+    previous_features.to_parquet(features_path, index=False)
+    previous_correlations.to_parquet(correlations_path, index=False)
+    quarantine_path = tmp_path / "logs" / "quarantine.csv"
+    quarantine_path.parent.mkdir(parents=True)
+    quarantine_path.write_text(
+        "run_id,source_batch_id,date,ticker,raw_value,reason,detected_at_utc\n"
+        "previous_run,previous_batch,2024-01-02,SPY,,EXISTING,2026-11-14T00:00:00Z\n",
+        encoding="utf-8",
+    )
+    previous_files = {
+        path: path.read_bytes()
+        for path in (features_path, correlations_path, quarantine_path)
+    }
+    build_tables = runner.build_feature_tables
+    conflict_date = dates[62]
+
+    def build_with_quarantine_and_conflict(*args, **kwargs):
+        features, correlations = build_tables(*args, **kwargs)
+        spy_index = features.index[
+            features["ticker"].eq("SPY") & features["date"].eq(conflict_date)
+        ][0]
+        features.loc[spy_index, "rv_20d"] = np.nan
+        features.loc[spy_index, "is_model_ready"] = False
+        ief_index = features.index[
+            features["ticker"].eq("IEF") & features["date"].eq(conflict_date)
+        ][0]
+        features.loc[ief_index, "rv_20d"] += 0.1
+        return features, correlations
+
+    monkeypatch.setattr(runner, "build_feature_tables", build_with_quarantine_and_conflict)
+    monkeypatch.chdir(tmp_path)
+    run_id = "publish_conflict_test"
+
+    with pytest.raises(api.FeaturePipelineError, match="conflicting"):
+        runner.run_feature_pipeline(config_path, run_id=run_id)
+
+    assert all(path.read_bytes() == contents for path, contents in previous_files.items())
+    assert not (tmp_path / "audit" / f"run_id={run_id}").exists()
+
+
+def test_corrupted_core_feature_is_quarantined_and_ticker_is_not_published(
+    sample_prices, tmp_path, monkeypatch
+):
+    api = feature_api()
+    runner = import_module("src.features.run")
+    input_path = tmp_path / "market_prices_daily.parquet"
+    sample_prices.to_parquet(input_path, index=False)
+    dates = sorted(sample_prices["date"].unique())
+    config_path = write_feature_config(tmp_path, input_path, dates)
+    build_tables = runner.build_feature_tables
+    corrupted_date = dates[62]
+    quarantine_path = tmp_path / "logs" / "quarantine.csv"
+    quarantine_path.parent.mkdir(parents=True)
+    quarantine_path.write_text(
+        "run_id,source_batch_id,date,ticker,raw_value,reason,detected_at_utc\n"
+        "ingestion_previous,batch_previous,2024-01-02,IEF,,EXISTING,2026-11-14T00:00:00Z\n",
+        encoding="utf-8",
+    )
+
+    def build_with_corrupted_core(*args, **kwargs):
+        features, correlations = build_tables(*args, **kwargs)
+        spy_row = features.index[
+            features["ticker"].eq("SPY") & features["date"].eq(corrupted_date)
+        ][0]
+        features.loc[spy_row, "rv_20d"] = np.nan
+        features.loc[spy_row, "is_model_ready"] = False
+        warning_row = features.index[
+            features["ticker"].eq("SPY") & features["date"].eq(dates[63])
+        ][0]
+        features.loc[warning_row, "ret_1d_t"] = 0.16
+        return features, correlations
+
+    monkeypatch.setattr(runner, "build_feature_tables", build_with_corrupted_core)
+    monkeypatch.chdir(tmp_path)
+
+    report = runner.run_feature_pipeline(config_path, run_id="feat_quality_gate_test")
+
+    written_features = pd.read_parquet(report["features_path"])
+    quarantine = pd.read_csv(quarantine_path)
+    manifest = yaml.safe_load(
+        (tmp_path / "audit" / "run_id=feat_quality_gate_test" / "manifest.json")
+        .read_text(encoding="utf-8")
+    )
+    transaction = json.loads(
+        (tmp_path / "audit" / "run_id=feat_quality_gate_test" / "transaction.json")
+        .read_text(encoding="utf-8")
+    )
+    quality_results = pd.read_parquet(
+        tmp_path / "audit" / "run_id=feat_quality_gate_test" / "quality_results.parquet"
+    )
+    assert set(written_features["ticker"]) == {"IEF", "GLD"}
+    assert "SPY" in report["failed_tickers"]
+    assert quarantine.columns.tolist() == [
+        "run_id",
+        "source_batch_id",
+        "date",
+        "ticker",
+        "raw_value",
+        "reason",
+        "detected_at_utc",
+    ]
+    assert len(quarantine) == 2
+    previous = quarantine.loc[quarantine["run_id"] == "ingestion_previous"].iloc[0]
+    feature_finding = quarantine.loc[
+        quarantine["run_id"] == "feat_quality_gate_test"
+    ].iloc[0]
+    assert previous["reason"] == "EXISTING"
+    assert feature_finding["ticker"] == "SPY"
+    assert feature_finding["date"] == corrupted_date.isoformat()
+    assert feature_finding["reason"] == "CORRUPTED_FEATURE_NULL"
+    assert manifest["quality"]["failed_tickers"] == ["SPY"]
+    assert manifest["quality"]["quarantine_records"] == 1
+    assert transaction["status"] == "COMMITTED"
+    assert set(quality_results["finding_type"]) == {"QUARANTINE", "WARNING"}
+    runner.reconcile_feature_quarantine(report["quality_results_path"], quarantine_path)
+    assert len(pd.read_csv(quarantine_path)) == 2
+    assert manifest["quality"]["warnings"] == [
+        {
+            "date": dates[63].isoformat(),
+            "ticker": "SPY",
+            "feature": "ret_1d_t",
+            "value": 0.16,
+            "lower_bound": -0.15,
+            "upper_bound": 0.15,
+        }
+    ]
+
+
+def test_pending_quarantine_is_recovered_on_next_run_without_duplicates(
+    sample_prices, tmp_path, monkeypatch
+):
+    api = feature_api()
+    runner = import_module("src.features.run")
+    input_path = tmp_path / "market_prices_daily.parquet"
+    sample_prices.to_parquet(input_path, index=False)
+    dates = sorted(sample_prices["date"].unique())
+    config_path = write_feature_config(tmp_path, input_path, dates)
+    build_tables = runner.build_feature_tables
+    corrupted_date = dates[62]
+
+    def build_with_corrupted_core(*args, **kwargs):
+        features, correlations = build_tables(*args, **kwargs)
+        spy_row = features.index[
+            features["ticker"].eq("SPY") & features["date"].eq(corrupted_date)
+        ][0]
+        features.loc[spy_row, "rv_20d"] = np.nan
+        features.loc[spy_row, "is_model_ready"] = False
+        return features, correlations
+
+    monkeypatch.setattr(runner, "build_feature_tables", build_with_corrupted_core)
+    monkeypatch.chdir(tmp_path)
+    reconcile = runner.reconcile_feature_quarantine
+
+    def interrupt_after_quarantine_write(*args, **kwargs):
+        reconcile(*args, **kwargs)
+        raise OSError("simulated interruption after quarantine write")
+
+    monkeypatch.setattr(
+        runner, "reconcile_feature_quarantine", interrupt_after_quarantine_write
+    )
+    with pytest.raises(OSError, match="simulated interruption after quarantine write"):
+        runner.run_feature_pipeline(config_path, run_id="pending_quarantine")
+
+    run_dir = tmp_path / "audit" / "run_id=pending_quarantine"
+    state_path = run_dir / "transaction.json"
+    quality_path = run_dir / "quality_results.parquet"
+    assert quality_path.is_file()
+    assert json.loads(state_path.read_text(encoding="utf-8"))["status"] == (
+        "OUTPUTS_PUBLISHED"
+    )
+    quarantine_before_recovery = pd.read_csv(tmp_path / "logs" / "quarantine.csv")
+    assert len(quarantine_before_recovery) == 1
+
+    monkeypatch.setattr(runner, "reconcile_feature_quarantine", reconcile)
+    runner.run_feature_pipeline(config_path, run_id="recovery_followup")
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    quality = pd.read_parquet(quality_path)
+    quarantine = pd.read_csv(tmp_path / "logs" / "quarantine.csv")
+    assert state["status"] == "COMMITTED"
+    assert set(quality["finding_type"]) == {"QUARANTINE"}
+    assert len(quarantine.loc[quarantine["run_id"] == "pending_quarantine"]) == 1
+    assert len(quarantine.loc[quarantine["run_id"] == "recovery_followup"]) == 1
+
+
+def test_pending_transaction_rejects_corrupted_quality_evidence(
+    sample_prices, tmp_path, monkeypatch
+):
+    runner = import_module("src.features.run")
+    input_path = tmp_path / "market_prices_daily.parquet"
+    sample_prices.to_parquet(input_path, index=False)
+    dates = sorted(sample_prices["date"].unique())
+    config_path = write_feature_config(tmp_path, input_path, dates)
+    monkeypatch.chdir(tmp_path)
+    runner.run_feature_pipeline(config_path, run_id="pending_bad_evidence")
+
+    run_dir = tmp_path / "audit" / "run_id=pending_bad_evidence"
+    state_path = run_dir / "transaction.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["status"] = "OUTPUTS_PUBLISHED"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    (run_dir / "quality_results.parquet").write_bytes(b"corrupted evidence")
+
+    with pytest.raises(runner.FeaturePipelineError, match="quality result checksum mismatch"):
+        runner.run_feature_pipeline(config_path, run_id="must_not_publish")
+
+    assert not (tmp_path / "audit" / "run_id=must_not_publish").exists()
+    assert json.loads(state_path.read_text(encoding="utf-8"))["status"] == (
+        "OUTPUTS_PUBLISHED"
+    )
 

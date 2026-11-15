@@ -1,6 +1,6 @@
 # สรุปภาพรวมระบบและสัญญาข้อมูล (Project & Contract Overview)
 
-เอกสารสรุปสำหรับอ่านทบทวนและนำเสนอ ครอบคลุมแนวคิดหลักของระบบ วิวัฒนาการการออกแบบ และสรุปสาระสำคัญจาก Contract ทั้ง 4 ฉบับที่ได้ดำเนินการเสร็จสิ้นในปัจจุบัน
+เอกสารสรุปสำหรับอ่านทบทวนและนำเสนอ ครอบคลุมแนวคิดหลักของระบบ วิวัฒนาการการออกแบบ และ Contract ด้านข้อมูลและการพยากรณ์
 
 ---
 
@@ -17,10 +17,14 @@
 ## 2. สถานะปัจจุบันและพัฒนาการของการออกแบบ (Current Status & Key Decisions)
 
 ### 2.1 สถานะปัจจุบันของโปรเจกต์
-- **สิ่งที่ทำเสร็จแล้ว**:
-  1. กำหนดและสอบทานสัญญาข้อมูลครบทั้ง 4 ฉบับใน `docs/contract/` ได้แก่ [data_contract.md](./contract/data_contract.md), [datadict.md](./contract/datadict.md), [feature_contract.md](./contract/feature_contract.md) และ [target_contract.md](./contract/target_contract.md) พร้อมจัดเตรียมโครงสร้างโฟลเดอร์ตั้งต้น (`config/`, `data/`, `logs/`, `src/`)
-  2. **พัฒนา Data Ingestion Pipeline (`src/ingestion/`) เสร็จสมบูรณ์**: ครอบคลุมตั้งแต่การอ่านตั้งค่าจาก `config/ingestion.yaml`, คำนวณปฏิทินวันซื้อขายรวมช่วง Warm-up, ดึงข้อมูลแยกรายสินทรัพย์จาก `yfinance` พร้อมระบบ Retry, เก็บ Raw Snapshot แบบไม่เขียนทับ, แปลงข้อมูลเป็น Schema มาตรฐาน, ตรวจสอบความถูกต้องและคัดแยกข้อมูลเข้า Quarantine, อัปเดตตารางหลัก `market_prices_daily.parquet` แบบ Atomic Upsert, สร้างรายงาน Audit อัตโนมัติ ไปจนถึงตัวตั้งเวลารันหลังตลาดปิด (`scheduler.py`) และชุดทดสอบ (`test_ingestion.py`)
-- **ขั้นตอนถัดไป**: พัฒนา Feature Pipeline (`asset_volatility_features`), Rolling Correlation Pipeline (`asset_rolling_correlations`) และ Target/Label Pipeline (`asset_volatility_labels`) ต่อจากตาราง `market_prices_daily`
+- **ทำแล้ว**:
+  1. กำหนด Contract และ Data Dictionary สำหรับข้อมูลราคา, Features, Targets และ Predictions ใน `docs/contract/` โดย `datadict.md` เป็นแหล่งอ้างอิงกลางของ schema
+  2. พัฒนา Data Ingestion Pipeline (`src/ingestion/`) ตั้งแต่การอ่าน `config/ingestion.yaml`, คำนวณ XNYS sessions และ warm-up, ดึงข้อมูลจาก `yfinance`, เก็บ Raw Snapshot, แปลง/ตรวจ Schema, Quarantine, Atomic Upsert, Audit Report และ Scheduler
+  3. พัฒนา Feature Pipeline (`src/features/`) สำหรับ `asset_volatility_features` และ `asset_rolling_correlations` ตาม Feature Contract พร้อม warm-up, readiness, lineage manifest, quality checks, idempotent publish และกู้คืนรันที่หยุดกลางการเผยแพร่
+- **ยังเป็นงานถัดไป**:
+  1. Target/Label Pipeline (`asset_volatility_labels`) ตาม Target Contract
+  2. การฝึกและประเมิน Baseline/Online Model ตาม Prediction Contract
+  3. การสร้าง Predictions และ Portfolio Risk calculation/dashboard ซึ่งเป็น downstream ของ Features, Labels และ Correlations
 
 ### 2.2 จุดสำคัญที่ได้ปรับปรุงและล็อกสเปกจากช่วงออกแบบ Contract
 1. **ปรับระดับหน่วยข้อมูล (Grain) เป็น `(date, ticker)` ทั้งระบบ**: เปลี่ยนจากการผูก Feature/Target เข้ากับพอร์ตน้ำหนักคงที่ (Equal Weight) มาเป็นระดับรายสินทรัพย์ เพื่อให้เปลี่ยนน้ำหนักพอร์ตได้อิสระ
@@ -128,6 +132,7 @@ flowchart TD
 | `logs/ingestion_runs.jsonl` | `JSONL` (Append-only) | บันทึกประวัติและสถิติจำนวนแถวของการรันทุกรอบ 1 Run ต่อ 1 บรรทัด JSON Object |
 | `data/validated/run_id=<run_id>/` | `ticker=<T>/data.parquet` | ข้อมูลรายสินทรัพย์ที่ผ่านการตรวจสอบในรอบรันนั้นและได้รับอนุญาตให้เผยแพร่ (`PUBLISHED`) |
 | `data/curated/market_prices_daily.parquet` | `Parquet` (ตารางหลัก) | ตารางราคาตลาดมาตรฐาน 13 คอลัมน์ที่ผ่านการ Upsert สะสมพร้อมส่งต่อให้ Feature และ Target Pipeline |
+| `data/audit/features/run_id=<run_id>/` | `manifest.json`, `quality_results.parquet`, `transaction.json`, `publish-transaction.json` | หลักฐานผลตรวจและสถานะการเผยแพร่ Feature แต่ละรัน ใช้ตรวจความครบและกู้รันที่หยุดก่อน commit |
 | `data/audit/<run_id>/` และ `data/audit/run_id=<run_id>/` | `run_metadata.json`, `publish_report.json`, `run_report.json`, `run_report.md` | รายงานสรุปผลการรันและสถิติจำนวนแถวประจำรอบ |
 | `data/audit/scheduler/` | `<YYYY-MM-DD>.json` | บันทึกประวัติการตรวจสอบเวลาเปิด-ปิดตลาดของ `scheduler.py` |
 

@@ -21,7 +21,7 @@
 |---|---|
 | **Input** | ตาราง `market_prices_daily` ที่ผ่าน Data Contract; ใช้ `date`, `ticker`, `adjusted_close`, `log_return`, `simple_return`, `is_warmup_buffer` และ Metadata ที่จำเป็น |
 | **Source of truth สำหรับ Returns** | ใช้ `adjusted_close` เป็นราคาต้นทาง; ตรวจสอบว่าค่า `log_return` ใน Price Table สอดคล้องกับสูตรก่อนนำไปคำนวณต่อ |
-| **`open`, `high` และ `low`** | รับไว้ใน `market_prices_daily` เพื่อเก็บข้อมูลราคาและตรวจสอบคุณภาพ แต่ **ไม่ใช่ Core Features** ในสเปกนี้ และไม่เพิ่มลง Model Matrix อัตโนมัติ |
+| **`open`, `high` และ `low`** | รับไว้ใน `market_prices_daily` เพื่อเก็บข้อมูลราคาและตรวจสอบคุณภาพ โดย OHLC ordering ใช้ absolute tolerance `1e-4` ในหน่วยราคาเดียวกับข้อมูลต้นทาง ไม่ใช่เปอร์เซ็นต์; ราคาเหล่านี้ **ไม่ใช่ Core Features** ในสเปกนี้ และไม่เพิ่มลง Model Matrix อัตโนมัติ |
 | **Output 1** | `asset_volatility_features`: **1 แถว / `(date, ticker)`** (18 คอลัมน์ตาม `datadict.md`) |
 | **Output 2** | `asset_rolling_correlations`: **1 แถว / `date`** (8 คอลัมน์ตาม `datadict.md`) |
 | **Assets** | `SPY`, `IEF`, `GLD` เท่านั้น |
@@ -186,7 +186,7 @@ r_{i,t}=\ln\left(\frac{P(i,t)}{P(i,t-1)}\right)$$
 
 | Test | เงื่อนไขผ่าน | หากไม่ผ่าน |
 |---|---|---|
-| Input source | `market_prices_daily` ผ่าน Validation และเรียงวันได้; วันที่ใช้คำนวณครบ | หยุดสร้าง Output ที่ได้รับผลกระทบ |
+| Input source | `market_prices_daily` ผ่าน Validation และเรียงวันได้; วันที่ใช้คำนวณครบ | หากพบ expected market session ขาด ให้หยุด Feature run ทั้งหมดก่อน publish และ log ticker/วันที่ขาด |
 | Schema & Keys | คอลัมน์/ชนิดตาม Dictionary; `(date,ticker)` ไม่ซ้ำ และ `date` เพิ่มตาม `ticker` | Fail Output ที่ได้รับผลกระทบ |
 | Formula | ค่า Lag, Trailing Return, `rv_5d/20d/60d` ตรงกับสูตรบนชุดข้อมูลทดสอบ | Fail Output |
 | Numeric validity | Core ที่ไม่ใช่ Warm-up Null ต้องเป็น Finite; `rv_* >= 0` | Fail Ticker; บันทึก `CORRUPTED_FEATURE_NULL` หากเข้าเงื่อนไข |
@@ -195,6 +195,8 @@ r_{i,t}=\ln\left(\frac{P(i,t)}{P(i,t-1)}\right)$$
 | Point-in-time | เพิ่มข้อมูลหลัง `t` แล้ว Features ของ `t` จาก Input Version เดิมต้องไม่เปลี่ยน | Fail Test |
 | Correlation | ใช้ช่วง 20 วันเดียวกันครบ 3 ETF, `[-1,1]`, Symmetric, PSD | `is_corr_ready=False`, ไม่คำนวณพอร์ต |
 | Idempotency | รัน Input/Config เดิมซ้ำแล้วไม่มีคีย์ซ้ำและค่าธุรกิจเท่าเดิม | Fail Pipeline |
+
+**นโยบายเมื่อพบ session ขาด:** หาก Feature Pipeline พบวันซื้อขายที่คาดหวังว่าขาดจาก input ที่ผ่าน Ingestion มาแล้ว ให้ถือเป็น run-level source-integrity failure: log ticker และวันที่ที่ขาด, หยุดทั้ง Feature run, ไม่ publish output บางส่วน และไม่ append รายการลง quarantine ซ้ำใน Feature stage การจัดการ per-ticker ใน Data Contract §5.1 ใช้กับ Ingestion เท่านั้น
 
 **Warning (ไม่ใช่ Hard Fail อัตโนมัติ):** ค่าที่เกินช่วงความผันผวนหรือผลตอบแทนซึ่งกำหนดแบบ Heuristic ต้อง Flag เพื่อตรวจสอบก่อน ไม่ลบค่าจริงของตลาดทิ้งโดยไม่ทราบสาเหตุ ค่า Warning เบื้องต้นจาก Contract เดิมแสดงไว้ด้านล่างเพื่ออ้างอิง (ไม่ใช่เกณฑ์ตัดข้อมูล):
 
@@ -213,13 +215,13 @@ r_{i,t}=\ln\left(\frac{P(i,t)}{P(i,t-1)}\right)$$
 
 ## 9. Acceptance Criteria — Feature Pipeline
 
-- [ ] รับข้อมูล `market_prices_daily` ตาม Data Contract รวม `open`, `high`, `low`, `is_warmup_buffer` ได้ แต่ไม่เพิ่ม `open/high/low` เป็น Core Features
-- [ ] สร้าง `asset_volatility_features` **18 คอลัมน์** และ `asset_rolling_correlations` **8 คอลัมน์** ตาม Dictionary โดยไม่เพิ่มตาราง
-- [ ] Core Features **8 ตัว** ถูกต้องตามสูตร/Lookback/หน่วย และแยกคำนวณ SPY, IEF, GLD
-- [ ] B1 ใช้ `rv_20d` โดยตรง; B2 ใช้ Core 8 ตัว; Experimental Features เป็นตัวเลือก
-- [ ] Warm-up และ `is_model_ready` ถูกต้อง; ไม่มีข้อมูลอนาคตใน Features
-- [ ] Correlation ใช้ผลตอบแทน 20 วันเดียวกันครบ 3 ETF และผ่าน Matrix Validation ก่อนใช้กับพอร์ต
-- [ ] มีการทดสอบ Missing/Null/Duplicate, Point-in-Time, No Cross-Ticker Mixing และรันซ้ำแล้วไม่เกิดข้อมูลซ้ำ
-- [ ] Metadata/Run Manifest ชี้กลับไปยัง Input Snapshot และ Config ที่ใช้จริงได้
+- [x] รับข้อมูล `market_prices_daily` ตาม Data Contract รวม `open`, `high`, `low`, `is_warmup_buffer` ได้ แต่ไม่เพิ่ม `open/high/low` เป็น Core Features
+- [x] สร้าง `asset_volatility_features` **18 คอลัมน์** และ `asset_rolling_correlations` **8 คอลัมน์** ตาม Dictionary โดยไม่เพิ่มตาราง
+- [x] Core Features **8 ตัว** ถูกต้องตามสูตร/Lookback/หน่วย และแยกคำนวณ SPY, IEF, GLD
+- [x] B1 ใช้ `rv_20d` โดยตรง; B2 ใช้ Core 8 ตัว; Experimental Features เป็นตัวเลือก
+- [x] Warm-up และ `is_model_ready` ถูกต้อง; ไม่มีข้อมูลอนาคตใน Features
+- [x] Correlation ใช้ผลตอบแทน 20 วันเดียวกันครบ 3 ETF และผ่าน Matrix Validation ก่อนใช้กับพอร์ต
+- [x] มีการทดสอบ Missing/Null/Duplicate, Point-in-Time, No Cross-Ticker Mixing และรันซ้ำแล้วไม่เกิดข้อมูลซ้ำ
+- [x] Metadata/Run Manifest ชี้กลับไปยัง Input Snapshot และ Config ที่ใช้จริงได้
 
 > **การใช้งานเอกสาร:** ฉบับนี้เป็นข้อกำหนดที่ตกลงแล้วสำหรับการนำไปพัฒนาและทดสอบจริง เมื่อปรับ Formula หรือ Schema ให้แก้ [datadict.md](./datadict.md), Contract ที่เกี่ยวข้อง และ Tests ให้ตรงกัน ไม่ถือว่าผ่าน Acceptance Criteria จนกว่าจะมีหลักฐานการรันจริง

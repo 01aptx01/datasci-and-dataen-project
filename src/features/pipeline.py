@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime, timezone
-from typing import Iterable, Sequence
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Iterable, Sequence
 
 import numpy as np
 import pandas as pd
 
 
 SUPPORTED_TICKERS = ("SPY", "IEF", "GLD")
+MIN_REQUIRED_WARMUP_TRADING_DAYS = 61
+OHLC_FLOAT_TOLERANCE = 1e-4
 INPUT_COLUMNS = (
     "date",
     "ticker",
@@ -59,6 +61,38 @@ CORRELATION_COLUMNS = [
     "source_batch_id",
     "computed_at_utc",
 ]
+FEATURE_WARNING_LIMITS = {
+    "SPY": {
+        "ret_1d_t": (-0.15, 0.15),
+        "ret_lag_1d": (-0.15, 0.15),
+        "ret_lag_2d": (-0.15, 0.15),
+        "ret_trailing_5d": (-0.25, 0.25),
+        "ret_trailing_20d": (-0.40, 0.40),
+        "rv_5d": (0.02, 1.50),
+        "rv_20d": (0.02, 1.20),
+        "rv_60d": (0.03, 1.00),
+    },
+    "IEF": {
+        "ret_1d_t": (-0.10, 0.10),
+        "ret_lag_1d": (-0.10, 0.10),
+        "ret_lag_2d": (-0.10, 0.10),
+        "ret_trailing_5d": (-0.18, 0.18),
+        "ret_trailing_20d": (-0.30, 0.30),
+        "rv_5d": (0.01, 1.00),
+        "rv_20d": (0.01, 0.80),
+        "rv_60d": (0.02, 0.70),
+    },
+    "GLD": {
+        "ret_1d_t": (-0.10, 0.10),
+        "ret_lag_1d": (-0.10, 0.10),
+        "ret_lag_2d": (-0.10, 0.10),
+        "ret_trailing_5d": (-0.18, 0.18),
+        "ret_trailing_20d": (-0.30, 0.30),
+        "rv_5d": (0.01, 1.00),
+        "rv_20d": (0.01, 0.80),
+        "rv_60d": (0.02, 0.70),
+    },
+}
 
 
 class FeaturePipelineError(ValueError):
@@ -76,11 +110,19 @@ def _as_date(value: object) -> date | None:
     return stamp.date()
 
 
-def _as_utc_timestamp(value: str | datetime | pd.Timestamp | None) -> str:
+def _as_utc_timestamp(value: str | datetime | pd.Timestamp | None) -> pd.Timestamp:
     stamp = pd.Timestamp.now(tz="UTC") if value is None else pd.Timestamp(value)
     if stamp.tzinfo is None:
         raise FeaturePipelineError("feature_as_of_utc must include a UTC offset")
-    return stamp.tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
+    return stamp.tz_convert("UTC")
+
+
+def _has_timezone(value: object) -> bool:
+    try:
+        stamp = pd.Timestamp(value)
+    except (TypeError, ValueError):
+        return False
+    return not pd.isna(stamp) and stamp.tzinfo is not None and stamp.utcoffset() is not None
 
 
 @dataclass(frozen=True)
@@ -104,8 +146,13 @@ class FeatureConfig:
             if end is None or end < start:
                 raise FeaturePipelineError("end_date must be a valid date on or after start_date")
             object.__setattr__(self, "end_date", end)
-        if not isinstance(self.warmup_trading_days, int) or self.warmup_trading_days < 1:
-            raise FeaturePipelineError("warmup_trading_days must be a positive integer")
+        if (
+            not isinstance(self.warmup_trading_days, int)
+            or self.warmup_trading_days < MIN_REQUIRED_WARMUP_TRADING_DAYS
+        ):
+            raise FeaturePipelineError(
+                "warmup_trading_days must be at least 61 trading days"
+            )
 
         tickers = tuple(self.tickers)
         if len(tickers) != len(set(tickers)) or set(tickers) != set(SUPPORTED_TICKERS):
@@ -151,11 +198,87 @@ def _normalise_input(prices: pd.DataFrame) -> pd.DataFrame:
     return data.sort_values(["ticker", "date"]).reset_index(drop=True)
 
 
+def expected_market_sessions(
+    data: pd.DataFrame,
+    config: FeatureConfig,
+) -> tuple[date, ...]:
+    """Return the configured XNYS sessions, including the required warm-up window."""
+    try:
+        import pandas_market_calendars as market_calendars
+    except ImportError as error:
+        raise FeaturePipelineError(
+            "pandas-market-calendars is required to validate the complete exchange session sequence"
+        ) from error
+
+    dates = pd.to_datetime(data["date"], errors="coerce")
+    if dates.isna().any() or dates.empty:
+        raise FeaturePipelineError("market_prices_daily contains invalid dates")
+    calendar = market_calendars.get_calendar(config.market)
+    search_start = config.start_date - timedelta(
+        days=max(30, config.warmup_trading_days * 3)
+    )
+    effective_end = config.end_date or dates.max().date()
+    schedule = calendar.schedule(
+        start_date=min(search_start, dates.min().date()),
+        end_date=effective_end,
+    )
+    all_sessions = tuple(pd.Timestamp(value).date() for value in schedule.index)
+    if not all_sessions:
+        raise FeaturePipelineError("no exchange sessions overlap the input price range")
+    warmup_sessions = tuple(day for day in all_sessions if day < config.start_date)
+    if len(warmup_sessions) < config.warmup_trading_days:
+        raise FeaturePipelineError(
+            f"calendar returned fewer than {config.warmup_trading_days} warm-up sessions"
+        )
+    required_start = warmup_sessions[-config.warmup_trading_days]
+    actual_start = dates.min().date()
+    expected_start = min(actual_start, required_start)
+    return tuple(
+        day
+        for day in all_sessions
+        if expected_start <= day <= effective_end
+    )
+
+
+def _validate_explicit_market_sessions(
+    expected_days: Sequence[date],
+    config: FeatureConfig,
+) -> None:
+    if not expected_days:
+        raise FeaturePipelineError("expected_trading_days cannot be empty")
+    try:
+        import pandas_market_calendars as market_calendars
+    except ImportError as error:
+        raise FeaturePipelineError(
+            "pandas-market-calendars is required to validate expected_trading_days"
+        ) from error
+
+    calendar = market_calendars.get_calendar(config.market)
+    end_date = config.end_date or expected_days[-1]
+    schedule = calendar.schedule(
+        start_date=expected_days[0],
+        end_date=end_date,
+    )
+    calendar_sessions = tuple(pd.Timestamp(value).date() for value in schedule.index)
+    if calendar_sessions != tuple(expected_days):
+        raise FeaturePipelineError(
+            "expected_trading_days must match the configured market calendar sessions"
+        )
+
+
 def validate_price_data(
     prices: pd.DataFrame,
     config: FeatureConfig,
 ) -> pd.DataFrame:
     """Validate curated prices and return a sorted, normalized copy."""
+    data, _ = _validate_price_data_and_sessions(prices, config)
+    return data
+
+
+def _validate_price_data_and_sessions(
+    prices: pd.DataFrame,
+    config: FeatureConfig,
+) -> tuple[pd.DataFrame, tuple[date, ...]]:
     data = _normalise_input(prices)
     unsupported = sorted(set(data["ticker"]) - set(config.tickers))
     if unsupported:
@@ -169,7 +292,7 @@ def validate_price_data(
         if not np.isfinite(values).all() or (values <= 0).any():
             raise FeaturePipelineError(f"{column} must contain only finite positive prices")
 
-    tolerance = 1e-4
+    tolerance = OHLC_FLOAT_TOLERANCE
     valid_ohlc = (
         (data["low"] <= data["high"] + tolerance)
         & (data["low"] - tolerance <= data["open"])
@@ -197,11 +320,27 @@ def validate_price_data(
             raise FeaturePipelineError(
                 f"{column} must be a non-empty string up to 64 characters"
             )
+    if not data["ingested_at_utc"].map(_has_timezone).all():
+        raise FeaturePipelineError(
+            "ingested_at_utc must contain timezone-aware UTC timestamps"
+        )
     data["ingested_at_utc"] = pd.to_datetime(
         data["ingested_at_utc"], utc=True, errors="coerce"
     )
     if data["ingested_at_utc"].isna().any():
         raise FeaturePipelineError("ingested_at_utc must contain valid UTC timestamps")
+
+    if config.expected_trading_days is None:
+        expected_days = expected_market_sessions(data, config)
+    else:
+        expected_days = config.expected_trading_days
+        _validate_explicit_market_sessions(expected_days, config)
+    warmup_session_count = sum(day < config.start_date for day in expected_days)
+    if warmup_session_count < config.warmup_trading_days:
+        raise FeaturePipelineError(
+            f"expected trading days must include at least {config.warmup_trading_days} "
+            "warm-up sessions before start_date"
+        )
 
     expected_warmup = data["date"].map(lambda value: value < config.start_date)
     if not data["is_warmup_buffer"].eq(expected_warmup).all():
@@ -209,21 +348,20 @@ def validate_price_data(
 
     for ticker, group in data.groupby("ticker", sort=False):
         group = group.sort_values("date").reset_index(drop=True)
-        if config.expected_trading_days is not None:
-            expected_days = set(config.expected_trading_days)
-            actual_days = set(group["date"])
-            missing_days = sorted(expected_days - actual_days)
-            extra_days = sorted(actual_days - expected_days)
-            if missing_days:
-                sample = ", ".join(day.isoformat() for day in missing_days[:3])
-                raise FeaturePipelineError(
-                    f"missing expected trading days for ticker {ticker}: {sample}"
-                )
-            if extra_days:
-                sample = ", ".join(day.isoformat() for day in extra_days[:3])
-                raise FeaturePipelineError(
-                    f"unexpected trading days for ticker {ticker}: {sample}"
-                )
+        expected_set = set(expected_days)
+        actual_days = set(group["date"])
+        missing_days = sorted(expected_set - actual_days)
+        extra_days = sorted(actual_days - expected_set)
+        if missing_days:
+            sample = ", ".join(day.isoformat() for day in missing_days[:3])
+            raise FeaturePipelineError(
+                f"missing expected trading days for ticker {ticker}: {sample}"
+            )
+        if extra_days:
+            sample = ", ".join(day.isoformat() for day in extra_days[:3])
+            raise FeaturePipelineError(
+                f"unexpected trading days for ticker {ticker}: {sample}"
+            )
 
         previous = group["adjusted_close"].shift(1)
         expected_simple = group["adjusted_close"].div(previous) - 1
@@ -248,7 +386,7 @@ def validate_price_data(
                     f"{column} is inconsistent with adjusted_close for ticker {ticker}"
                 )
 
-    return data
+    return data, tuple(expected_days)
 
 
 def _wilder_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
@@ -311,6 +449,10 @@ def build_rolling_correlations(
     missing = sorted(required - set(prices.columns))
     if missing:
         raise FeaturePipelineError(f"correlation input is missing columns: {', '.join(missing)}")
+    if expected_trading_days is None:
+        raise FeaturePipelineError(
+            "expected_trading_days is required to validate synchronized market sessions"
+        )
 
     data = prices.loc[:, ["date", "ticker", "log_return", "source_batch_id"]].copy()
     data["date"] = data["date"].map(_as_date)
@@ -323,12 +465,9 @@ def build_rolling_correlations(
     ticker_order = tuple(tickers)
     if tuple(ticker_order) != SUPPORTED_TICKERS:
         raise FeaturePipelineError("correlation ticker order must be SPY, IEF, GLD")
-    if expected_trading_days is None:
-        days = tuple(sorted(set(data["date"])))
-    else:
-        days = tuple(_as_date(day) for day in expected_trading_days)
-        if any(day is None for day in days) or tuple(sorted(set(days))) != days:
-            raise FeaturePipelineError("expected_trading_days must be valid, sorted, and unique")
+    days = tuple(_as_date(day) for day in expected_trading_days)
+    if any(day is None for day in days) or tuple(sorted(set(days))) != days:
+        raise FeaturePipelineError("expected_trading_days must be valid, sorted, and unique")
 
     aligned = data.pivot(index="date", columns="ticker", values="log_return")
     aligned = aligned.reindex(index=days, columns=ticker_order)
@@ -393,7 +532,7 @@ def build_feature_tables(
     if not isinstance(run_id, str) or not run_id.strip() or len(run_id) > 64:
         raise FeaturePipelineError("run_id must be a non-empty string up to 64 characters")
 
-    data = validate_price_data(prices, config)
+    data, expected_days = _validate_price_data_and_sessions(prices, config)
     feature_as_of = _as_utc_timestamp(feature_as_of_utc)
     frames = []
     for ticker, group in data.groupby("ticker", sort=False):
@@ -443,7 +582,85 @@ def build_feature_tables(
         tickers=SUPPORTED_TICKERS,
         run_id=run_id,
         computed_at_utc=feature_as_of,
-        expected_trading_days=config.expected_trading_days,
+        expected_trading_days=expected_days,
     )
     return asset_features.loc[:, FEATURE_COLUMNS], correlations.loc[:, CORRELATION_COLUMNS]
+
+
+def collect_feature_warnings(features: pd.DataFrame) -> list[dict[str, Any]]:
+    """Return non-blocking warning records for values outside Contract heuristics."""
+    required = {"date", "ticker", *FEATURE_WARNING_LIMITS["SPY"]}
+    missing = sorted(required - set(features.columns))
+    if missing:
+        raise FeaturePipelineError(
+            f"feature warning input is missing columns: {', '.join(missing)}"
+        )
+
+    warnings = []
+    for ticker, limits in FEATURE_WARNING_LIMITS.items():
+        ticker_rows = features.loc[features["ticker"] == ticker]
+        for column, (lower_bound, upper_bound) in limits.items():
+            numeric = pd.to_numeric(ticker_rows[column], errors="coerce")
+            values = numeric.to_numpy(dtype=float)
+            flagged = np.isfinite(values) & (
+                (values < lower_bound) | (values > upper_bound)
+            )
+            for index in np.flatnonzero(flagged):
+                row = ticker_rows.iloc[index]
+                warnings.append(
+                    {
+                        "date": row["date"].isoformat(),
+                        "ticker": ticker,
+                        "feature": column,
+                        "value": float(values[index]),
+                        "lower_bound": lower_bound,
+                        "upper_bound": upper_bound,
+                    }
+                )
+    return warnings
+
+
+def filter_corrupted_feature_tickers(
+    features: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str], list[dict[str, Any]]]:
+    """Remove tickers with a Core null/non-finite value after Core readiness."""
+    required = {"date", "ticker", "source_batch_id", "is_warmup_buffer", *CORE_FEATURE_COLUMNS}
+    missing = sorted(required - set(features.columns))
+    if missing:
+        raise FeaturePipelineError(
+            f"feature quality input is missing columns: {', '.join(missing)}"
+        )
+
+    failed_tickers = set()
+    quarantine_records = []
+    for ticker, group in features.sort_values(["ticker", "date"]).groupby(
+        "ticker", sort=True
+    ):
+        ready_seen = False
+        for _, row in group.iterrows():
+            values = pd.to_numeric(row.loc[list(CORE_FEATURE_COLUMNS)], errors="coerce")
+            finite = np.isfinite(values.to_numpy(dtype=float))
+            if finite.all():
+                ready_seen = True
+                continue
+            if not ready_seen:
+                continue
+
+            invalid_values = values.loc[~finite]
+            quarantine_records.append(
+                {
+                    "source_batch_id": row["source_batch_id"],
+                    "date": row["date"].isoformat(),
+                    "ticker": ticker,
+                    "raw_value": "; ".join(
+                        f"{column}={value!r}"
+                        for column, value in invalid_values.items()
+                    ),
+                    "reason": "CORRUPTED_FEATURE_NULL",
+                }
+            )
+            failed_tickers.add(ticker)
+
+    valid_features = features.loc[~features["ticker"].isin(failed_tickers)].copy()
+    return valid_features, sorted(failed_tickers), quarantine_records
 
