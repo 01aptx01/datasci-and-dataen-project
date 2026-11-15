@@ -110,7 +110,7 @@ flowchart TD
 
 ## 7. กติกาที่ต้องรักษาตลอดระบบ
 
-1. **ราคาและวันซื้อขาย** — รับข้อมูลรายวันผ่าน `yfinance` โดยใช้ `auto_adjust=True`; แมป `Close` ที่ปรับแล้วเป็น `adjusted_close`; ราคาต้องเป็นตัวเลข Finite และมากกว่า `0`; วันขาดหายต้องเทียบ Trading Calendar ไม่ใช่นับวันหยุดเป็น Missing
+1. **ราคาและวันซื้อขาย** — รับข้อมูลรายวันผ่าน `yfinance` โดยใช้ `auto_adjust=True`; แมป `Open` เป็น `open` และ `Close` ที่ปรับแล้วเป็น `adjusted_close` บนฐานปรับราคาเดียวกัน; ราคาต้องเป็นตัวเลข Finite และมากกว่า `0`; วันขาดหายต้องเทียบ Trading Calendar ไม่ใช่นับวันหยุดเป็น Missing
 2. **Data Quality** — ห้ามคีย์ `(date, ticker)` ซ้ำ; ไม่เติมราคาข้ามวันแบบเดาสุ่ม; แยกข้อมูลที่ผิดกฎบังคับไว้ตรวจสอบ; ถ้า Ticker หนึ่งไม่ผ่าน ให้ระงับข้อมูลของ Ticker นั้นในรอบนั้น แต่ Ticker อื่นที่ถูกต้องยังทำงานต่อได้
 3. **Point-in-Time** — Feature ของวัน `t` ใช้ข้อมูลไม่เกินวัน `t`; Rolling คำนวณแยก Ticker; ต้องมี Warm-up เพียงพอสำหรับ `rv_60d`; ไม่ให้ Train/Validation/Test รั่วข้อมูลอนาคตถึงกัน
 4. **Label Maturity** — Target เป็น Annualized Realized Volatility จาก `t+1` ถึง `t+5`; ค่า `is_label_mature` จะเป็น `True` เมื่อผลจริงครบ 5 วันซื้อขายเท่านั้น; ใช้ Label ที่ครบแล้วสำหรับ Train/Evaluate/Online Update

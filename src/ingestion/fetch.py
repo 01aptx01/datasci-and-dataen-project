@@ -45,7 +45,7 @@ def fetch_ticker(
                 if not isinstance(data.columns, pd.MultiIndex)
                 else {str(c) for col in data.columns for c in col}
             )
-            missing = {"Close", "High", "Low"} - col_names
+            missing = {"Open", "Close", "High", "Low"} - col_names
             if missing:
                 return {
                     "ticker": ticker,

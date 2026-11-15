@@ -74,6 +74,7 @@
 |---|---|---|---|
 | `date` | `DATE` / `YYYY-MM-DD` | No | วันซื้อขายตามตลาดสหรัฐฯ |
 | `ticker` | `VARCHAR(16)` | No | ต้องเป็น `SPY`, `IEF` หรือ `GLD` |
+| `open` | `FLOAT` / USD | No | ราคาเปิดจาก `Open` ในโหมด `auto_adjust=True`; Finite และ `> 0`; ต้องอยู่ระหว่าง `low` กับ `high` |
 | `adjusted_close` | `FLOAT` / USD | No | ตัวเลข Finite และ `> 0`; ราคาปิดปรับปรุงแล้วจาก `Close` เมื่อ `auto_adjust=True` |
 | `high` | `FLOAT` / USD | No | ราคาสูงสุดของวันจาก `High` ในโหมด `auto_adjust=True`; Finite และ `> 0` |
 | `low` | `FLOAT` / USD | No | ราคาต่ำสุดของวันจาก `Low` ในโหมด `auto_adjust=True`; Finite และ `> 0` |
@@ -91,6 +92,7 @@
 columns = [
     "date",
     "ticker",
+    "open",
     "adjusted_close",
     "high",
     "low",
@@ -109,9 +111,9 @@ columns = [
 ### 4.1 Canonical Price และ Schema Mapping
 
 - เมื่อเรียก `yfinance` ด้วย **`auto_adjust=True`** ให้ใช้คอลัมน์ `Close` ที่ได้รับเป็น **ราคาปิดปรับปรุงแล้ว** แล้วเปลี่ยนชื่อเป็น `adjusted_close` ในชั้น Transformation
-- นำคอลัมน์ **`High` → `high`** และ **`Low` → `low`** จากผล `yfinance` **ในรอบเดียวกันและด้วย `auto_adjust=True` เหมือนกัน**; คอลัมน์ทั้งสองเป็นราคา High/Low บนฐานการปรับราคาเดียวกับ `adjusted_close` เพื่อเก็บข้อมูลตลาดและตรวจคุณภาพ
-- `simple_return` และ `log_return` รวมถึง Features/Targets หลัก **ยังคำนวณจาก `adjusted_close` เท่านั้น**; `high` กับ `low` ไม่ได้เพิ่มเป็นตัวแปรที่ต้องฝึก ML โดยอัตโนมัติ
-- ไม่ใช้ `Adj Close` อีกชุด หรือผสมราคา `High`, `Low`, `Close` แบบ **ไม่ปรับราคา** กับ `adjusted_close` ที่ปรับราคาแล้ว
+- นำคอลัมน์ **`Open` → `open`**, **`High` → `high`** และ **`Low` → `low`** จากผล `yfinance` **ในรอบเดียวกันและด้วย `auto_adjust=True` เหมือนกัน**; ทั้งสามคอลัมน์เป็นราคา Open/High/Low บนฐานการปรับราคาเดียวกับ `adjusted_close` เพื่อเก็บข้อมูลตลาดและตรวจคุณภาพ
+- `simple_return` และ `log_return` รวมถึง Features/Targets หลัก **ยังคำนวณจาก `adjusted_close` เท่านั้น**; `open`, `high` กับ `low` ไม่ได้เพิ่มเป็นตัวแปรที่ต้องฝึก ML โดยอัตโนมัติ
+- ไม่ใช้ `Adj Close` อีกชุด หรือผสมราคา `Open`, `High`, `Low`, `Close` แบบ **ไม่ปรับราคา** กับ `adjusted_close` ที่ปรับราคาแล้ว
 - คอลัมน์ที่แหล่งข้อมูลไม่ได้ส่งมาแต่เป็นคอลัมน์บังคับต้อง **Fail Validation** แทนการเดาค่าทดแทน
 - แปลงข้อมูลเป็น Long Format, ระบุ `ticker` และ `date` อย่างชัดเจน; เรียงข้อมูลตาม `ticker`, `date` ก่อนคำนวณ Returns
 
@@ -140,8 +142,8 @@ $$r_{i,t}=\ln\!\left(\frac{P_{i,t}}{P_{i,t-1}}\right)=\ln(1+R_{i,t})$$
 | Ticker Domain | `ticker ∈ {SPY, IEF, GLD}` | **Hard Fail** |
 | Date Validity | วันที่ถูกต้อง อยู่ในขอบเขตที่ขอ และเรียงเพิ่มขึ้นหลัง Sort | **Hard Fail** |
 | Primary Key | `(date, ticker)` ไม่ซ้ำในชุดที่เผยแพร่ | **Hard Fail** |
-| Price Validity | `adjusted_close`, `high`, `low` เป็น Finite และ `> 0` ทุกค่า | **Hard Fail** |
-| High/Low Consistency | `low <= adjusted_close <= high` และ `low <= high` (ยอมให้คลาดเคลื่อนระดับ Floating-point เล็กน้อย) | **Hard Fail** |
+| Price Validity | `open`, `adjusted_close`, `high`, `low` เป็น Finite และ `> 0` ทุกค่า | **Hard Fail** |
+| High/Low Consistency | `low <= open <= high`, `low <= adjusted_close <= high` และ `low <= high` (ยอมให้คลาดเคลื่อนระดับ Floating-point เล็กน้อย) | **Hard Fail** |
 | Warm-up Flag | `is_warmup_buffer` เป็น Boolean และเท่ากับ `(date < config.start_date)` | **Hard Fail** |
 | Return Validity | Returns คำนวณถูกต้อง ไม่มี `Inf`/`NaN` นอกแถวแรก | **Hard Fail** |
 | Trading Day Completeness | ไม่มีวันซื้อขายที่ควรมีแต่ขาดข้อมูล (เฉพาะวันที่ข้อมูลพร้อมแล้ว) | **Hard Fail** |
@@ -268,8 +270,8 @@ ing_001,yf_001,2026-09-23,GLD,,MISSING_EXPECTED_TRADING_DAY,2026-09-24T01:00:00Z
 ถือว่า Data Ingestion Stage **ผ่าน Definition of Done** เมื่อพิสูจน์ได้ว่า:
 
 1. ดึง SPY/IEF/GLD ภายในช่วงเวลาที่กำหนด รวม Warm-up ตาม Trading Calendar; บันทึก Raw Snapshot และ Manifest ได้
-2. `market_prices_daily` มี Schema ตาม Data Dictionary รวม `high`, `low`, `is_warmup_buffer` และไม่มี `(date, ticker)` ซ้ำ
-3. ราคา `adjusted_close`/`high`/`low` ติดลบหรือเป็นศูนย์, `low > high`, ราคาปิดอยู่นอกช่วง High/Low, Null Required Field, Duplicate และ Missing Trading Day ถูกตรวจพบ; ไม่ส่งข้อมูลผิดไป Downstream
+2. `market_prices_daily` มี Schema 13 คอลัมน์ตาม Data Dictionary รวม `open`, `high`, `low`, `is_warmup_buffer` และไม่มี `(date, ticker)` ซ้ำ
+3. ราคา `open`/`adjusted_close`/`high`/`low` ติดลบหรือเป็นศูนย์, `low > high`, ราคาเปิดหรือปิดอยู่นอกช่วง High/Low, Null Required Field, Duplicate และ Missing Trading Day ถูกตรวจพบ; ไม่ส่งข้อมูลผิดไป Downstream
 4. วันหยุดตลาดไม่ถูกนับเป็น Missing และแถวแรกของแต่ละ Ticker สามารถมี Return เป็น `NULL` ได้ตามกฎ; `is_warmup_buffer` ต้องตรงกับ `date < config.start_date` ทุกแถว
 5. กรณี Return เกิน `±20%` ถูก Flag/บันทึก Warning โดยไม่ตัดแถวอัตโนมัติ
 6. หาก Ticker หนึ่ง Fail ระบบแยกผลของ Ticker นั้น แต่ยังเผยแพร่ Ticker อื่นที่ผ่านได้อย่างถูกต้อง; Portfolio ต้องไม่แอบใช้ข้อมูลไม่ครบ
