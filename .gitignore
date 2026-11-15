@@ -1,0 +1,45 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment (uv / venv)
+.venv/
+venv/
+ENV/
+env/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Logs & Audit evidence
+logs/*
+!logs/.gitkeep
+!logs/quarantine.csv
+!logs/ingestion_runs.jsonl
+
+# Data generated at runtime (keep folder structure via .gitkeep)
+data/*
+!data/**/.gitkeep
+
+# Temporary & atomic write swap files
+*.tmp
+*.tmp.parquet
+
+# Local Environment Variables & Secrets
+.env
+.local.env
+*.env
+
+# Operating System & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.gitkeep

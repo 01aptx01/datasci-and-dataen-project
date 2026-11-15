@@ -1,209 +1,225 @@
-# ขั้นที่ 2: กำหนด Feature Contract สำหรับการทำนายความผันผวนรายสินทรัพย์ (Asset-Level Volatility Forecasting)
+# Feature Contract — Adaptive Portfolio Risk Lab
 
-> **Feature Contract** คือข้อตกลงและพันธสัญญาระดับ Feature Engineering ที่กำหนด**กติกาการสร้างและตรวจสอบตัวแปรต้นรายสินทรัพย์ (Asset-Level Features)** เพื่อใช้ทำนายความผันผวนจริงล่วงหน้า 5 วันทำการ (`target_realized_vol_5d`) ของแต่ละหลักทรัพย์ (`SPY`, `IEF`, `GLD`) โดยครอบคลุมสูตรคำนวณ, หน้าต่างเวลาย้อนหลัง (Lookback Window), การจัดแนวข้อมูลตามเวลา (Point-in-Time Alignment), นโยบายจัดการค่าว่าง และเกณฑ์การตรวจสอบคุณภาพก่อนส่งเข้าโมเดล Machine Learning
->
-> สำหรับรายละเอียดคำอธิบายคอลัมน์ ชนิดข้อมูล (Type) หน่วยวัด (Unit) บทบาท (Role) และเงื่อนไข Nullable ของตาราง `asset_volatility_features` และตารางข้อมูลประกอบ `asset_rolling_correlations` ให้อ้างอิงจากแหล่งข้อมูลกลางที่ **[datadict.md](./datadict.md)**
+**Document:** `contracts/feature_contract.md`  
+**Scope:** Feature Engineering สำหรับ ETF **SPY, IEF, GLD** และ Historical Correlation สำหรับ Portfolio Risk
 
----
+> **Feature Contract** กำหนดวิธีนำข้อมูลราคาที่ผ่านการตรวจสอบแล้วมาสร้าง Features ณ วันซื้อขาย `t` โดยใช้เฉพาะข้อมูลถึงวัน `t` รวมถึงกฎเรื่องสูตรคำนวณ, Lookback, Warm-up, Null, Data Quality, การป้องกัน Data Leakage และข้อมูลต้นทางที่ตรวจสอบย้อนหลังได้
 
-## สรุปภาพรวม (TL;DR)
+## 0. เอกสารที่ต้องอ่านร่วมกัน
 
-1. **เป้าหมายหลักและระดับของข้อมูล (Objective & Granularity)**:
-   - สร้างตาราง `asset_volatility_features` ที่มีระดับหน่วยข้อมูล (Grain) เป็น **1 แถว ต่อ 1 สินทรัพย์ (`ticker`) ณ สิ้นวันซื้อขาย `date` ($t$)** เพื่อใช้ทำนายความผันผวนจริงในอีก 5 วันทำการถัดไป ($t+1$ ถึง $t+5$) ของสินทรัพย์แต่ละตัว (`SPY`, `IEF`, `GLD`)
-   - **การแยกขั้นตอนคำนวณความเสี่ยงพอร์ตโฟลิโอ (Downstream Portfolio Aggregation)**: โมเดล Machine Learning ไม่ได้ทำนายความผันผวนของพอร์ตคงที่โดยตรง แต่ทำนายความผันผวนรายสินทรัพย์ ($\hat{\sigma}_{\text{SPY},t}, \hat{\sigma}_{\text{IEF},t}, \hat{\sigma}_{\text{GLD},t}$) ก่อน จากนั้นจึงนำค่าพยากรณ์ทั้ง 3 สินทรัพย์ไปคำนวณรวมกับน้ำหนักพอร์ตที่ผู้ใช้กำหนด (เช่น ค่าเริ่มต้นสาธิต `50/30/20`) และค่าสหสัมพันธ์ระหว่างสินทรัพย์ (`asset_rolling_correlations`) ในขั้นตอน Downstream ตามที่กำหนดไว้ใน **[target_contract.md](./target_contract.md)**
-2. **ราคาตั้งต้นมาตรฐาน (Price Input)**: ใช้คอลัมน์ **`adjusted_close`** จากตาราง `market_prices_daily` ตาม [data_contract.md](./data_contract.md) เป็นฐานในการคำนวณผลตอบแทนและตัวแปรต้นทั้งหมด
-3. **ขอบเขตเวลา (Point-in-Time)**: Feature ทุกตัวของสินทรัพย์ $i$ ในแถววันที่ $t$ ต้องคำนวณจากข้อมูลย้อนหลังถึงสิ้นวัน $t$ เท่านั้น (**ห้าม**ใช้ข้อมูลหลังวัน $t$ โดยเด็ดขาด)
-4. **การแยกความพร้อมของ Feature (`is_model_ready`) ออกจากความพร้อมของ Target (`is_label_mature`)**:
-   - **โหมดพยากรณ์ใช้งานจริง (Live Inference ณ วัน $t$)**: ใช้เฉพาะตาราง `asset_volatility_features` ที่ `is_model_ready == True` โดยไม่มีคอลัมน์ Target และไม่ต้องรอให้ข้อมูลอนาคตครบ 5 วัน
-   - **โหมดฝึกและประเมินผลโมเดล (Training & Evaluation)**: นำตาราง Feature ไป Join กับตาราง `asset_volatility_labels` ด้วยคีย์ `(date, ticker)` โดยคัดเฉพาะแถวที่ `is_warmup_buffer == False`, `is_model_ready == True` และ `is_label_mature == True` เท่านั้น
-   - การแบ่ง Train / Validation / Test ต้องแบ่งตามลำดับเวลาและเว้นระยะตัดขาด (**Purge / Embargo Gap อย่างน้อย 5 วันซื้อขาย**) รวมถึงบังคับให้ **Fit ตัวแปลงข้อมูล (Scaler/Preprocessor) บนชุด Train เท่านั้น**
+- [README.md](./README.md) — ภาพรวมระบบและขอบเขตที่ตกลงกัน
+- [data_contract.md](./data_contract.md) — ที่มาและการตรวจสอบ `market_prices_daily` (12 คอลัมน์ รวม `high`, `low`, `is_warmup_buffer`)
+- [datadict.md](./datadict.md) — **แหล่งอ้างอิงกลาง** ของชื่อคอลัมน์, Data Type, Grain, Key, Unit และ Nullable
+- [target_contract.md](./target_contract.md) — Forward 5-day Realized Volatility และ Label Maturity
+- [prediction_contract.md](./prediction_contract.md) — การนำ Features ไปสร้าง/บันทึก Forecast และการประเมินเมื่อรู้ผลจริง
 
 ---
 
-## 1. ขอบเขตและมิติเวลาของข้อมูล (Scope & Time Dimension)
+## 1. ขอบเขต Input / Output
 
-| หัวข้อ | ข้อกำหนดและรายละเอียด |
-| :--- | :--- |
-| **วัตถุประสงค์ (Objective)** | สร้างตาราง `asset_volatility_features` สำหรับเป็นตัวแปรต้น ($X$) ในการทำนายความผันผวนจริงรายสินทรัพย์ล่วงหน้า 5 วันซื้อขาย ($t+1$ ถึง $t+5$) และสร้างตารางประกอบ `asset_rolling_correlations` สำหรับส่งให้ขั้นตอนคำนวณความเสี่ยงพอร์ตโฟลิโอในระดับ Downstream |
-| **ระดับหน่วยข้อมูล (Granularity)** | • ตารางหลัก `asset_volatility_features`: **1 แถว ต่อ 1 สินทรัพย์ (`ticker`) ณ วันซื้อขาย `date` ($t$)**<br>• ตารางประกอบ `asset_rolling_correlations`: **1 แถว ต่อ 1 วันซื้อขาย `date` ($t$)** |
-| **คีย์หลัก (Primary Key)** | `(date, ticker)` สำหรับตาราง `asset_volatility_features` |
-| **สินทรัพย์ที่รองรับ (Assets)** | `SPY` (หุ้นสหรัฐฯ), `IEF` (พันธบัตรรัฐบาลสหรัฐฯ), `GLD` (ทองคำ) |
-| **นโยบายน้ำหนักพอร์ตโฟลิโอ (Downstream Portfolio Weights)** | **ไม่ผูกน้ำหนักพอร์ตโฟลิโอเข้ากับตาราง Training Features หรือ Labels**<br>• น้ำหนักพอร์ตโฟลิโอ $w = (w_{\text{SPY}}, w_{\text{IEF}}, w_{\text{GLD}})$ จะถูกรับเข้ามาในขั้นตอนคำนวณความเสี่ยงพอร์ตโฟลิโอ (Downstream Inference / Risk Calculator) เมื่อผู้ใช้ร้องขอ<br>• ค่าสัดส่วน เช่น **`50/30/20`** ($w_{\text{SPY}}=0.50, w_{\text{IEF}}=0.30, w_{\text{GLD}}=0.20$) หรือ Equal Weight ใช้เป็นเพียง**ค่าเริ่มต้นสำหรับการสาธิต (Configurable Default)** ที่ผู้ใช้ปรับเปลี่ยนได้โดยไม่ต้องฝึกโมเดลใหม่ |
-| **คอลัมน์ราคาตั้งต้น (Input Price Column)** | **`adjusted_close`** จากตาราง `market_prices_daily` เท่านั้น (สอดคล้องกับ [data_contract.md](./data_contract.md)) |
-| **เขตเวลาอ้างอิง (Market Timezone)** | **`America/New_York`** (ครอบคลุมทั้ง EST/EDT) สำหรับกำหนดวันซื้อขาย `date` |
-| **เวลาที่ข้อมูลพร้อมใช้ (Data Availability Cut-off)** | สร้างได้**หลังจากกระบวนการ Data Ingestion ยืนยันว่าดึงและตรวจสอบข้อมูลปิดตลาดของวัน $t$ เสร็จสมบูรณ์แล้ว (Ingestion Complete & Validated)** |
-| **ข้อมูลที่ห้ามใช้ (Forbidden Data)** | ข้อมูลราคาหรือตัวแปรใดๆ ที่เกิดขึ้นหลังเวลาปิดตลาดวัน $t$ ($t+1, t+2, \dots$) และห้ามนำคอลัมน์จากตาราง Target เข้ามาในเมทริกซ์ $X$ |
-| **การติดตามเวอร์ชันและ Lineage (Versioning & Lineage Metadata)** | บันทึก `feature_set_version = '2.0.0'`, `run_id`, `source_batch_id` และเวลาที่สร้างแถวในรูป `TIMESTAMPTZ` (UTC) ในคอลัมน์ `feature_as_of_utc` |
+| รายการ | ข้อตกลง |
+|---|---|
+| **Input** | ตาราง `market_prices_daily` ที่ผ่าน Data Contract; ใช้ `date`, `ticker`, `adjusted_close`, `log_return`, `simple_return`, `is_warmup_buffer` และ Metadata ที่จำเป็น |
+| **Source of truth สำหรับ Returns** | ใช้ `adjusted_close` เป็นราคาต้นทาง; ตรวจสอบว่าค่า `log_return` ใน Price Table สอดคล้องกับสูตรก่อนนำไปคำนวณต่อ |
+| **`high` และ `low`** | รับไว้ใน `market_prices_daily` เพื่อการตรวจสอบคุณภาพราคา แต่ **ไม่ใช่ Core Features** ในสเปกนี้ และไม่เพิ่มลง Model Matrix อัตโนมัติ |
+| **Output 1** | `asset_volatility_features`: **1 แถว / `(date, ticker)`** (18 คอลัมน์ตาม `datadict.md`) |
+| **Output 2** | `asset_rolling_correlations`: **1 แถว / `date`** (8 คอลัมน์ตาม `datadict.md`) |
+| **Assets** | `SPY`, `IEF`, `GLD` เท่านั้น |
+| **Trading date / Timezone** | `date` เป็นวันซื้อขายตลาดสหรัฐฯ ใน `America/New_York`; Audit Timestamp ใช้ UTC |
+| **Data availability** | ผลของวัน `t` สร้างได้เมื่อข้อมูลราคาปิดของวัน `t` ผ่าน Validation และพร้อมใช้งานแล้วเท่านั้น |
+| **ไม่อยู่ในขอบเขต** | การสร้าง Target 5 วัน, ฝึกโมเดล, คำนวณ MAE/RMSE, ผลพยากรณ์, และการรับน้ำหนักพอร์ตจากผู้ใช้ |
 
----
+### ลำดับข้อมูล
 
-## 2. มาตรฐานการตั้งชื่อและโครงสร้างสคีมาสรุป (Naming Conventions & Output Schema Summary)
-
-### 2.1 กฎการตั้งชื่อคอลัมน์ (Naming Conventions)
-
-เนื่องจากตาราง `asset_volatility_features` มีคีย์หลักเป็น `(date, ticker)` ชื่อคอลัมน์ตัวแปรต้นจึงเป็นชื่อมาตรฐานเดียวกันทุกสินทรัพย์ (ไม่ต้องแยกเป็น `ret_spy_t`, `ret_ief_t` คนละคอลัมน์ในแถวเดียวกัน):
-- `ret_1d_t`: ผลตอบแทนลอการิทึมรายวันของสินทรัพย์ `ticker` ณ สิ้นวัน $t$ ($r_{i,t}$)
-- `ret_lag_<k>d`: ผลตอบแทนลอการิทึมรายวันของสินทรัพย์ `ticker` ย้อนหลัง $k$ วันทำการเทียบกับวัน $t$ ($r_{i,t-k}$ เช่น `ret_lag_1d`, `ret_lag_2d`)
-- `ret_trailing_<n>d`: ผลตอบแทนสะสมแบบธรรมดาย้อนหลัง $n$ วันทำการ สิ้นสุดที่วัน $t$ ของสินทรัพย์ `ticker` (เช่น `ret_trailing_5d`, `ret_trailing_20d`)
-- `rv_<n>d`: ค่าความผันผวนจริงย้อนหลัง (Annualized Realized Volatility) จากหน้าต่าง $n$ วันทำการ สิ้นสุดที่วัน $t$ ของสินทรัพย์ `ticker` (เช่น `rv_5d`, `rv_20d`, `rv_60d`)
-
-### 2.2 โครงสร้างคอลัมน์ที่ Pipeline ต้องส่งออกและการคัดเข้าเมทริกซ์ $X$ (Output Schema Contract)
-
-> รายละเอียดชนิดข้อมูล (Type), หน่วย (Unit), ความหมายรายคอลัมน์ และเงื่อนไข Nullable ดูได้ที่ **[datadict.md (หัวข้อ 2 และ 4)](./datadict.md)**
-
-| ตาราง (Table) | กลุ่มคอลัมน์ (Column Group) | รายชื่อคอลัมน์ | การนำเข้าเมทริกซ์โมเดล ($X$) ของแต่ละ `ticker` |
-| :--- | :--- | :--- | :--- |
-| `asset_volatility_features` | **Primary Keys** | `date`, `ticker` | **ห้ามนำเข้า $X$ อัตโนมัติ** (ใช้เป็น Index, Join Key และตัวกรองแยกข้อมูลตาม `ticker`) |
-| `asset_volatility_features` | **Core Return Features (5 ตัว)** | `ret_1d_t`, `ret_lag_1d`, `ret_lag_2d`, `ret_trailing_5d`, `ret_trailing_20d` | **นำเข้า $X$ (บังคับ - Baseline)** |
-| `asset_volatility_features` | **Core Volatility Features (3 ตัว)** | `rv_5d`, `rv_20d`, `rv_60d` | **นำเข้า $X$ (บังคับ - Baseline)** |
-| `asset_volatility_features` | **Experimental Features (2 ตัว)** | `rsi_14d`, `bb_width_20d` | นำเข้า $X$ เฉพาะรอบการทดลองที่ตั้งค่าเปิดใช้งาน |
-| `asset_volatility_features` | **Status & Lineage Metadata** | `is_model_ready`, `is_warmup_buffer`, `feature_set_version`, `run_id`, `source_batch_id`, `feature_as_of_utc` | **ห้ามนำเข้า $X$ โดยเด็ดขาด** |
-| `asset_rolling_correlations` | **Downstream Portfolio Inputs** | `date`, `corr_spy_ief_20d`, `corr_spy_gld_20d`, `corr_ief_gld_20d`, `is_corr_ready`, `run_id`, `source_batch_id`, `computed_at_utc` | **ไม่นำเข้า $X$ ของโมเดลรายสินทรัพย์** (ใช้ในขั้นตอนคำนวณความเสี่ยงพอร์ตโฟลิโอ Downstream) |
+```mermaid
+flowchart TD
+    A[(market_prices_daily)] --> B[Validate input & sort by ticker/date]
+    B --> C[Asset returns & rolling features]
+    B --> D[Aligned 20-day returns of 3 ETFs]
+    C --> E[(asset_volatility_features)]
+    D --> F[(asset_rolling_correlations)]
+    E --> G[Baseline B1 / Online ML B2]
+    F --> H[Portfolio Risk Engine]
+```
 
 ---
 
-## 3. กติกาและสูตรการคำนวณ Feature รายสินทรัพย์ (Core Feature Generation Rules)
+## 2. Schema และกฎการเลือก Features เข้า Model
 
-### 3.1 สูตรผลตอบแทนรายสินทรัพย์ (Per-Asset Return Formulas)
+> **ยึดคอลัมน์และ Nullable รายช่องตาม [datadict.md](./datadict.md)**; ห้ามแก้ชื่อหรือเพิ่มคอลัมน์เองโดยไม่อัปเดต Dictionary และ Tests
 
-กำหนดให้ $P_{i,t}^{\text{adj}}$ คือค่าจากคอลัมน์ `adjusted_close` ของสินทรัพย์ $i \in \{\text{SPY}, \text{IEF}, \text{GLD}\}$ ณ วันซื้อขาย $t$:
+### 2.1 `asset_volatility_features` — 18 คอลัมน์
 
-1. **Simple Return รายวันของสินทรัพย์ $i$**:
-   $$R_{i,t} = \frac{P_{i,t}^{\text{adj}}}{P_{i,t-1}^{\text{adj}}} - 1$$
-2. **Log Return รายวันของสินทรัพย์ $i$ (`ret_1d_t`)**:
-   $$r_{i,t} = \ln\left(\frac{P_{i,t}^{\text{adj}}}{P_{i,t-1}^{\text{adj}}}\right) = \ln(1 + R_{i,t})$$
-3. **Lagged Log Returns ย้อนหลัง $k$ วันทำการ (`ret_lag_1d`, `ret_lag_2d`)**:
-   $$\text{ret\_lag\_}k\text{d}_{i,t} = r_{i,t-k}, \qquad k \in \{1, 2\}$$
-4. **Trailing Cumulative Return ย้อนหลัง $n$ วันทำการ (`ret_trailing_5d`, `ret_trailing_20d`)**:
-   $$\text{ret\_trailing\_}n\text{d}_{i,t} = \frac{P_{i,t}^{\text{adj}}}{P_{i,t-n}^{\text{adj}}} - 1 = \exp\left(\sum_{j=0}^{n-1} r_{i,t-j}\right) - 1, \qquad n \in \{5, 20\}$$
+| กลุ่ม | คอลัมน์ | ใช้งาน |
+|---|---|---|
+| Primary Key (2) | `date`, `ticker` | เรียงลำดับ/เชื่อมข้อมูล ไม่เข้า Model Matrix `X` |
+| Core Return Features (5) | `ret_1d_t`, `ret_lag_1d`, `ret_lag_2d`, `ret_trailing_5d`, `ret_trailing_20d` | ใช้เป็นตัวแปรต้นของ Online ML |
+| Core Volatility Features (3) | `rv_5d`, `rv_20d`, `rv_60d` | ใช้เป็นตัวแปรต้น Online ML; `rv_20d` ใช้เดี่ยวใน Baseline B1 |
+| Experimental Features (2) | `rsi_14d`, `bb_width_20d` | เก็บใน Schema เดิม แต่ **ไม่บังคับ** ใช้ในรอบทดลองหลัก |
+| Status / Metadata (6) | `is_model_ready`, `is_warmup_buffer`, `feature_set_version`, `run_id`, `source_batch_id`, `feature_as_of_utc` | กรองแถวและตรวจ Lineage ไม่เข้า `X` |
 
-*(หมายเหตุ: สำหรับสูตรการคำนวณผลตอบแทนและความผันผวนของพอร์ตโฟลิโอจากน้ำหนัก $w_i$ ได้ย้ายไปกำหนดไว้ในส่วน Downstream Portfolio Risk Calculation ของ [target_contract.md](./target_contract.md) เพื่อให้แยกขาดจาก Feature ของโมเดลรายสินทรัพย์อย่างชัดเจน)*
+**การใช้ Feature ตามโมเดล**
 
-### 3.2 สูตรมาตรฐานสำหรับ Realized Volatility รายสินทรัพย์ ($RV_{i,n,t}$) และความสอดคล้องของสเกล
+1. **B0 — Constant Baseline:** ใช้ค่าคงที่จากข้อมูล Training ที่รู้ผลแล้ว ไม่ต้องใช้ Feature Matrix 8 ตัว
+2. **B1 — Rolling 20-Day Baseline:** ใช้ `rv_20d` ของสินทรัพย์ ณ วัน `t` โดยตรงเป็นค่าพยากรณ์ Annualized Volatility ของ 5 วันถัดไป **ไม่มีการ Train ด้วย 8 Features**
+3. **B2 — Online SGDRegressor:** ใช้ **Core Features ทั้ง 8 ตัว** เพื่อสร้างโมเดลรายสินทรัพย์; การ Fit/Update ต้องทำตามกฎข้อมูลตามเวลาในหัวข้อ 5
+4. **Experimental:** เปิดใช้ `rsi_14d` หรือ `bb_width_20d` เฉพาะการทดลองที่กำหนดไว้และเปรียบเทียบบน Validation ก่อน ไม่ใช่ข้อบังคับของ MVP
 
-สำหรับสินทรัพย์ $i \in \{\text{SPY}, \text{IEF}, \text{GLD}\}$ และขนาดหน้าต่างย้อนหลัง $n \in \{5, 20, 60\}$ วันทำการ กำหนดให้คำนวณ **Annualized Realized Volatility** จากผลตอบแทนลอการิทึมรายวัน $r_{i,t}$ ของสินทรัพย์นั้นบนฐาน 252 วันทำการต่อปี:
+### 2.2 `asset_rolling_correlations` — 8 คอลัมน์
 
-$$RV_{i,n,t} = \sqrt{\frac{252}{n} \sum_{j=0}^{n-1} r_{i,t-j}^{2}}$$
+| กลุ่ม | คอลัมน์ |
+|---|---|
+| Primary Key (1) | `date` |
+| Historical Correlation (3) | `corr_spy_ief_20d`, `corr_spy_gld_20d`, `corr_ief_gld_20d` |
+| Readiness (1) | `is_corr_ready` |
+| Metadata (3) | `run_id`, `source_batch_id`, `computed_at_utc` |
 
-- **ความสอดคล้องของสเกลระหว่าง Historical Features และ Target (Scale & Formula Alignment)**:
-  - ทั้งตัวแปรต้นความผันผวนย้อนหลัง (`rv_5d`, `rv_20d`, `rv_60d`) และตัวแปรตาม (`target_realized_vol_5d` ใน [target_contract.md](./target_contract.md)) **ใช้สูตร Root-Mean-Square ของ Log Return แบบไม่หักค่าเฉลี่ย (Zero-mean assumption) และปรับสเกลเป็นรายปีด้วยตัวคูณ $\sqrt{252}$ (หน่วยเป็น Annualized Decimal เช่น `0.15` หมายถึง $15\%$ ต่อปี) เหมือนกันทุกประการ**
-  - ห้ามสลับไปใช้ Sample Standard Deviation ที่หักค่าเฉลี่ยในบางคอลัมน์ หรือใช้สเกลรายวัน (Daily Scale) ปะปนกับสเกลรายปี (Annualized Scale) เพื่อให้โมเดลตระกูล Autoregressive / HAR-RV และ Tree-based เรียนรู้ความสัมพันธ์ในหน่วยเดียวกันโดยตรง
-
-### 3.3 ตารางกติกาการคำนวณและช่วงเตือนเบื้องต้นราย Feature (Per-Asset Feature Specification)
-
-| Feature Name | Table | สูตรการคำนวณ ณ วัน $t$ (สำหรับสินทรัพย์ $i$) | Lookback | Minimum Valid Observations | Initial Heuristic Alert Range (แยกตามสินทรัพย์) |
-| :--- | :--- | :--- | :---: | :--- | :--- |
-| `ret_1d_t` | `asset_volatility_features` | $r_{i,t} = \ln(P_{i,t}^{\text{adj}} / P_{i,t-1}^{\text{adj}})$ | 1 วัน | ผลตอบแทน 1 ค่า (ราคา 2 จุด: $t, t-1$) | `SPY`: $[-0.15, 0.15]$<br>`IEF`, `GLD`: $[-0.10, 0.10]$ |
-| `ret_lag_1d` | `asset_volatility_features` | $r_{i,t-1}$ | 2 วัน | ผลตอบแทน 2 ค่า (ราคา 3 จุด: $t \dots t-2$) | `SPY`: $[-0.15, 0.15]$<br>`IEF`, `GLD`: $[-0.10, 0.10]$ |
-| `ret_lag_2d` | `asset_volatility_features` | $r_{i,t-2}$ | 3 วัน | ผลตอบแทน 3 ค่า (ราคา 4 จุด: $t \dots t-3$) | `SPY`: $[-0.15, 0.15]$<br>`IEF`, `GLD`: $[-0.10, 0.10]$ |
-| `ret_trailing_5d` | `asset_volatility_features` | $(P_{i,t}^{\text{adj}} / P_{i,t-5}^{\text{adj}}) - 1$ | 5 วัน | ผลตอบแทน 5 ค่า (ราคา 6 จุด: $t \dots t-5$) | `SPY`: $[-0.25, 0.25]$<br>`IEF`, `GLD`: $[-0.18, 0.18]$ |
-| `ret_trailing_20d` | `asset_volatility_features` | $(P_{i,t}^{\text{adj}} / P_{i,t-20}^{\text{adj}}) - 1$ | 20 วัน | ผลตอบแทน 20 ค่า (ราคา 21 จุด: $t \dots t-20$) | `SPY`: $[-0.40, 0.40]$<br>`IEF`, `GLD`: $[-0.30, 0.30]$ |
-| `rv_5d` | `asset_volatility_features` | $\sqrt{\frac{252}{5} \sum_{j=0}^{4} r_{i,t-j}^{2}}$ | 5 วัน | ผลตอบแทน 5 ค่า (ราคา 6 จุด) | `SPY`: $[0.02, 1.50]$<br>`IEF`, `GLD`: $[0.01, 1.00]$ |
-| `rv_20d` | `asset_volatility_features` | $\sqrt{\frac{252}{20} \sum_{j=0}^{19} r_{i,t-j}^{2}}$ | 20 วัน | ผลตอบแทน 20 ค่า (ราคา 21 จุด) | `SPY`: $[0.02, 1.20]$<br>`IEF`, `GLD`: $[0.01, 0.80]$ |
-| `rv_60d` | `asset_volatility_features` | $\sqrt{\frac{252}{60} \sum_{j=0}^{59} r_{i,t-j}^{2}}$ | 60 วัน | ผลตอบแทน 60 ค่า (ราคา 61 จุด) | `SPY`: $[0.03, 1.00]$<br>`IEF`, `GLD`: $[0.02, 0.70]$ |
-| `corr_spy_ief_20d`<br>`corr_spy_gld_20d`<br>`corr_ief_gld_20d` | `asset_rolling_correlations` *(Downstream Historical Proxy)* | $\text{corr}_{20d}(r_{A, t-19\dots t}, r_{B, t-19\dots t})$ | 20 วัน | วันที่ตรงกันครบทั้ง 3 สินทรัพย์จำนวน 20 วันทำการ (Synchronized Window) | ค่าระหว่าง $[-1.0, 1.0]$ และเมทริกซ์ $3\times 3$ ต้องเป็น Symmetric & PSD |
-
-### 3.4 กติกาการสร้างและตรวจสอบตารางสหสัมพันธ์ย้อนหลัง (`asset_rolling_correlations`) สำหรับขั้นตอน Downstream
-
-1. **สถานะเป็นค่าประมาณจากอดีต (Historical Proxy Only)**:
-   - ค่า `corr_spy_ief_20d`, `corr_spy_gld_20d`, `corr_ief_gld_20d` ณ วันอ้างอิง $t$ คำนวณจากผลตอบแทนลอการิทึมย้อนหลัง 20 วันทำการถึงวัน $t$ ($\{t-19, \dots, t\}$) เพื่อใช้เป็น **Historical Proxy** แทนความสัมพันธ์ระหว่างสินทรัพย์ในช่วง 5 วันข้างหน้า ($[t+1, t+5]$)
-   - ค่าเหล่านี้**ไม่ใช่ค่าสหสัมพันธ์ที่พยากรณ์จากโมเดลสำหรับ 5 วันข้างหน้า** และต้องระบุข้อจำกัดนี้ในรายงานและหน้า Dashboard เสมอ
-2. **การใช้ช่วงวันที่เดียวกันและข้อมูลที่จับคู่ครบทั้ง 3 สินทรัพย์ (Synchronized Complete-Case Window)**:
-   - การคำนวณสหสัมพันธ์ทั้ง 3 คู่ ณ วัน $t$ **ต้องใช้เมทริกซ์ผลตอบแทนขนาด $20 \times 3$ จากช่วงวันที่ทำการ 20 วันชุดเดียวกันพอดี** ที่มีข้อมูลผลตอบแทนของทั้ง `SPY`, `IEF` และ `GLD` ครบทุกตัวพร้อมกัน (Complete-case Inner Alignment)
-   - ห้ามคำนวณ Pairwise Correlation แยกคู่โดยใช้ชุดวันที่ไม่ตรงกัน (เช่น กรณีมีสินทรัพย์หนึ่งแหว่งในบางวัน) เพราะจะทำให้เมทริกซ์สหสัมพันธ์รวมไม่สอดคล้องกันทางคณิตศาสตร์
-3. **การตรวจสอบสมบัติของเมทริกซ์สหสัมพันธ์และเมทริกซ์ความแปรปรวนร่วม (Matrix Symmetry & Positive Semidefinite Validation)**:
-   - เมื่อประกอบค่าสหสัมพันธ์ทั้ง 3 คู่เข้าเป็นเมทริกซ์ $\mathbf{R}_t \in \mathbb{R}^{3 \times 3}$ (โดยมีแนวทแยงมุมหลักเป็น $1.0$) ระบบต้องตรวจสอบว่า:
-     1. **Pairwise Bounds**: สมาชิกนอกแนวทแยงทุกตัวอยู่ในช่วง $[-1.0, 1.0]$
-     2. **Symmetry**: $\mathbf{R}_t = \mathbf{R}_t^\top$ (และเมื่อรวมกับ $\hat{\sigma}_{i,t}$ เป็นเมทริกซ์ความแปรปรวนร่วม $\hat{\boldsymbol{\Sigma}}_t$ ต้องสมมาตรเช่นกัน คือ $\|\hat{\boldsymbol{\Sigma}}_t - \hat{\boldsymbol{\Sigma}}_t^\top\|_{\max} \le 10^{-12}$)
-     3. **Positive Semidefiniteness (PSD)**: ค่าเจาะจงต่ำสุด (Minimum Eigenvalue) ต้องไม่ติดลบ ($\lambda_{\min}(\mathbf{R}_t) \ge -10^{-10}$ ตามความละเอียด Floating-point) เพื่อรับประกันว่าความแปรปรวนของพอร์ตโฟลิโอ $\mathbf{w}^\top \hat{\boldsymbol{\Sigma}}_t \mathbf{w} \ge 0$ สำหรับทุกเวกเตอร์น้ำหนัก $\mathbf{w}$
-   - เฉพาะแถววันที่ $t$ ที่ผ่านเงื่อนไขครบทั้ง 3 ข้อเท่านั้นจึงจะตั้งค่า `is_corr_ready = True`
-
-> [!NOTE]
-> **นโยบายการใช้ค่าเตือนเบื้องต้นตามสินทรัพย์ (Asset-Specific Heuristic Alert Policy)**:
-> 1. ค่าในคอลัมน์ **Initial Heuristic Alert Range** ที่แตกต่างกันตามสินทรัพย์ (`SPY` เทียบกับ `IEF` และ `GLD`) เป็นเพียง**ค่าเตือนเบื้องต้นจากความรู้โดเมน (Initial Heuristic Bounds)** เท่านั้น ก่อนนำไปใช้จริงในระบบแจ้งเตือน ต้องนำข้อมูลจริงเฉพาะในชุด **Training Set** มาคำนวณการแจกแจงเชิงประจักษ์ (เช่น Percentile ที่ 0.1% และ 99.9%) เพื่อสอบทานและปรับเทียบ (Calibrate) เกณฑ์อีกครั้ง
-> 2. ค่าที่อยู่นอกช่วง Alert Range **ไม่ถือเป็นข้อมูลเสียที่ต้องลบแถวหรือหยุด Pipeline อัตโนมัติ** (ตราบใดที่ไม่ใช่ `NaN`, $\pm\infty$, หรือความผันผวนติดลบ) ให้บันทึกเป็น Warning ใน Audit Log เพื่อตรวจสอบว่าเป็นเหตุการณ์ตลาดผันผวนจริงหรือไม่
+Correlation เป็น **Historical Proxy** สำหรับ Portfolio Risk ไม่ใช่ Features ที่ป้อนเข้า Online ML ในการทดลองหลัก
 
 ---
 
-## 4. กติกาสำหรับชุด Feature ทดลองรายสินทรัพย์ (Experimental Feature Rules - Optional)
+## 3. สูตร Core Features (คำนวณแยก `ticker`)
 
-เพื่อให้ตาราง `asset_volatility_features` มีโครงสร้างสม่ำเสมอในระดับ `(date, ticker)` และรองรับการเปรียบเทียบโมเดลของทั้ง 3 สินทรัพย์ จึงกำหนดให้คำนวณตัวชี้วัดทางเทคนิคสำหรับการทดลองให้**ครบทุก `ticker` (`SPY`, `IEF`, `GLD`)** จากราคา `adjusted_close` ของสินทรัพย์นั้นๆ:
+ให้ `P(i,t)` แทน `adjusted_close` ของสินทรัพย์ `i` ณ วันซื้อขาย `t`; ทุก `t-1`, `t-5` ฯลฯ หมายถึง **วันซื้อขายย้อนหลัง** ไม่ใช่วันปฏิทิน
 
-| Feature Name | Input Columns | สูตรและพารามิเตอร์ (คำนวณแยกตาม `ticker` $i$) | Lookback | Minimum Valid Observations | Anomaly / Theoretical Range |
-| :--- | :--- | :--- | :---: | :--- | :---: |
-| `rsi_14d` | `adjusted_close` ของ `ticker` $i$ | Wilder's Smoothing RSI: $100 - \frac{100}{1 + RS_{i,14,t}}$ | 14 วัน | การเปลี่ยนแปลงราคาครบ 14 ค่า (ราคา 15 จุด) | $[0.0, 100.0]$ (Theoretical Bound) |
-| `bb_width_20d` | `adjusted_close` ของ `ticker` $i$ | $\frac{\text{Upper}_{i}(20, 2\sigma) - \text{Lower}_{i}(20, 2\sigma)}{\text{SMA}_{i,20,t}} = \frac{4 \cdot s_{P_{i}, 20, t}}{\text{SMA}_{i,20,t}}$ | 20 วัน | ราคาปิดปรับปรุงแล้วครบ 20 จุด | $[0.001, 0.60]$ (ค่าต้อง $\ge 0$ เสมอ) |
+$$R_{i,t}=\frac{P(i,t)}{P(i,t-1)}-1,\qquad
+r_{i,t}=\ln\left(\frac{P(i,t)}{P(i,t-1)}\right)$$
 
-> **ขอบเขตและกติกาการทดลอง (Experimentation Governance)**:
-> - `rsi_14d` และ `bb_width_20d` **ไม่ถือเป็นชุดฟีเจอร์มาตรฐาน (Core Features)** โดย Baseline Model ของทุกสินทรัพย์ต้องฝึกและวัดผลด้วย **Core Features ทั้ง 8 ตัว** ก่อนเสมอ
-> - ในขั้นตอน Model Experimentation สามารถทดลองเปิดใช้ `rsi_14d` และ/หรือ `bb_width_20d` สำหรับแต่ละ `ticker` (เช่น ทดลองเปิดใช้เฉพาะโมเดลของ `SPY` หรือเปิดใช้ครบทั้ง `SPY`, `IEF`, `GLD`) และจะนำเข้าสู่ชุดฟีเจอร์ใช้งานจริงของสินทรัพย์ใดก็ต่อเมื่อผลการทดสอบบน Validation Set (ผ่าน Purged Walk-Forward CV) ยืนยันว่าลดค่า Error ลงอย่างมีนัยสำคัญเท่านั้น
+| Feature | สูตร/กฎ ณ วัน `t` | ข้อมูลขั้นต่ำ |
+|---|---|---|
+| `ret_1d_t` | $r_{i,t}$ | 1 Return (= 2 Prices) |
+| `ret_lag_1d` | $r_{i,t-1}$ | 2 Returns |
+| `ret_lag_2d` | $r_{i,t-2}$ | 3 Returns |
+| `ret_trailing_5d` | $P(i,t)/P(i,t-5)-1$ | 5 Returns (= 6 Prices) |
+| `ret_trailing_20d` | $P(i,t)/P(i,t-20)-1$ | 20 Returns |
+| `rv_5d` | $\sqrt{\frac{252}{5}\sum_{j=0}^{4}r_{i,t-j}^{2}}$ | 5 Returns |
+| `rv_20d` | $\sqrt{\frac{252}{20}\sum_{j=0}^{19}r_{i,t-j}^{2}}$ | 20 Returns |
+| `rv_60d` | $\sqrt{\frac{252}{60}\sum_{j=0}^{59}r_{i,t-j}^{2}}$ | 60 Returns (= 61 Prices) |
 
----
+**หน่วย:** Returns เป็นอัตราส่วนทศนิยมหรือ Log Ratio; `rv_*` เป็น **Annualized Decimal** เช่น `0.15` = 15% ต่อปี (คำนวณจากหน้าต่างข้อมูลย้อนหลังขนาดนั้น) ใช้สูตร Root Mean Square ของ Log Returns แบบ **ไม่หักค่าเฉลี่ย** ตรงกับ `target_realized_vol_5d` ใน Target Contract; **อย่าสลับ** กับ Sample Standard Deviation ในคอลัมน์อื่น
 
-## 5. กฎด้านเวลา การแบ่งชุดข้อมูล และการป้องกัน Data Leakage (Point-in-Time, Splitting & Preprocessing Rules)
+**กฎคำนวณ:**
 
-1. **กฎการตัดเวลา (Strict Point-in-Time Cut-off Rule)**:
-   $$\mathcal{F}_{i,t} = \{P_{i,s}^{\text{adj}} \mid s \le t\}$$
-   ทุก Feature ของสินทรัพย์ $i$ ณ แถววันที่ $t$ ต้องคำนวณจากข้อมูลใน $\mathcal{F}_{i,t}$ เท่านั้น ห้ามมีขั้นตอนใดอ้างอิงข้อมูลของวัน $s > t$
-2. **การจัดแนว Rolling Window (Window Alignment)**:
-   - หน้าต่างย้อนหลังทุกตัว (`rolling(window=n, min_periods=n)`) ต้องเป็นแบบ Right-closed สิ้นสุดที่วัน $t$ พอดี และต้องจัดกลุ่มแยกตาม `ticker` (`partition_by="ticker"` หรือ `groupby("ticker")`) ก่อนคำนวณเสมอ เพื่อไม่ให้ข้อมูลข้ามสินทรัพย์ปะปนกัน
-   - ห้ามใช้ `shift(-k)` โดยที่ $k > 0$ ในขั้นตอนสร้าง Feature โดยเด็ดขาด
-3. **การผูกกฎ Purge / Embargo เข้ากับวิธีการแบ่งข้อมูล (Split Implementation & Purge Rule)**:
-   - **ห้ามใช้ Random Split หรือ K-Fold ปกติที่สลับลำดับเวลา** การแบ่งชุดข้อมูลต้องเรียงตามเวลา (Chronological Split เช่น Train / Validation / Test หรือ Expanding-Window Walk-Forward Cross-Validation)
-   - เนื่องจากตัวแปรตาม `target_realized_vol_5d` ณ วันอ้างอิง $t$ ใช้ผลตอบแทนของวัน $t+1, t+2, t+3, t+4, t+5$ ดังนั้นในการ Implement ตัวแบ่งชุดข้อมูลทุกจุดตัดเวลา (เช่น จุดตัดระหว่างชุด Train สิ้นสุดที่วัน $t_{\text{split}}$ และชุด Validation เริ่มที่วัน $t_{\text{val\_start}}$):
-     - **บังคับตัดแถวฝึกสอนช่วงท้ายออกอย่างน้อย 5 วันทำการ (Purge Window = 5 Trading Days)**: แถวข้อมูลในชุดก่อนหน้าที่มี `target_end_date >= t_val_start` (คือ 5 วันทำการสุดท้ายก่อนจุดตัด) **ต้องถูกตัดออกจากชุดฝึกสอน (Purged)** เพื่อรับประกันว่าหน้าต่างคำนวณ Target ของชุด Train สิ้นสุดลงก่อนหรือภายในขอบเขตเวลาของชุด Train เท่านั้น ไม่ล้ำเข้าไปในชุด Validation/Test
-4. **กฎการ Fit Preprocessing เฉพาะบนชุด Train (Train-Only Preprocessing Fit Rule)**:
-   - กระบวนการเตรียมข้อมูลที่มีการคำนวณค่าสถิติจากข้อมูล (Stateful Preprocessing) เช่น การปรับสเกลตัวแปร (`StandardScaler`, `RobustScaler`, `MinMaxScaler`), การตัดค่าสุดโต่ง (Winsorization / Clipping Quantiles), หรือการคัดเลือกตัวแปร (Feature Selection) **ต้องเรียก `.fit()` บนชุดข้อมูล `Train` ของแต่ละ Fold และของแต่ละ `ticker` เท่านั้น**
-   - จากนั้นจึงนำพารามิเตอร์ที่ได้จากชุด `Train` ไปเรียก `.transform()` บนชุด `Validation`, `Test` และข้อมูล `Live Inference` ห้ามนำข้อมูลทั้งตารางมา `.fit()` ก่อนแบ่งชุดข้อมูลโดยเด็ดขาด
+- เรียงข้อมูลตาม `(ticker, date)` และคำนวณ `shift(k)`, Rolling Functions **ภายในแต่ละ `ticker` เท่านั้น**; Window สิ้นสุดที่ `t` (รวมวัน `t`) และมี `min_periods=n`
+- คำนวณเฉพาะจากราคาที่ผ่าน Validation; หากวันซื้อขายที่ควรมีขาดหาย ไม่เลื่อนหน้าต่างย้อนข้ามวันนั้นเงียบ ๆ เพื่อให้ได้จำนวนแถวครบ
+- ห้ามใช้ `shift(-k)`, Centered Rolling, `bfill` หรือฟังก์ชันใดที่นำค่าจากอนาคตเข้ามาสร้าง Features
+- ไม่ใช้ `high`/`low` เพื่อสร้าง Feature เพิ่มเองใน MVP; หากจะใช้ ต้องปรับ Contract, Dictionary และ Test ก่อน
 
 ---
 
-## 6. นโยบายการจัดการค่าว่าง ช่วง Warm-up และการตรวจสอบคุณภาพ (Null Policy, Warm-up & Quality Checks)
+## 4. Experimental Features (มีใน Schema แต่ไม่บังคับใช้ใน Model หลัก)
 
-### 6.1 การจำแนกประเภทของค่าว่างและการนิยาม Warm-up รายสินทรัพย์
+| Feature | วิธีคำนวณ | เงื่อนไข |
+|---|---|---|
+| `rsi_14d` | Relative Strength Index 14 วัน ตาม Wilder's Smoothing จากการเปลี่ยนแปลงของ `adjusted_close` | ช่วงทฤษฎี `[0,100]`; ต้องไม่มีข้อมูลอนาคต; Allow Null ในช่วง Warm-up |
+| `bb_width_20d` | Bollinger Band Width = $(Upper_{20}-Lower_{20})/SMA_{20}=4s_{price,20}/SMA_{20}$ จากราคา `adjusted_close` | ใช้ราคา 20 จุด, $s_{price,20}$ ตามสูตรเดียวกันทุกสินทรัพย์; ต้อง `>=0`; Allow Null ในช่วง Warm-up |
 
-1. **Warm-up Nulls (ค่าว่างเชิงโครงสร้างช่วงเริ่มต้นของแต่ละ `ticker`)**:
-   - Feature ที่มี Lookback $N$ วันทำการของสินทรัพย์ $i$ จะเริ่มมีค่าได้เมื่อสินทรัพย์ $i$ มีผลตอบแทนรายวันที่ถูกต้องครบ $N$ ค่า (ต้องใช้ราคา `adjusted_close` ของสินทรัพย์นั้นอย่างน้อย $N+1$ วันทำการ)
-   - คอลัมน์ที่ใช้หน้าต่างยาวที่สุดในกลุ่ม Core Features คือ `rv_60d` ($N=60$) ซึ่งต้องใช้ผลตอบแทนรายวันครบ 60 ค่า (ราคาปิด 61 วันทำการแรกของแต่ละ `ticker`)
-   - แถวก่อนหน้านั้นถือเป็น **Warm-up Nulls** ตามธรรมชาติ **ห้ามเติมค่าด้วย `0`, ค่าเฉลี่ย, หรือทำ Forward-fill / Backward-fill โดยเด็ดขาด**
-2. **Corrupted Nulls (ค่าว่างผิดปกติหลังพ้นช่วง Warm-up)**:
-   - หากสินทรัพย์ `ticker` ใดผ่านจำนวนข้อมูลครบ 60 วันทำการของผลตอบแทนไปแล้ว (`is_model_ready` เคยเป็น `True` แล้ว) แต่เกิดค่า `Null`/`NaN` ขึ้นใน Core Features ตัวใดตัวหนึ่ง ให้ถือเป็นข้อผิดพลาดของข้อมูลด้วยรหัสมาตรฐาน **`CORRUPTED_FEATURE_NULL`** ต้องแยกเข้า Quarantine และหยุดการส่งต่อข้อมูลเฉพาะของ `ticker` นั้น (โดยที่โมเดลของ `ticker` อื่นที่ผ่านเกณฑ์ยังสร้างค่าพยากรณ์รายสินทรัพย์ได้ตามปกติ แต่ระบบต้องระงับการคำนวณความเสี่ยงพอร์ตโฟลิโอและแสดงสถานะข้อมูลไม่ครบถ้วนบน Dashboard)
+- คำนวณด้วยนิยามเดียวกันสำหรับทั้ง 3 ETFs และแยกตาม `ticker`; ไม่เพิ่มตาราง/คอลัมน์ใหม่
+- หากไม่เปิดใช้ Experimental Features ในการฝึก โมเดลยังใช้ Core 8 ตัวตามปกติ; `is_model_ready` **ไม่ขึ้นกับสองคอลัมน์นี้**
+- ค่าเกินช่วงเตือนเชิงสถิติเป็น **Warning** ให้ตรวจสอบ ไม่ใช่เหตุผลให้ลบทิ้งอัตโนมัติ
 
-### 6.2 การแยกนิยาม `is_model_ready` (ความพร้อมของ Feature) และ `is_label_mature` (ความครบของ Target)
+---
 
-ระบบแยกสถานะความพร้อมของตัวแปรต้นและตัวแปรตามออกจากกันอย่างชัดเจน เพื่อรองรับทั้งการฝึกโมเดลและการพยากรณ์ใช้งานจริง:
+## 5. Point-in-Time, Target และการแบ่งข้อมูลตามเวลา
 
-1. **ความพร้อมของ Feature รายสินทรัพย์ (`is_model_ready` ในตาราง `asset_volatility_features`)**:
-   - กำหนด `is_model_ready = True` ณ แถว `(date, ticker)` ก็ต่อเมื่อ **คอลัมน์ในกลุ่ม Core Features ทั้ง 8 ตัวของ `ticker` นั้น (`ret_1d_t`, `ret_lag_1d`, `ret_lag_2d`, `ret_trailing_5d`, `ret_trailing_20d`, `rv_5d`, `rv_20d`, `rv_60d`) มีค่าครบถ้วน ไม่เป็น `Null` และไม่เป็น $\pm\infty$**
-   - ไม่นำสถานะของ Experimental Features, ตาราง Correlation หรือตาราง Target มาเป็นเงื่อนไขบล็อก `is_model_ready` ของโมเดล Baseline รายสินทรัพย์
-2. **ความพร้อมของ Target รายสินทรัพย์ (`is_label_mature` ในตาราง `asset_volatility_labels`)**:
-   - กำหนด `is_label_mature = True` ณ แถว `(date, ticker)` ก็ต่อเมื่อมีข้อมูลผลตอบแทนในอนาคตครบทั้ง 5 วันทำการ ($t+1$ ถึง $t+5$) ของ `ticker` นั้นแล้ว
-3. **ตารางสรุปเงื่อนไขการคัดกรองแถวตามโหมดการทำงาน**:
-   - **โหมดฝึกและประเมินผลโมเดล (Training / Validation / Test)**:
-     `is_warmup_buffer == False` **AND** `is_model_ready == True` **AND** `is_label_mature == True`
-   - **โหมดพยากรณ์ล่วงหน้า ณ วันปัจจุบัน (Live Inference ณ วันล่าสุด $t$)**:
-     - **ระดับรายสินทรัพย์**: สร้างค่าพยากรณ์ $\hat{\sigma}_{i,t}$ ได้ทันทีสำหรับทุก `ticker` ที่มี `is_model_ready == True` ณ วัน $t$
-     - **ระดับพอร์ตโฟลิโอ (Downstream)**: คำนวณความเสี่ยงพอร์ตโฟลิโอได้ก็ต่อเมื่อทั้ง 3 สินทรัพย์ (`SPY`, `IEF`, `GLD`) มีค่าพยากรณ์ครบทุกตัว **และ** ตาราง `asset_rolling_correlations` ณ วัน $t$ มี `is_corr_ready == True` เท่านั้น (หากขาดตัวใดตัวหนึ่ง ต้องไม่คำนวณความเสี่ยงพอร์ตโฟลิโอและแสดงสถานะแจ้งเตือนข้อมูลไม่ครบบน Dashboard)
+### 5.1 ไม่มี Future Leakage ใน Features
 
-### 6.3 กฎการดึงข้อมูลเผื่อช่วง Warm-up จาก Config และการกันวัน Buffer ออกจากการวัดผล (Warm-up Buffer Strategy)
+- ณ วัน `t` ใช้ข้อมูลราคา/ผลตอบแทนที่ **เปิดเผยและผ่านการตรวจสอบแล้วถึงวัน `t`** เท่านั้น; ไม่ใช้ `t+1` ถึง `t+5` ทำ Feature
+- Features ของ `(date=t, ticker=i)` ต้องอ้างอิงเฉพาะราคาของ ticker `i` ตามนิยามในหัวข้อ 3; ข้อมูลอีก 2 ticker ใช้ใน Correlation (หัวข้อ 6) ไม่ใช่ Core Features ของ `i`
+- `feature_as_of_utc` คือ **เวลาที่ Pipeline คำนวณและบันทึก Feature จริง** ไม่ใช่ข้ออ้างว่ามีข้อมูลทั้งหมด ณ วันในอดีต (โดยเฉพาะ Historical Replay)
 
-- กำหนดให้คำนวณวันเริ่มต้นดึงข้อมูล (`actual_fetch_start_date`) ย้อนหลังไปจากวันเริ่มวิเคราะห์ที่ตั้งไว้ใน Config (`config.start_date`) โดยต้องดึงข้อมูลราคา `adjusted_close` ล่วงหน้าอย่างน้อย **61 วันทำการของตลาด NYSE/NASDAQ** (ประมาณ 90–100 วันปฏิทินก่อน `config.start_date`)
-- เพื่อให้ ณ วัน `date == config.start_date` สินทรัพย์ทุกตัวมีผลตอบแทนย้อนหลังครบ 60 ค่า และมีสถานะ `is_model_ready == True` ตั้งแต่วันแรกของช่วงวิเคราะห์
-- **การป้องกันไม่ให้วัน Buffer รั่วไหลเข้าสู่ Evaluation**:
-  - แถวข้อมูลทุกแถวที่มี `date < config.start_date` ต้องถูกตั้งค่าคอลัมน์สถานะ `is_warmup_buffer = True` (และตั้งค่า `is_warmup_buffer = False` สำหรับ `date >= config.start_date`)
-  - ขั้นตอนการแบ่งชุดข้อมูล (Train/Validation/Test Split) และการคำนวณ Metric วัดผลทุกชนิด **ต้องกรองเอาเฉพาะแถวที่ `is_warmup_buffer == False` (`date >= config.start_date`) เท่านั้น** เพื่อไม่ให้นำแถวช่วง Buffer เข้าไปฝึกหรือวัดผลโมเดลโดยไม่ได้ตั้งใจ
+### 5.2 Label แยกจาก Features
 
-### 6.4 ลำดับและเกณฑ์การตรวจสอบคุณภาพข้อมูล (Automated Quality Validation Checklist)
+- `asset_volatility_labels` เป็นตาราง Target แยกต่างหาก Join ได้ด้วย `(date, ticker)` **เฉพาะขั้น Train/Evaluation**
+- โหมดสร้างคำทำนายวัน `t` ใช้ `is_model_ready=True`, `is_warmup_buffer=False` โดย **ไม่ต้องรอ `is_label_mature=True` ของวัน `t`**
+- โหมด Train / Validation / Test ใช้ `is_model_ready=True`, `is_warmup_buffer=False` และ `is_label_mature=True` แต่ต้องเพิ่มเงื่อนไขว่า ณ วันจำลองนั้น **Label ถูกเปิดเผยแล้วจริง** (`target_end_date` ไม่เกินวันข้อมูลที่ทราบและผ่าน Validation)
 
-| ลำดับขั้นตอน | รายการตรวจสอบ | เกณฑ์ที่ต้องผ่าน (Pass Criteria) | การจัดการเมื่อล้มเหลว (Failure Action) |
-| :---: | :--- | :--- | :--- |
-| **1** | **Data Sorting** | จัดเรียงแถวใน `asset_volatility_features` ตาม **`(ticker, date)`** จากอดีตไปปัจจุบันก่อนคำนวณและก่อนส่งออกเสมอ | บังคับรันเป็นขั้นตอนแรกของ Pipeline |
-| **2** | **Monotonic Dates per Ticker** | ภายในแต่ละ `ticker` ค่า `date` ต้องเรียงลำดับเพิ่มขึ้นอย่างเคร่งครัด (Strictly Monotonic Increasing) | Fail Pipeline สำหรับ `ticker` นั้นทันที |
-| **3** | **Primary Key Uniqueness** | คู่คีย์หลัก **`(date, ticker)`** ใน `asset_volatility_features` ต้องไม่มีแถวซ้ำ (`duplicated_pk == 0`) | Fail Pipeline ทันที |
-| **4** | **Schema Conformance** | ชื่อคอลัมน์และชนิดข้อมูลต้องตรงตามที่ระบุใน [datadict.md (หัวข้อ 2 และ 4)](./datadict.md) ทุกประการ | Fail Pipeline ทันที |
-| **5** | **No Infinite Values** | ต้องไม่มีค่า $\pm\infty$ ในคอลัมน์ตัวเลขใดๆ ทั้งสิ้น | Fail Pipeline ทันที |
-| **6** | **Volatility Non-negativity** | ค่าความผันผวน `rv_5d`, `rv_20d`, `rv_60d` ที่คำนวณแล้วทุกแถวต้องมีค่า $\ge 0.0$ | Fail Pipeline ทันที |
-| **7** | **Correlation Matrix Validity (ตารางประกอบ)** | ในตาราง `asset_rolling_correlations`: (1) ทั้ง 3 คู่คำนวณจากหน้าต่าง 20 วันชุดเดียวกันที่มีข้อมูลครบทั้ง 3 สินทรัพย์ (2) ค่าอยู่ในช่วง $[-1.0, 1.0]$ และ (3) เมทริกซ์ $3\times 3$ เป็น **Symmetric และ Positive Semidefinite ($\lambda_{\min} \ge -10^{-10}$)** | ตั้ง `is_corr_ready = False`, บล็อกการคำนวณความเสี่ยงพอร์ตของวันนั้น และแจ้งเตือนบน Dashboard |
-| **8** | **Model Ready Completeness** | ในแถวที่ `is_model_ready == True` ต้องไม่มีค่า `Null`/`NaN` ในกลุ่ม **Core Features รายสินทรัพย์ทั้ง 8 ตัว** ของ `ticker` นั้น | Quarantine แถวที่มีปัญหา (`CORRUPTED_FEATURE_NULL`) และแจ้ง Error |
-| **9** | **Warm-up Buffer Isolation** | ตรวจสอบว่าแถวที่ส่งเข้าสู่ขั้นตอน Train / Validation / Test มีเฉพาะแถวที่ `is_warmup_buffer == False` (`date >= config.start_date`) เท่านั้น | บล็อกการส่งข้อมูลเข้าโมเดลหากพบแถว Buffer ปะปน |
-| **10** | **Anomaly Range Check** | ตรวจสอบค่าเทียบกับช่วง Initial Heuristic Alert Range รายสินทรัพย์ในหัวข้อ 3.3 | บันทึก Warning ลงใน Audit Log เพื่อรอตรวจสอบ |
+### 5.3 Chronological Split และ Purge
+
+- แบ่ง Train/Validation/Test ตามเวลาเท่านั้น; ห้าม Random Split และ K-Fold แบบสุ่มลำดับวัน
+- ที่ขอบ Train → Validation หรือ Train/Validation → Test ให้ตัดแถวชุดก่อนหน้าซึ่งมีหน้าต่าง Label ล้ำไปถึงวันเริ่มชุดถัดไป: **`target_end_date >= next_split_start_date` ต้องไม่เข้า Train**; ใช้เป็นกฎ Purge สำหรับ Target Horizon 5 วันซื้อขาย
+- Fit Scaler/Preprocessor/การเลือก Feature เฉพาะข้อมูล Train ของ `ticker` และ Fold นั้น ๆ; นำค่าที่เรียนรู้ได้มา `transform` Validation/Test โดยไม่ Fit ซ้ำด้วยข้อมูลชุดนั้น
+- ใน Walk-forward Replay: **Predict ก่อน → รอ Label Mature → Evaluate/Update**; Online Model อัปเดตด้วยเฉพาะตัวอย่างที่มี `target_end_date <= replay_date` และผลจริงพร้อมแล้ว **ไม่อัปเดตจาก Label อนาคต**
+
+> **ข้อจำกัดที่ต้องรายงาน:** การใช้ Historical Adjusted Prices ที่ Yahoo Finance อาจแก้ย้อนหลังได้ ทำให้การสร้าง Features ย้อนหลังจาก Snapshot ที่ดาวน์โหลดภายหลัง *ไม่ได้ยืนยันโดยอัตโนมัติ* ว่าราคาที่ปรับแล้วตรงกับข้อมูลที่เผยแพร่ ณ วันอดีตจริง ๆ เราจึงต้องบันทึก Raw Snapshot/Manifest และอธิบายข้อจำกัดของ Historical Replay ตามจริง ไม่กล่าวอ้างว่าเป็น Point-in-Time Market Data Archive
+
+---
+
+## 6. Historical Correlation สำหรับ Portfolio Risk
+
+- คำนวณ **Pearson Correlation 20 วันซื้อขายย้อนหลังถึงวัน `t`** จาก `log_return` ของ `SPY`, `IEF`, `GLD`
+- ใช้ **20 วันเดียวกันพอดี** และผลตอบแทนต้องครบทั้งสาม ETF ทุกวัน (เมทริกซ์ $20\times3$); หากวันใดขาด ห้ามคำนวณคู่ใดคู่หนึ่งจากวันที่ต่างชุด หรือยืด Window ย้อนหลังเพื่อเติมข้อมูลเงียบ ๆ
+- มี Correlation 3 คู่: `SPY–IEF`, `SPY–GLD`, `IEF–GLD` และเมทริกซ์ $3\times3$ มีเส้นทแยงมุมเป็น `1`
+- กำหนด `is_corr_ready=True` ก็ต่อเมื่อ: ครบ 20 วัน, ทุกค่ามีจำนวนจำกัดและอยู่ใน `[-1,1]`, เมทริกซ์สมมาตร และค่า Eigenvalue ต่ำสุด $\lambda_{min}\ge -10^{-10}$ (Floating-point tolerance)
+- ถ้าคำนวณ Correlation ไม่ได้ เช่น แถวไม่ครบหรือคอลัมน์มีความแปรปรวนเป็นศูนย์ ให้ `is_corr_ready=False`, Correlation ที่คำนวณไม่ได้เป็น `NULL` ตาม Dictionary และไม่อนุญาตให้ Portfolio Risk Engine ใช้วันที่ไม่พร้อม
+- Correlation ใช้แทน **ความสัมพันธ์ในอนาคตโดยสมมติจากอดีต** ไม่ใช่ค่าที่ ML ทำนาย; Dashboard/รายงานต้องระบุข้อจำกัดนี้
+
+---
+
+## 7. Warm-up, Readiness และ Missing Values
+
+1. **Warm-up:** Lookback ยาวสุดคือ `rv_60d` ต้องใช้ **60 Log Returns = 61 ราคาที่ต่อเนื่องกันตามวันซื้อขาย** จึงกำหนดให้ดึงราคาเผื่อก่อน `config.start_date` อย่างน้อย **61 วันซื้อขาย** (อ้างอิง Data Contract) เพื่อให้วันเริ่มวิเคราะห์มี Features พร้อมใช้งาน
+2. **Warm-up flag:** `asset_volatility_features.is_warmup_buffer = (date < config.start_date)` และ **ต้องเท่ากับ** `market_prices_daily.is_warmup_buffer` ของ `(date,ticker)` เดียวกัน; ไม่คำนวณสถานะจากจำนวนข้อมูล Rolling ที่มี/ไม่มี
+3. **Warm-up Null:** แถวต้นทางก่อนมีประวัติครบตาม Lookback อนุญาตให้ Core/Experimental Feature บางค่าหายได้ตาม Nullable ใน Dictionary; **ห้ามเติม `0`, Forward-fill, Backward-fill หรือ Interpolation** เพื่อให้ดูพร้อมใช้งาน
+4. **`is_model_ready`:** เป็น `True` ก็ต่อเมื่อ **Core Features ทั้ง 8 ตัว** มีค่าเป็น Finite และไม่เป็น NULL (`is_model_ready` ไม่ขึ้นกับ Target, Correlation หรือ Experimental Features); แม้บางแถว Warm-up จะพร้อม ก็ยังไม่ส่งเข้า Train/Evaluate หาก `is_warmup_buffer=True`
+5. **Corrupted Null:** ถ้าเคยมี Core 8 ตัวครบแล้ว แต่ภายหลังพบ `NULL`, `NaN` หรือ `Inf` ในช่วงที่ควรพร้อม ให้หยุดส่งต่อข้อมูลของ `ticker` ที่มีปัญหาสำหรับรอบนั้น และบันทึกการตรวจพบด้วยรหัส `CORRUPTED_FEATURE_NULL` ใน `logs/quarantine.csv` ตาม Schema 7 คอลัมน์ที่เคาะไว้ (`run_id` เป็น Feature Run, `raw_value` อาจว่างได้) **ไม่ต้องสร้างตาราง Quarantine**
+6. **Partial Results:** Ticker อื่นที่ผ่านอาจยังสร้าง Forecast รายตัวได้ แต่ Portfolio Risk ต้องมี Forecast ครบทั้ง 3 ETF **และ** Correlation พร้อมในวันเดียวกัน มิฉะนั้นไม่คำนวณพอร์ตบางส่วนและให้สถานะ `INCOMPLETE_INPUTS`
+
+---
+
+## 8. Lineage, Reprocessing และ Quality Gates
+
+### 8.1 Source Lineage
+
+- `run_id` เป็นรหัสรอบ Feature Pipeline, `feature_as_of_utc` เป็นเวลาที่คำนวณจริง
+- `source_batch_id` ในแถว Feature **อ้างอิง Raw Snapshot ของแถวราคา ณ `date=t`** ตามนิยาม Data Dictionary แต่ Features ย้อนหลัง 60 วันอาจอ่านหลาย Raw Batches
+- เพื่ออธิบายแหล่งข้อมูลครบทุกวันที่ใช้ใน Rolling Window ให้มี **Input Manifest/Run Metadata File** ของ Feature Run (เช่น `run_id`, วันเริ่ม/สิ้นสุด, source snapshots ที่อ่าน, config, feature version และ checksum/paths); ไฟล์นี้ **ไม่ใช่ตารางข้อมูลหลักเพิ่ม**
+- `source_batch_id` ในตาราง Correlation ก็เป็นอ้างอิงชุดข้อมูลหลัก ณ วัน `t`; การติดตาม Input ครบ 3 ETFs และ 20 วันทำผ่าน Input Manifest ของ Correlation Run เช่นเดียวกัน
+
+### 8.2 Reproducibility / Idempotency
+
+- เมื่อใช้ Input Snapshots เดิม, Config เดิม และ Feature Version เดิม ต้องได้ค่า Features/Correlation เชิงธุรกิจเดิม (ภายใต้ Floating-point tolerance) แม้เวลารัน/`run_id` เปลี่ยน
+- ห้ามมี `(date,ticker)` ซ้ำใน `asset_volatility_features` หรือ `date` ซ้ำใน `asset_rolling_correlations`
+- เผยแพร่ผลหลัง Schema + Quality Gate ผ่านเท่านั้น; ไม่เขียนข้อมูลผิดทับผลที่ผ่านแล้วของ `ticker` โดยเงียบ ๆ
+
+### 8.3 Quality Gate ที่ต้องทดสอบ
+
+| Test | เงื่อนไขผ่าน | หากไม่ผ่าน |
+|---|---|---|
+| Input source | `market_prices_daily` ผ่าน Validation และเรียงวันได้; วันที่ใช้คำนวณครบ | หยุดสร้าง Output ที่ได้รับผลกระทบ |
+| Schema & Keys | คอลัมน์/ชนิดตาม Dictionary; `(date,ticker)` ไม่ซ้ำ และ `date` เพิ่มตาม `ticker` | Fail Output ที่ได้รับผลกระทบ |
+| Formula | ค่า Lag, Trailing Return, `rv_5d/20d/60d` ตรงกับสูตรบนชุดข้อมูลทดสอบ | Fail Output |
+| Numeric validity | Core ที่ไม่ใช่ Warm-up Null ต้องเป็น Finite; `rv_* >= 0` | Fail Ticker; บันทึก `CORRUPTED_FEATURE_NULL` หากเข้าเงื่อนไข |
+| Warm-up consistency | `is_warmup_buffer` ตรงกับ Price Table และ `date < config.start_date` | Fail Output |
+| Readiness | `is_model_ready` เท่ากับผลตรวจ Core 8 ตัว (ไม่ขึ้นกับ Target) | Fail Output |
+| Point-in-time | เพิ่มข้อมูลหลัง `t` แล้ว Features ของ `t` จาก Input Version เดิมต้องไม่เปลี่ยน | Fail Test |
+| Correlation | ใช้ช่วง 20 วันเดียวกันครบ 3 ETF, `[-1,1]`, Symmetric, PSD | `is_corr_ready=False`, ไม่คำนวณพอร์ต |
+| Idempotency | รัน Input/Config เดิมซ้ำแล้วไม่มีคีย์ซ้ำและค่าธุรกิจเท่าเดิม | Fail Pipeline |
+
+**Warning (ไม่ใช่ Hard Fail อัตโนมัติ):** ค่าที่เกินช่วงความผันผวนหรือผลตอบแทนซึ่งกำหนดแบบ Heuristic ต้อง Flag เพื่อตรวจสอบก่อน ไม่ลบค่าจริงของตลาดทิ้งโดยไม่ทราบสาเหตุ ค่า Warning เบื้องต้นจาก Contract เดิมแสดงไว้ด้านล่างเพื่ออ้างอิง (ไม่ใช่เกณฑ์ตัดข้อมูล):
+
+| Feature | SPY | IEF / GLD |
+|---|---|---|
+| `ret_1d_t`, `ret_lag_1d`, `ret_lag_2d` | `[-0.15, 0.15]` | `[-0.10, 0.10]` |
+| `ret_trailing_5d` | `[-0.25, 0.25]` | `[-0.18, 0.18]` |
+| `ret_trailing_20d` | `[-0.40, 0.40]` | `[-0.30, 0.30]` |
+| `rv_5d` | `[0.02, 1.50]` | `[0.01, 1.00]` |
+| `rv_20d` | `[0.02, 1.20]` | `[0.01, 0.80]` |
+| `rv_60d` | `[0.03, 1.00]` | `[0.02, 0.70]` |
+
+ค่าขอบเขตเหล่านี้เป็น **Initial Heuristic Alerts** ต้องปรับเทียบด้วย **ข้อมูล Train เท่านั้น** หากจะใช้เป็นกฎการเฝ้าระวังเชิงสถิติอย่างเป็นทางการ ไม่อนุญาตให้ใช้ข้อมูล Test เพื่อปรับเกณฑ์
+
+---
+
+## 9. Acceptance Criteria — Feature Pipeline
+
+- [ ] รับข้อมูล `market_prices_daily` ตาม Data Contract รวม `high`, `low`, `is_warmup_buffer` ได้ แต่ไม่เพิ่ม `high/low` เป็น Core Features
+- [ ] สร้าง `asset_volatility_features` **18 คอลัมน์** และ `asset_rolling_correlations` **8 คอลัมน์** ตาม Dictionary โดยไม่เพิ่มตาราง
+- [ ] Core Features **8 ตัว** ถูกต้องตามสูตร/Lookback/หน่วย และแยกคำนวณ SPY, IEF, GLD
+- [ ] B1 ใช้ `rv_20d` โดยตรง; B2 ใช้ Core 8 ตัว; Experimental Features เป็นตัวเลือก
+- [ ] Warm-up และ `is_model_ready` ถูกต้อง; ไม่มีข้อมูลอนาคตใน Features
+- [ ] Correlation ใช้ผลตอบแทน 20 วันเดียวกันครบ 3 ETF และผ่าน Matrix Validation ก่อนใช้กับพอร์ต
+- [ ] มีการทดสอบ Missing/Null/Duplicate, Point-in-Time, No Cross-Ticker Mixing และรันซ้ำแล้วไม่เกิดข้อมูลซ้ำ
+- [ ] Metadata/Run Manifest ชี้กลับไปยัง Input Snapshot และ Config ที่ใช้จริงได้
+
+> **การใช้งานเอกสาร:** ฉบับนี้เป็นข้อกำหนดที่ตกลงแล้วสำหรับการนำไปพัฒนาและทดสอบจริง เมื่อปรับ Formula หรือ Schema ให้แก้ [datadict.md](./datadict.md), Contract ที่เกี่ยวข้อง และ Tests ให้ตรงกัน ไม่ถือว่าผ่าน Acceptance Criteria จนกว่าจะมีหลักฐานการรันจริง
