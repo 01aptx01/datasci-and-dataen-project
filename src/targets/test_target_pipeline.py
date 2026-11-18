@@ -181,6 +181,67 @@ def test_invalid_future_return_holds_only_the_affected_ticker_label() -> None:
     )
 
 
+@pytest.mark.parametrize("invalid_price", [np.nan, np.inf, 0.0, -1.0])
+def test_invalid_future_price_holds_only_the_affected_ticker_label(
+    invalid_price: float,
+) -> None:
+    sessions = _sessions("2026-01-12", "2026-01-23")
+    anchor = sessions[0]
+    returns = (0.7, 0.01, -0.02, 0.03, -0.04, 0.05)
+    prices = _prices_for_returns(sessions[: len(returns)], returns)
+    prices.loc[
+        prices["date"].eq(sessions[1]) & prices["ticker"].eq("SPY"),
+        "adjusted_close",
+    ] = invalid_price
+
+    labels, findings = build_target_labels(
+        prices,
+        expected_trading_days=sessions,
+        anchor_dates=(anchor,),
+        run_id="target_run_invalid_price",
+        processed_at_utc="2026-01-26T15:00:00Z",
+    )
+
+    spy = labels.loc[labels["ticker"].eq("SPY")].iloc[0]
+    ief = labels.loc[labels["ticker"].eq("IEF")].iloc[0]
+    assert spy["target_obs_count"] == 3
+    assert not bool(spy["is_label_mature"])
+    assert bool(ief["is_label_mature"])
+    assert any(
+        finding["finding_type"] == "INVALID_ADJUSTED_CLOSE"
+        and finding["date"] == sessions[1].isoformat()
+        and finding["ticker"] == "SPY"
+        for finding in findings
+    )
+
+
+def test_invalid_anchor_price_does_not_block_other_tickers() -> None:
+    sessions = _sessions("2026-01-12", "2026-01-23")
+    anchor = sessions[0]
+    returns = (0.7, 0.01, -0.02, 0.03, -0.04, 0.05)
+    prices = _prices_for_returns(sessions[: len(returns)], returns)
+    prices.loc[
+        prices["date"].eq(anchor) & prices["ticker"].eq("SPY"),
+        "adjusted_close",
+    ] = 0.0
+
+    labels, findings = build_target_labels(
+        prices,
+        expected_trading_days=sessions,
+        anchor_dates=(anchor,),
+        run_id="target_run_invalid_anchor_price",
+        processed_at_utc="2026-01-26T15:00:00Z",
+    )
+
+    assert set(labels["ticker"]) == {"IEF", "GLD"}
+    assert any(
+        finding["finding_type"] == "INVALID_ADJUSTED_CLOSE"
+        and finding["date"] == anchor.isoformat()
+        and finding["ticker"] == "SPY"
+        for finding in findings
+    )
+
+
 def test_label_is_not_mature_in_a_replay_snapshot_before_window_end() -> None:
     sessions = _sessions("2026-01-12", "2026-01-23")
     anchor = sessions[0]

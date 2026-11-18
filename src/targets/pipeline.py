@@ -86,8 +86,7 @@ def _normalize_prices(prices: pd.DataFrame) -> pd.DataFrame:
 
     data["adjusted_close"] = pd.to_numeric(data["adjusted_close"], errors="coerce")
     close_values = data["adjusted_close"].to_numpy(dtype=float)
-    if not np.isfinite(close_values).all() or (close_values <= 0).any():
-        raise TargetPipelineError("adjusted_close must contain only finite positive prices")
+    data["valid_adjusted_close"] = np.isfinite(close_values) & (close_values > 0)
     data["log_return"] = pd.to_numeric(data["log_return"], errors="coerce")
 
     for column in ("run_id", "source_batch_id"):
@@ -172,12 +171,28 @@ def build_target_labels(
             row.date: float(row.adjusted_close)
             for row in group.itertuples(index=False)
         }
+        valid_prices_by_date = {
+            row.date: bool(row.valid_adjusted_close)
+            for row in group.itertuples(index=False)
+        }
         returns_by_date = {
             row.date: row.log_return
             for row in group.itertuples(index=False)
         }
         ticker_dates = set(prices_by_date)
         min_ticker_date = min(ticker_dates)
+
+        for day in sorted(ticker_dates):
+            if not valid_prices_by_date[day]:
+                findings.append(
+                    {
+                        "finding_type": "INVALID_ADJUSTED_CLOSE",
+                        "date": day.isoformat(),
+                        "ticker": ticker,
+                        "raw_value": str(prices_by_date[day]),
+                        "reason": "adjusted_close must be finite and positive",
+                    }
+                )
 
         for missing_day in sessions:
             if min_ticker_date <= missing_day <= latest_source_date and missing_day not in ticker_dates:
@@ -191,17 +206,24 @@ def build_target_labels(
                 )
 
         for day in sorted(ticker_dates):
+            if not valid_prices_by_date[day]:
+                continue
             position = session_positions[day]
             if position == 0:
                 continue
             previous_day = sessions[position - 1]
-            if previous_day not in prices_by_date:
+            if previous_day not in prices_by_date or not valid_prices_by_date[previous_day]:
+                reason = (
+                    f"previous XNYS session {previous_day.isoformat()} has invalid adjusted_close"
+                    if previous_day in prices_by_date
+                    else f"previous XNYS session {previous_day.isoformat()} is unavailable"
+                )
                 findings.append(
                     {
                         "finding_type": "INVALID_LOG_RETURN",
                         "date": day.isoformat(),
                         "ticker": ticker,
-                        "reason": f"previous XNYS session {previous_day.isoformat()} is unavailable",
+                        "reason": reason,
                     }
                 )
                 continue
@@ -250,6 +272,8 @@ def build_target_labels(
                             "reason": "configured anchor session has no validated price row",
                         }
                     )
+                continue
+            if not bool(anchor_row.valid_adjusted_close):
                 continue
 
             observed_returns = [

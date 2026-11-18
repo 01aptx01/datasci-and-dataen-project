@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import yaml
 
 from src.targets.calendar import resolve_target_sessions
 from src.targets.config import TargetConfig, TargetConfigError, load_target_config

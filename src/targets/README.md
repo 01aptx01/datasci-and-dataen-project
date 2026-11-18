@@ -14,7 +14,7 @@ sqrt((252 / 5) * sum(log_return[t+1:t+5] ** 2))
 
 - **Pending:** มีผลตอบแทนที่ตรวจผ่าน 0–4 วัน; Target และ `label_matured_at_utc` เป็น NULL
 - **Mature:** มีผลตอบแทนที่ตรวจผ่านครบ 5 วัน; Target เป็น finite และไม่ติดลบ
-- หากผลตอบแทนขาดหรือไม่ตรงกับ `adjusted_close` ระบบบันทึก Quality Finding ใน Run Manifest และคง Label ที่ได้รับผลกระทบเป็น Pending; Ticker อื่นที่ผ่านยังประมวลผลต่อได้
+- หากราคา anchor ไม่ผ่าน validation ระบบไม่สร้าง Label ให้ Ticker/วันนั้น; หากราคา หรือผลตอบแทนในหน้าต่างอนาคตขาดหรือไม่ผ่าน validation ระบบบันทึก Quality Finding ใน Run Manifest และคง Label ที่ได้รับผลกระทบเป็น Pending โดย Ticker อื่นที่ผ่านยังประมวลผลต่อได้
 
 `record_created_at_utc` และ `label_matured_at_utc` ใช้เวลาประมวลผลจริง ไม่ได้จำลองเวลาที่ข้อมูลเคยรู้ได้ในอดีต ระบบรักษาเวลาเริ่มสร้างเดิมไว้เมื่อ Upsert และรักษาเวลาที่ Mature ครั้งแรกไว้เมื่อรันซ้ำ
 

@@ -23,13 +23,6 @@ LINEAGE_COLUMNS = {
     "record_created_at_utc",
     "label_matured_at_utc",
 }
-BUSINESS_PROGRESS_COLUMNS = {
-    "target_obs_count",
-    "target_realized_vol_5d",
-    "is_label_mature",
-}
-
-
 def _is_missing(value: Any) -> bool:
     result = pd.isna(value)
     return bool(result) if isinstance(result, (bool, np.bool_)) else False
