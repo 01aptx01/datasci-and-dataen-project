@@ -23,6 +23,7 @@
 | **Canonical Price** | ใช้ `adjusted_close` ซึ่งมาจาก `yfinance` โหมด `auto_adjust=True` สำหรับคำนวณผลตอบแทน; `open` / `high` / `low` มีไว้เก็บข้อมูลราคาและตรวจคุณภาพ **ไม่ใช้คำนวณ Target** |
 | **Output** | `asset_volatility_labels` (**12 คอลัมน์** ตาม `datadict.md`) |
 | **Grain / Primary Key** | 1 แถวต่อ `(date, ticker)`; `date` คือวันทำนายอ้างอิง $t$ และ `ticker` เป็นหนึ่งใน `SPY`, `IEF`, `GLD` |
+| **Reference Date Coverage** | สร้าง Label เฉพาะวันอ้างอิง $t$ ที่ `start_date ≤ t ≤ end_date` (รวมขอบเขตทั้งสองด้าน); วัน Warm-up ก่อน `start_date` ใช้ตรวจผลตอบแทนแต่ไม่สร้าง Label และอนุญาตให้อ่านข้อมูลราคาหลัง `end_date` เพื่อให้หน้าต่าง Forward 5 วันของ Label ท้ายช่วง Mature ได้ โดยไม่สร้าง Label สำหรับวันหลัง `end_date` |
 | **Target** | `target_realized_vol_5d` = Annualized Realized Volatility ที่คำนวณจากผลตอบแทนจริง **5 วันซื้อขายถัดไป** ($t+1$ ถึง $t+5$) |
 | **Time Standard** | วันที่ซื้อขายใช้ `America/New_York`; คอลัมน์เวลา `_utc` เป็นเวลา UTC จริงชนิด `TIMESTAMPTZ` |
 | **ไม่อยู่ในขอบเขต** | การสร้าง Features, การ Train โมเดล, ผล Prediction Records และการสร้างตาราง Evaluation/Portfolio เพิ่ม |
@@ -228,6 +229,7 @@ $$
 ## 8. Acceptance Criteria — Target & Portfolio Risk
 
 - [ ] สร้าง `asset_volatility_labels` ตาม **12 คอลัมน์ของ `datadict.md`** โดยไม่เพิ่มตาราง
+- [ ] สร้างแถว Label เฉพาะ Reference Date ในช่วง `start_date ≤ t ≤ end_date`; ใช้ Warm-up และข้อมูลหลัง `end_date` เพื่อคำนวณ/ทำให้ Label Mature ได้โดยไม่สร้าง Label นอกช่วง
 - [ ] คำนวณ Target จาก **5 Validated Future Trading Returns** ครบ และให้หน่วย Annualized Decimal ตรงกับ Historical RV
 - [ ] รองรับ Pending → Mature โดยไม่มีค่า Target แบบไม่ครบ 5 วัน, ไม่สร้างแถวซ้ำ และมี Timestamp สองความหมายชัดเจน
 - [ ] Historical Replay สามารถทำนายก่อนรู้ Label และอัปเดต Online Model เมื่อ Label ครบจริงตาม Replay Date
