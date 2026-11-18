@@ -5,7 +5,7 @@
 - **`IEF`** (iShares 7-10 Year Treasury Bond ETF)
 - **`GLD`** (SPDR Gold Shares)
 
-ระบบรองรับการดึงข้อมูลจาก Yahoo Finance (`yfinance`), การคำนวณผลตอบแทน (Simple & Log Return), การตรวจสอบคุณภาพข้อมูลตาม Data Contract, การกักกันข้อมูลผิดปกติ (Quarantine), การบันทึก Audit Report และ Feature Engineering แบบ point-in-time สำหรับความผันผวนรายสินทรัพย์กับ Correlation ของพอร์ต
+ระบบรองรับการดึงข้อมูลจาก Yahoo Finance (`yfinance`), การคำนวณผลตอบแทน (Simple & Log Return), การตรวจสอบคุณภาพข้อมูลตาม Data Contract, การกักกันข้อมูลผิดปกติ (Quarantine), การบันทึก Audit Report, Feature Engineering แบบ point-in-time และ Target Label ความผันผวนล่วงหน้า 5 วันซื้อขาย
 
 ---
 
@@ -19,6 +19,7 @@
    - [5.2 รันผ่าน Market Scheduler (ตรวจสอบเวลาตลาดปิด)](#52-รันผ่าน-market-scheduler-ตรวจสอบเวลาตลาดปิด)
    - [5.3 รัน Unit Tests](#53-รัน-unit-tests)
    - [5.4 รัน Feature Engineering Pipeline](#54-รัน-feature-engineering-pipeline)
+   - [5.5 รัน Target Label Pipeline](#55-รัน-target-label-pipeline)
 6. [โครงสร้างข้อมูลผลลัพธ์ (Data Output Structure)](#โครงสร้างข้อมูลผลลัพธ์-data-output-structure)
 
 ---
@@ -36,6 +37,9 @@ flowchart TD
     Quarantine -- "ไม่ผ่าน / ติด Warning" --> QDir["แยกเก็บ Quarantine & Anomaly Review<br>data/quarantine/run_id=.../"]
     Quarantine -- "ผ่านเกณฑ์" --> Publish["Upsert ลงตาราง Parquet หลัก<br>data/curated/market_prices_daily.parquet"]
     Publish --> Audit["สร้าง Audit Report (JSON & Markdown)<br>data/audit/run_id=.../"]
+    Publish --> Target["คำนวณ Target จาก XNYS t+1 ถึง t+5"]
+    Target --> Labels["asset_volatility_labels.parquet<br>Pending / Mature"]
+    Target --> TargetManifest["Run Manifest + Quality Evidence"]
 ```
 
 ---
@@ -250,6 +254,22 @@ python -m src.features.run --config config/features.yaml
 python -m pytest src/features/test_feature_pipeline.py -v
 ```
 
+### 5.5 รัน Target Label Pipeline
+
+Target Pipeline อ่าน `market_prices_daily.parquet` แล้วสร้าง `asset_volatility_labels` ตาม
+[Target Contract](docs/contract/target_contract.md) โดยใช้วันอ้างอิงใน `target.start_date..end_date`
+ของ [config/target.yaml](config/target.yaml); แถว Warm-up ก่อน `start_date` ใช้ตรวจข้อมูล แต่ไม่สร้าง Label
+
+อ่านรายละเอียดสูตร Pending/Mature, การตรวจ XNYS, Upsert, Lineage และ Recovery ได้ที่
+[คู่มือ `src/targets`](src/targets/README.md)
+
+```bash
+python -m src.targets.run --config config/target.yaml
+```
+
+หากช่วง 5 วันซื้อขายข้างหน้ายังมาไม่ครบ แถวนั้นจะเป็น Pending; เมื่อมีข้อมูลใหม่ ให้ขยาย `target.end_date`
+แล้วรันซ้ำ ระบบจะอัปเดต Pending เดิมและเพิ่มแถวตามช่วงใหม่โดยไม่สร้าง Primary Key ซ้ำ
+
 
 ---
 
@@ -262,10 +282,12 @@ python -m pytest src/features/test_feature_pipeline.py -v
 | `data/curated/market_prices_daily.parquet` | ข้อมูลราคาและผลตอบแทนมาตรฐานที่ผ่านการ Validate แล้ว (พร้อมใช้งานในขั้นตอน Feature Engineering) |
 | `data/curated/asset_volatility_features.parquet` | Feature รายวันของ SPY, IEF และ GLD ตาม Schema 18 คอลัมน์ |
 | `data/curated/asset_rolling_correlations.parquet` | Correlation ย้อนหลัง 20 วันของ ETF ทั้งสามตาม Schema 8 คอลัมน์ |
+| `data/curated/asset_volatility_labels.parquet` | Target ความผันผวนจริงจาก 5 วันซื้อขายถัดไปตาม Schema 12 คอลัมน์ |
 | `data/raw/yfinance/run_id=<run_id>/` | Snapshot ข้อมูลดิบที่ดาวน์โหลดจาก Yahoo Finance แยกตามราย Ticker ในรูปแบบ Parquet และ `metadata.json` |
 | `data/quarantine/run_id=<run_id>/` | ข้อมูลแถวหรือ Ticker ที่ไม่ผ่านการตรวจสอบ Contract พร้อม `records.json` และ `anomaly_review.json` |
 | `data/audit/run_id=<run_id>/` | รายงานสรุปผลการรันประจำรอบ ได้แก่ `run_report.json`, `run_report.md` และ `run_metadata.json` |
 | `data/audit/features/run_id=<run_id>/manifest.json` | Input/Config checksums, source batches, Feature Version และเส้นทาง Output ของ Feature Run |
+| `data/audit/targets/run_id=<run_id>/manifest.json` | Input/Config checksums, source batches, Target Version, Mature/Pending counts และ Quality Findings |
 | `data/audit/scheduler/<date>.json` | Log การตรวจสอบสถานะตลาดและการทำงานของ Scheduler ประจำวัน |
 
 ---
