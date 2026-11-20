@@ -125,6 +125,21 @@ uv run --locked --no-dev --group eda jupyter lab
 uv export --frozen --no-dev --group eda --format requirements-txt -o requirements.txt
 ```
 
+### Environment สำหรับ ML และสถิติ
+
+Dependencies หลักประกาศใน `pyproject.toml` และล็อกเวอร์ชันจริงไว้ใน `uv.lock`:
+`scikit-learn==1.7.2` สำหรับ SGD/RobustScaler, `river==0.22.0` สำหรับ ADWIN,
+`joblib` สำหรับ Trusted Local State, และ `statsmodels`/`scipy` สำหรับ H1–H3
+รวมถึง `numpy` สำหรับ Dataset และสถิติที่คำนวณเอง. `uv sync` ติดตั้งชุดหลัก
+โดยไม่เปลี่ยน Python จากช่วง `>=3.10,<3.11`; `requirements.txt` มีชุดหลักและ
+EDA สำหรับผู้ใช้ `pip`. ขั้นตอนที่โหลด Checkpoint ในอนาคตต้องรับเฉพาะ Artifact
+ภายในที่เชื่อถือได้และตรวจ Checksum กับ Library Version ก่อน Deserialize; ห้ามโหลด
+ไฟล์ `joblib`/pickle ที่ไม่ทราบแหล่งที่มา.
+
+Model IDs อยู่ใน `config/models.yaml`; กติกาสถิติที่ต้องตรึงก่อน Final Test อยู่ใน
+`config/hypothesis_tests.yaml`. Config เหล่านี้เป็นสัญญาให้ Stages ถัดไปใช้ร่วมกัน
+และไม่ได้หมายความว่า Model Training, Replay หรือ Hypothesis Analysis ถูก Implement แล้ว.
+
 ---
 
 ## การกำหนดค่าใน Config (`config/ingestion.yaml`)

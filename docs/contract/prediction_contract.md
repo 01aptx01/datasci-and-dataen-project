@@ -22,7 +22,7 @@
 
 ```mermaid
 flowchart TD
-    F[(asset_volatility_features)] --> M["B0 / B1 / B2 Forecasting"]
+    F[(asset_volatility_features)] --> M["B0 / B1 / B2 / B3 Forecasting"]
     M --> V{"Prediction Validation"}
     V -- "PASS" --> P[(asset_volatility_predictions)]
     V -- "FAIL" --> X["Record error in Run Metadata; no publication"]
@@ -54,13 +54,15 @@ flowchart TD
 
 | `model_name` | บทบาท | Input / กติกา |
 |---|---|---|
-| `CONSTANT_BASELINE` (**B0**) | Sanity-check baseline | ค่าคงที่คำนวณจาก **Training Labels ที่รู้ผลแล้วเท่านั้น**; บันทึกค่าคงที่ ช่วงฝึก และเวอร์ชันใน Config/Model Metadata |
+| `CONSTANT_BASELINE` (**B0**) | Historical Mean baseline | ค่าเฉลี่ยของ Eligible, Mature, Purge-clean Train Labels **แยกต่อ ETF**; ตรึงระหว่าง Validation/Test และบันทึก Train cutoff/config version |
 | `ROLLING_20D_BASELINE` (**B1**) | Baseline หลัก | ใช้ `rv_20d` ของ ETF ณ วัน `t` เป็น Forecast โดยตรง; **ไม่ต้อง Train ด้วย Features 8 ตัว** |
-| `ONLINE_SGD` (**B2**) | วิธีเปรียบเทียบ Online ML | `SGDRegressor` แยกตาม ETF ใช้ Core Features **8 ตัว** และ Scaler/Model State ที่ฝึกจากข้อมูลที่ใช้ได้ ณ เวลา Forecast เท่านั้น |
+| `STATIC_SGD` (**B2**) | Static ML control | `SGDRegressor` แยกตาม ETF ใช้ Core Features **8 ตัว**; Initial Fit ด้วย Train แล้ว Freeze ตลอด Validation/Test |
+| `ONLINE_SGD` (**B3**) | Online ML model | ใช้ `SGDRegressor` และ Core Features 8 ตัวเช่นเดียวกับ B2; เริ่มจาก Initial Model/RobustScaler/Hyperparameters ชุดเดียวกับ B2 แล้ว `partial_fit` เฉพาะ Mature Labels ที่ผ่าน Cut-off หลังบันทึก Forecast ของวันนั้น |
 
-- ชื่อทั้งสามข้างต้นเป็น **ค่า `model_name` มาตรฐานที่ยึดใช้ใน Contract นี้**; เปลี่ยนชื่อหรือเพิ่มโมเดลต้องอัปเดต Config/Tests และเอกสารที่เกี่ยวข้อง
-- `model_version` ต้องบ่งบอก **สถานะโมเดลและการเตรียมข้อมูลที่มีผลต่อคำทำนาย** ให้ตรวจสอบย้อนกลับได้ (B0/B1 ใช้ Config Version; B2 ใช้ Model/Scaler State Version)
-- `last_training_target_end_date`: B1 ซึ่งไม่ฝึกจาก Labels ให้เป็น `NULL`; B0 และ B2 ถ้าใช้ Labels ฝึก/ตั้งค่าต้องระบุวันสิ้นสุด Target ล่าสุดที่ใช้จริง
+- ชื่อทั้งสี่ข้างต้นเป็น **ค่า `model_name` มาตรฐานใน Contract นี้**; เปลี่ยนชื่อหรือเพิ่มโมเดลต้องอัปเดต Config/Tests และเอกสารที่เกี่ยวข้อง
+- B2 และ B3 ใช้ RobustScaler ที่ Fit จาก Train เท่านั้นและ Freeze; สำหรับ ETF เดียวกันต้องเริ่มจาก Model/Scaler State และ Selected Hyperparameters เดียวกันจริง
+- `model_version` ต้องบ่งบอกสถานะและเตรียมข้อมูลที่มีผลต่อคำทำนาย: B0/B1 ใช้ Baseline Config/Method Version, B2 ใช้ Immutable Initial Model/Scaler State Version, B3 ใช้ **Pre-update** Model/Scaler State Version; เก็บรายละเอียดและ Hash ใน Artifact/Manifest โดยไม่เพิ่มคอลัมน์
+- `last_training_target_end_date`: B1 ซึ่งไม่ใช้ Labels ให้เป็น `NULL`; B0 ระบุ Label ล่าสุดที่ใช้คำนวณ Mean, B2 ระบุ Label ล่าสุดของ Initial Train และ B3 ระบุ Label Mature ล่าสุดที่ Update เข้า State ก่อน Forecast นั้น
 
 ---
 
@@ -78,7 +80,7 @@ flowchart TD
 | 1 | `prediction_id` | `VARCHAR(64)` | No | Primary Key ที่ระบุ Record ได้ไม่ซ้ำ; รัน Logical Key เดิมต้องได้ ID เดิม |
 | 2 | `prediction_date` | `DATE` | No | วันซื้อขายอ้างอิง `t` (America/New_York) และต้องตรงกับวัน Feature |
 | 3 | `ticker` | `VARCHAR(16)` | No | `SPY`, `IEF`, `GLD` เท่านั้น |
-| 4 | `model_name` | `VARCHAR(64)` | No | `CONSTANT_BASELINE`, `ROLLING_20D_BASELINE`, `ONLINE_SGD` |
+| 4 | `model_name` | `VARCHAR(64)` | No | `CONSTANT_BASELINE`, `ROLLING_20D_BASELINE`, `STATIC_SGD`, `ONLINE_SGD` |
 | 5 | `model_version` | `VARCHAR(64)` | No | เวอร์ชัน Model State หรือ Baseline Config ที่ใช้จริง |
 | 6 | `prediction_mode` | `VARCHAR(32)` | No | `HISTORICAL_REPLAY` หรือ `LATEST_BATCH` |
 | 7 | `forecast_horizon_trading_days` | `INTEGER` | No | เท่ากับ **5** เสมอ |
@@ -131,7 +133,7 @@ $$
 | Feature readiness | `asset_volatility_features.date=prediction_date`, `is_model_ready=True`, `is_warmup_buffer=False` | Reject / `FEATURE_NOT_READY` |
 | Horizon & calendar | `forecast_horizon_trading_days=5`, Start/End ตรงวันซื้อขาย `t+1`/`t+5` | Reject / `INVALID_FORECAST_WINDOW` |
 | Prediction value | `predicted_vol_annualized` เป็น Finite และ `>=0` | Reject / `INVALID_PREDICTION_VALUE` |
-| Training cutoff | สำหรับ B0/B2 ข้อมูล Labels ที่ใช้จริงต้อง Mature ณ Cut-off; `last_training_target_end_date<=prediction_date` และสอดคล้องกับ Run/Model State | Reject / `TRAINING_LABEL_LEAKAGE` |
+| Training cutoff | สำหรับ B0/B2/B3 ข้อมูล Labels ที่ใช้จริงต้อง Mature ณ Cut-off; `last_training_target_end_date<=prediction_date` และสอดคล้องกับ Run/Model State; B1 เป็น `NULL` | Reject / `TRAINING_LABEL_LEAKAGE` |
 | Lineage | Model/Feature Version, `feature_run_id`, `input_snapshot_id`, `run_id` อ้างกลับได้ | Reject / `MISSING_LINEAGE` |
 | Keys / Repeat | `prediction_id` และ Logical Key ไม่ขัดแย้งกับ Record เดิม | No-op หากซ้ำเหมือนเดิม; Reject / `PREDICTION_CONFLICT` หากเนื้อหาแตกต่าง |
 | Portfolio set | Forecast 3 ETF ในวัน/Mode/วิธี/ชุด Input เดียวกัน; Correlation วันที่เดียวกันพร้อม | `INCOMPLETE_INPUTS`; ไม่คำนวณพอร์ต |
@@ -150,8 +152,8 @@ $$
 2. Forecast วัน `t` **ไม่ต้องรอ Label ของวัน `t`**; Label นี้ต้องรอผลตอบแทนของ `t+1` ถึง `t+5`
 3. Training/Scaler/Selection สำหรับ Online Model ต้อง Fit จากข้อมูล Train ที่รู้ผลจริงแล้วเท่านั้น ตาม `feature_contract.md`; ห้าม Fit ด้วย Validation/Test ก่อนการทำนาย
 4. แบ่งชุด Train/Validation/Test แบบ Chronological และใช้ Purge ขอบช่วงตาม `feature_contract.md` (`target_end_date >= next_split_start_date` ของตัวอย่างชุดก่อนหน้าไม่เข้า Train)
-5. ใน Historical Replay ที่วันจำลอง `s` ใช้ลำดับ **Predict → Save Forecast → ตรวจ Labels ที่ Mature แล้ว ณ `s` → Evaluate → Update**; อัปเดต B2 ด้วยตัวอย่างซึ่งครบ 5 วันและผ่าน Data Cut-off เท่านั้น และไม่ Update ตัวอย่างเดิมซ้ำ
-6. `last_training_target_end_date` ต้องเป็นวัน Target จริงที่ใหม่ที่สุดซึ่งเคยใช้ฝึก Model State ณ คำทำนายนั้น สำหรับ B1 เป็น `NULL`; B0/B2 ต้องมีค่าและต้องไม่เกินข้อมูลที่รู้ผล ณ Cut-off
+5. ใน Historical Replay ที่วันจำลอง `s` ใช้ลำดับ **Predict → Save Forecast → Evaluate Mature Labels → ADWIN (Monitor-only) → Update B3 → Checkpoint**; อัปเดต **B3 เท่านั้น** ด้วยตัวอย่างที่ครบ 5 วันและผ่าน Data Cut-off หลังบันทึก Forecast ของวัน `s`; B2 คง Frozen, ห้าม Update ตัวอย่างเดิมซ้ำ และ ADWIN ทำหน้าที่แจ้งเตือนโดยไม่ควบคุมการ Update/Reset/Retune อัตโนมัติ
+6. `last_training_target_end_date` ต้องเป็นวัน Target จริงที่ใหม่ที่สุดซึ่งเคยใช้สร้าง Baseline/Model State ณ คำทำนายนั้น; B1 เป็น `NULL`; B0/B2/B3 ต้องมีค่าและต้องไม่เกินข้อมูลที่รู้ผล ณ Cut-off
 7. `prediction_created_at_utc` เป็นเวลาที่คำนวณจริง และ **ไม่ใช่** หลักฐานว่าสามารถเข้าถึง Yahoo Finance Snapshot เดียวกัน ณ วันในอดีต; รายงาน Historical Replay ต้องระบุข้อจำกัดเรื่องการปรับราคาย้อนหลังอย่างตรงไปตรงมา
 
 ### 4.2 เก็บคำทำนายก่อนดูคำตอบจริง
@@ -205,7 +207,7 @@ $$
 | `evaluated_at_utc` | เวลา UTC ที่คำนวณผลประเมินจริง |
 
 - MAE = ค่าเฉลี่ยของ `absolute_error`; RMSE = รากที่สองของค่าเฉลี่ย `squared_error`
-- เปรียบเทียบ B1 กับ B2 (และ B0 ถ้าต้องการ) บน **ชุดวัน/Ticker/Split เดียวกัน** ไม่เอาคนละช่วงมาเทียบ และรายงานจำนวนตัวอย่างเสมอ
+- เปรียบเทียบ B0–B3 บน **ชุดวัน/Ticker/Split เดียวกัน** พร้อม Paired Test Anchors สำหรับ H2 (B3 vs B2) และ H3 (B3 vs B1); ไม่เอาคนละช่วงมาเทียบและรายงานจำนวนตัวอย่าง/coverage เสมอ
 - Split ของการทดลอง (Train/Validation/Test) อ่านจาก Split Config/Run Manifest ที่ตรึงไว้; ไม่ใช้ผล Test เพื่อเลือก Hyperparameters แล้วรายงานเหมือนไม่เคยเห็น Test
 - **Idempotency ของไฟล์ Evaluation:** หากสร้างผลประเมินชุด Input/Target/Config เดิมซ้ำ ให้ได้แถวเชิงธุรกิจเดิม (ตาม `prediction_id` + `target_version`) ไม่ Append Record ซ้ำ; ถ้าเปลี่ยนชุด Label/Version ให้บันทึกเหตุผลและสำรอง/สร้างไฟล์ผลประเมินใหม่อย่างตรวจสอบได้
 
@@ -266,14 +268,14 @@ $$
 ## 9. Acceptance Criteria & Automated Tests (ยังต้อง Implement)
 
 - [ ] สร้าง `asset_volatility_predictions` **16 คอลัมน์ตรงตาม `datadict.md`**; ไม่เพิ่ม Evaluation Table
-- [ ] สร้าง B0/B1/B2 โดยแยกโมเดลราย ETF; B1 ใช้ `rv_20d` โดยตรงและ B2 ใช้ Core Features 8 ตัว
+- [ ] สร้าง B0/B1/B2/B3 ตาม Model IDs ที่กำหนด โดยแยก ETF; B1 ใช้ `rv_20d`, B2 เป็น Static SGD และ B3 เป็น Online SGD ที่เริ่มจาก Initial State เดียวกับ B2
 - [ ] ทุก Forecast มี Horizon 5 วันซื้อขายและ `target_start_date`/`target_end_date` ถูกต้องตาม Market Calendar
 - [ ] Feature ณ `t` ไม่อ่านราคาอนาคต; Training State ไม่ใช้ Labels ที่ยังไม่ Mature ณ Cut-off
 - [ ] Reject ค่าติดลบ, NaN, Inf โดยบันทึก Error; ไม่มีค่า Invalid เข้าตารางคำทำนาย
 - [ ] รันซ้ำจาก Input/Model Version เดิมแล้วไม่เกิด Logical Key ซ้ำและไม่เขียนค่าเก่าทับ
 - [ ] เลือก Prediction 1 รายการแล้วย้อนกลับไปยัง Model Version, Feature Run, Input Manifest, Source Snapshot ได้
 - [ ] Historical Replay: Predict และ Save ก่อน Evaluate/Update; Online Update ไม่ซ้ำ Label เดิม
-- [ ] `outputs/evaluation.csv` มีเฉพาะ Prediction ที่ Label Mature และสูตร Absolute/Squared Error ถูกต้อง; เทียบ B1/B2 บน Test Dates เดียวกัน
+- [ ] `outputs/evaluation.csv` มีเฉพาะ Prediction ที่ Label Mature และสูตร Absolute/Squared Error ถูกต้อง; เทียบ B0–B3 บน Test Dates เดียวกัน พร้อม H2 (B3 vs B2) และ H3 (B3 vs B1)
 - [ ] Forecast ไม่ครบทั้ง 3 ETF หรือ Correlation ไม่พร้อม → `INCOMPLETE_INPUTS`, ไม่คำนวณพอร์ตบางส่วน
 - [ ] เปลี่ยนน้ำหนักแล้ว Portfolio Risk เปลี่ยนตามสูตรโดย **ไม่ Retrain**
 
