@@ -1,0 +1,51 @@
+model_suite_version: "1.0.0"
+
+models:
+  - model_id: B0
+    model_name: CONSTANT_BASELINE
+    strategy: train_mean_per_etf
+  - model_id: B1
+    model_name: ROLLING_20D_BASELINE
+    strategy: feature_value
+    feature: rv_20d
+  - model_id: B2
+    model_name: STATIC_SGD
+    strategy: sgd
+    update_policy: frozen_after_initial_fit
+  - model_id: B3
+    model_name: ONLINE_SGD
+    strategy: sgd
+    update_policy: partial_fit_mature_labels_only
+
+sgd:
+  estimator: SGDRegressor
+  features:
+    - ret_1d_t
+    - ret_lag_1d
+    - ret_lag_2d
+    - ret_trailing_5d
+    - ret_trailing_20d
+    - rv_5d
+    - rv_20d
+    - rv_60d
+  scaler: RobustScaler
+  scaler_fit_scope: train_only_per_etf
+  shared_initial_state_models:
+    - B2
+    - B3
+
+online_replay:
+  order:
+    - predict
+    - save_forecast
+    - evaluate
+    - adwin_monitor
+    - update_b3
+    - checkpoint
+  update_model: B3
+  update_policy: mature_labels_only
+  duplicate_updates_allowed: false
+  adwin:
+    detector: ADWIN
+    delta: 0.002
+    mode: monitor_only

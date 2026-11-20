@@ -38,7 +38,7 @@ flowchart TD
     B --> D[Aligned 20-day returns of 3 ETFs]
     C --> E[(asset_volatility_features)]
     D --> F[(asset_rolling_correlations)]
-    E --> G[Baseline B1 / Online ML B2]
+    E --> G[Baseline B1 / Static ML B2 / Online ML B3]
     F --> H[Portfolio Risk Engine]
 ```
 
@@ -53,8 +53,8 @@ flowchart TD
 | กลุ่ม | คอลัมน์ | ใช้งาน |
 |---|---|---|
 | Primary Key (2) | `date`, `ticker` | เรียงลำดับ/เชื่อมข้อมูล ไม่เข้า Model Matrix `X` |
-| Core Return Features (5) | `ret_1d_t`, `ret_lag_1d`, `ret_lag_2d`, `ret_trailing_5d`, `ret_trailing_20d` | ใช้เป็นตัวแปรต้นของ Online ML |
-| Core Volatility Features (3) | `rv_5d`, `rv_20d`, `rv_60d` | ใช้เป็นตัวแปรต้น Online ML; `rv_20d` ใช้เดี่ยวใน Baseline B1 |
+| Core Return Features (5) | `ret_1d_t`, `ret_lag_1d`, `ret_lag_2d`, `ret_trailing_5d`, `ret_trailing_20d` | ใช้เป็นตัวแปรต้นของ B2 Static SGD และ B3 Online SGD |
+| Core Volatility Features (3) | `rv_5d`, `rv_20d`, `rv_60d` | ใช้เป็นตัวแปรต้นของ B2/B3; `rv_20d` ใช้เดี่ยวใน Baseline B1 |
 | Experimental Features (2) | `rsi_14d`, `bb_width_20d` | เก็บใน Schema เดิม แต่ **ไม่บังคับ** ใช้ในรอบทดลองหลัก |
 | Status / Metadata (6) | `is_model_ready`, `is_warmup_buffer`, `feature_set_version`, `run_id`, `source_batch_id`, `feature_as_of_utc` | กรองแถวและตรวจ Lineage ไม่เข้า `X` |
 
@@ -62,8 +62,9 @@ flowchart TD
 
 1. **B0 — Constant Baseline:** ใช้ค่าคงที่จากข้อมูล Training ที่รู้ผลแล้ว ไม่ต้องใช้ Feature Matrix 8 ตัว
 2. **B1 — Rolling 20-Day Baseline:** ใช้ `rv_20d` ของสินทรัพย์ ณ วัน `t` โดยตรงเป็นค่าพยากรณ์ Annualized Volatility ของ 5 วันถัดไป **ไม่มีการ Train ด้วย 8 Features**
-3. **B2 — Online SGDRegressor:** ใช้ **Core Features ทั้ง 8 ตัว** เพื่อสร้างโมเดลรายสินทรัพย์; การ Fit/Update ต้องทำตามกฎข้อมูลตามเวลาในหัวข้อ 5
-4. **Experimental:** เปิดใช้ `rsi_14d` หรือ `bb_width_20d` เฉพาะการทดลองที่กำหนดไว้และเปรียบเทียบบน Validation ก่อน ไม่ใช่ข้อบังคับของ MVP
+3. **B2 — Static SGDRegressor:** ใช้ **Core Features ทั้ง 8 ตัว** และ Freeze หลัง Initial Train
+4. **B3 — Online SGDRegressor:** ใช้ Core Features ทั้ง 8 ตัวเช่นเดียวกับ B2; เริ่มจาก Initial Model/Scaler/Hyperparameters เดียวกัน และ Update ด้วย Mature Labels ตามกฎข้อมูลตามเวลาในหัวข้อ 5
+5. **Experimental:** เปิดใช้ `rsi_14d` หรือ `bb_width_20d` เฉพาะการทดลองที่กำหนดไว้และเปรียบเทียบบน Validation ก่อน ไม่ใช่ข้อบังคับของ MVP
 
 ### 2.2 `asset_rolling_correlations` — 8 คอลัมน์
 
@@ -218,7 +219,7 @@ r_{i,t}=\ln\left(\frac{P(i,t)}{P(i,t-1)}\right)$$
 - [x] รับข้อมูล `market_prices_daily` ตาม Data Contract รวม `open`, `high`, `low`, `is_warmup_buffer` ได้ แต่ไม่เพิ่ม `open/high/low` เป็น Core Features
 - [x] สร้าง `asset_volatility_features` **18 คอลัมน์** และ `asset_rolling_correlations` **8 คอลัมน์** ตาม Dictionary โดยไม่เพิ่มตาราง
 - [x] Core Features **8 ตัว** ถูกต้องตามสูตร/Lookback/หน่วย และแยกคำนวณ SPY, IEF, GLD
-- [x] B1 ใช้ `rv_20d` โดยตรง; B2 ใช้ Core 8 ตัว; Experimental Features เป็นตัวเลือก
+- [x] B1 ใช้ `rv_20d` โดยตรง; B2/B3 ใช้ Core 8 ตัว; Experimental Features เป็นตัวเลือก
 - [x] Warm-up และ `is_model_ready` ถูกต้อง; ไม่มีข้อมูลอนาคตใน Features
 - [x] Correlation ใช้ผลตอบแทน 20 วันเดียวกันครบ 3 ETF และผ่าน Matrix Validation ก่อนใช้กับพอร์ต
 - [x] มีการทดสอบ Missing/Null/Duplicate, Point-in-Time, No Cross-Ticker Mixing และรันซ้ำแล้วไม่เกิดข้อมูลซ้ำ

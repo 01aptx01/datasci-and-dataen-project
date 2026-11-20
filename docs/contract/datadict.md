@@ -166,7 +166,7 @@
 - **Grain:** 1 คำทำนาย × 1 `prediction_date` × 1 `ticker` × 1 `model_name` × 1 ชุด Model/Input ที่ใช้จริง
 - **Primary Key:** `prediction_id` (รหัสไม่ซ้ำและคงที่สำหรับการทำนายที่มีชุด Input/Model เดิม)
 - **Logical Deduplication Key:** `(prediction_date, ticker, model_name, prediction_mode, model_version, feature_set_version, input_snapshot_id)`; รันคำขอเดิมซ้ำต้องไม่เพิ่ม Record เชิงธุรกิจซ้ำ
-- **โมเดลเริ่มต้น:** `CONSTANT_BASELINE` (B0), `ROLLING_20D_BASELINE` (B1) และ `ONLINE_SGD` (B2) ตามสเปกที่เสนอไว้; B1 ใช้ `rv_20d` โดยตรง ส่วน B2 ใช้ Core Features 8 ตัว
+- **โมเดลเริ่มต้น:** `CONSTANT_BASELINE` (B0), `ROLLING_20D_BASELINE` (B1), `STATIC_SGD` (B2) และ `ONLINE_SGD` (B3); B0 ใช้ Train Mean แยก ETF, B1 ใช้ `rv_20d` โดยตรง และ B2/B3 ใช้ SGD กับ Core Features 8 ตัว
 - **Storage:** เป็นตารางหลักลำดับที่ 5 เท่านั้น; ไม่มีตาราง Evaluation เพิ่ม โดยเก็บผลประเมินใน `outputs/evaluation.csv`
 
 | Table | Column | Type | Unit / Format | Meaning | Role | Nullable |
@@ -174,7 +174,7 @@
 | `asset_volatility_predictions` | `prediction_id` | `VARCHAR(64)` | stable ID / UUID | รหัสไม่ซ้ำของคำทำนายที่เผยแพร่ ใช้เชื่อมผลประเมินใน CSV | Primary Key | No |
 | `asset_volatility_predictions` | `prediction_date` | `DATE` | `YYYY-MM-DD` | วันที่อ้างอิง `t` หลังปิดตลาดสหรัฐฯ; Feature ที่ใช้ต้องเป็นของวันเดียวกัน | Business Key / Time | No |
 | `asset_volatility_predictions` | `ticker` | `VARCHAR(16)` | uppercase string | `SPY`, `IEF` หรือ `GLD` | Business Key | No |
-| `asset_volatility_predictions` | `model_name` | `VARCHAR(64)` | enum-like string | วิธีพยากรณ์ เช่น `ROLLING_20D_BASELINE`, `ONLINE_SGD` | Business Key | No |
+| `asset_volatility_predictions` | `model_name` | `VARCHAR(64)` | enum-like string | `CONSTANT_BASELINE`, `ROLLING_20D_BASELINE`, `STATIC_SGD` หรือ `ONLINE_SGD` | Business Key | No |
 | `asset_volatility_predictions` | `model_version` | `VARCHAR(64)` | model/config version | เวอร์ชัน Model State หรือ Baseline Config ที่สร้างผลนี้ | Version / Lineage | No |
 | `asset_volatility_predictions` | `prediction_mode` | `VARCHAR(32)` | `HISTORICAL_REPLAY` / `LATEST_BATCH` | ระบุว่าเป็นคำทำนายใน Replay หรือรอบ Batch ล่าสุด | Context | No |
 | `asset_volatility_predictions` | `forecast_horizon_trading_days` | `INTEGER` | days | ต้องเท่ากับ `5`; เป็นวันซื้อขาย ไม่ใช่วันปฏิทิน | Prediction Metadata | No |
@@ -184,13 +184,13 @@
 | `asset_volatility_predictions` | `feature_set_version` | `VARCHAR(16)` | semver | เวอร์ชันนิยาม Features ที่ใช้ทำนาย | Version / Lineage | No |
 | `asset_volatility_predictions` | `feature_run_id` | `VARCHAR(64)` | run identifier | Run ที่สร้าง Features ของวัน `prediction_date` | Lineage | No |
 | `asset_volatility_predictions` | `input_snapshot_id` | `VARCHAR(64)` | input manifest identifier | ระบุชุดข้อมูล/เวอร์ชัน Input ที่ใช้ร่วมกับ Model Version (ไม่ต้องสร้างตารางใหม่; ใช้ Manifest/Metadata File) | Lineage | No |
-| `asset_volatility_predictions` | `last_training_target_end_date` | `DATE` | `YYYY-MM-DD` | วัน `t+5` ของ Label ล่าสุดที่ใช้ฝึก Model State; `NULL` สำหรับ Baseline ที่ไม่ได้ฝึกด้วย Labels | Leakage Audit | Yes (non-trained baseline) |
+| `asset_volatility_predictions` | `last_training_target_end_date` | `DATE` | `YYYY-MM-DD` | วัน `t+5` ล่าสุดที่ใช้ตั้งค่า/ฝึก State; `NULL` เฉพาะ B1 ที่ไม่ใช้ Labels (B0 คือ Label ล่าสุดที่ใช้คำนวณ Train Mean) | Leakage Audit | Yes (B1 only) |
 | `asset_volatility_predictions` | `run_id` | `VARCHAR(64)` | run identifier | รหัสของ Prediction Run ที่เขียนแถวนี้ | Execution Lineage | No |
 | `asset_volatility_predictions` | `prediction_created_at_utc` | `TIMESTAMPTZ` | ISO-8601 UTC | เวลาที่สร้าง Prediction Record จริง แม้เป็นการจำลองย้อนหลัง | Audit Time | No |
 
 **กติกาที่ต้องจำ**
 
-1. ผลพยากรณ์ ณ วัน `t` ต้องคำนวณจาก Feature ณ วัน `t` และ Model State ที่ **ยังไม่ได้ใช้ Label ซึ่งยังไม่ Mature** ณ เวลาออกคำทำนาย; `last_training_target_end_date` ของ Online ML ต้องไม่เกินวัน `t` และต้องผ่าน Cut-off ของข้อมูลจริง
+1. ผลพยากรณ์ ณ วัน `t` ต้องคำนวณจาก Feature ณ วัน `t` และ Model State ที่ **ยังไม่ได้ใช้ Label ซึ่งยังไม่ Mature** ณ เวลาออกคำทำนาย; `last_training_target_end_date` ของ B0/B2/B3 ต้องไม่เกินวัน `t` และต้องผ่าน Cut-off ของข้อมูลจริง
 2. `predicted_vol_annualized` ต้องไม่ติดลบ เป็นตัวเลข Finite; หากโมเดลให้ค่าที่ไม่ผ่าน ให้นำไปจัดการตาม `prediction_contract.md` ก่อนเผยแพร่ ไม่ให้ Dashboard รับค่าที่ผิด
 3. Forecast ต้องสร้าง/บันทึกก่อนนำผลจริงใน 5 วันข้างหน้าไปประเมิน; ห้ามแก้คำทำนายเดิมย้อนหลังเพื่อทำให้ MAE ดูดี
 4. สำหรับ Portfolio Risk ต้องเลือก `prediction_date`/`model_name`/`prediction_mode` และชุด Prediction Run/เวอร์ชันที่ตรงกัน **ครบ SPY, IEF, GLD** พร้อม Correlation ของวันเดียวกัน; ข้อมูลไม่ครบ → `INCOMPLETE_INPUTS` (ไม่คำนวณพอร์ตบางส่วน)
@@ -204,7 +204,7 @@
 **ใช้เข้า Model ($X$) ได้ตามการทดลอง:**
 
 - **B1 Rolling 20-Day Baseline:** ใช้ `asset_volatility_features.rv_20d` โดยตรงเป็นค่า Forecast ไม่ใช่การ Train ด้วย Feature Matrix 8 ตัว
-- **B2 Online SGD:** ใช้ **Core Features 8 ตัว**: `ret_1d_t`, `ret_lag_1d`, `ret_lag_2d`, `ret_trailing_5d`, `ret_trailing_20d`, `rv_5d`, `rv_20d`, `rv_60d`
+- **B2 Static SGD / B3 Online SGD:** ใช้ **Core Features 8 ตัว**: `ret_1d_t`, `ret_lag_1d`, `ret_lag_2d`, `ret_trailing_5d`, `ret_trailing_20d`, `rv_5d`, `rv_20d`, `rv_60d`; B2 Freeze หลัง Initial Train ส่วน B3 Update เฉพาะ Mature Labels
 - **Experimental (เลือกทดลอง):** `rsi_14d`, `bb_width_20d`; ไม่บังคับใช้ในการทดสอบเริ่มต้น
 
 **ห้ามใช้เป็นตัวแปรทำนายโดยอัตโนมัติ:** `date`, `ticker`, คอลัมน์ Metadata / Status / Lineage, คอลัมน์จาก `asset_volatility_labels`, คอลัมน์จาก `asset_volatility_predictions` และตาราง `asset_rolling_correlations` (Correlation ใช้ใน Portfolio Risk Engine)
@@ -232,7 +232,7 @@
 ## 8. หมายเหตุการปรับเอกสารตามลำดับงาน
 
 - `data_contract.md` สอดคล้องกับ `market_prices_daily` 13 คอลัมน์ รวม `open`, `high`, `low`, `is_warmup_buffer` แล้ว
-- `feature_contract.md` ระบุแล้วว่า B1 ใช้ `rv_20d` โดยตรง, B2 ใช้ Core Features 8 ตัว และการติดตามหลาย Source Batches ทำผ่าน Input Manifest ของ run
-- `target_contract.md` ฉบับถัดไปต้องเปลี่ยน `label_as_of_utc` เป็น `record_created_at_utc` + `label_matured_at_utc` เพื่อให้ Pending Labels ใช้ได้จริง
-- `prediction_contract.md` ที่มีอยู่เป็น **Draft v0.1.0** และกล่าวถึง `prediction_evaluations` รวมถึง Revision/Publication System; เมื่อทำ Final ต้องปรับให้สอดคล้องกับ **ตาราง Predictions 1 ตาราง + `outputs/evaluation.csv`** และ **Prediction Schema แบบ MVP ใน Dictionary นี้**
+- `feature_contract.md` ระบุแล้วว่า B1 ใช้ `rv_20d` โดยตรง, B2/B3 ใช้ Core Features 8 ตัว และการติดตามหลาย Source Batches ทำผ่าน Input Manifest ของ run
+- `target_contract.md` ใช้ `record_created_at_utc` + `label_matured_at_utc` แยกเวลาสร้าง Pending Label กับเวลาที่ Label Mature แล้ว และกำหนด Replay ให้สอดคล้องกับนโยบาย B2/B3 และ ADWIN Monitor-only
+- `prediction_contract.md` กำหนด Model IDs B0–B3, Schema Prediction 16 คอลัมน์ และเก็บผลประเมินใน `outputs/evaluation.csv` โดยไม่เพิ่ม Logical Table; การ Implement Pipeline และ Acceptance Tests ยังเป็นงานของ Stages ถัดไป
 - การแก้ Metadata/Schema จริงต้องแก้เอกสารที่เกี่ยวข้องและ Tests ให้ตรงกัน; **Final ในที่นี้หมายถึงสเปกที่ตกลงใช้ ไม่ใช่หลักฐานว่ารัน Pipeline ผ่านแล้ว**

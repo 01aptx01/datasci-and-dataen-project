@@ -1,0 +1,60 @@
+config_version: "1.0.0"
+alpha: 0.05
+alternative: greater
+data_cutoff: "2026-09-25"
+test_tuning_allowed: false
+
+confidence_interval:
+  level: 0.95
+  sided: two-sided
+
+holm_families:
+  H1:
+    - SPY
+    - IEF
+    - GLD
+  H2_H3:
+    - H2
+    - H3
+
+hypotheses:
+  H1:
+    split: train
+    predictor: rv_5d
+    target: target_realized_vol_5d
+    method: ols_hac
+    hac_maxlags: 5
+    hac_sensitivity_maxlags: [10, 20]
+    holm_family: H1
+    ticker_scope: separate_etf
+    one_sided_alternative: greater
+  H2:
+    split: test
+    model: B3
+    baseline: B2
+    method: synchronized_moving_block_bootstrap
+    paired_by: [prediction_date, ticker]
+    paired_sample_definition: same_final_replay_experiment_valid_predictions_with_mature_targets_by_cutoff
+    effect_definition: baseline_absolute_error_minus_B3_absolute_error
+    positive_effect_means: B3_lower_error
+    holm_family: H2_H3
+    bootstrap:
+      block_length_xnys_sessions: 10
+      replicates: 2000
+      seed: 42
+      sensitivity_block_lengths: [5, 20]
+  H3:
+    split: test
+    model: B3
+    baseline: B1
+    method: synchronized_moving_block_bootstrap
+    paired_by: [prediction_date, ticker]
+    paired_sample_definition: same_final_replay_experiment_valid_predictions_with_mature_targets_by_cutoff
+    effect_definition: baseline_absolute_error_minus_B3_absolute_error
+    positive_effect_means: B3_lower_error
+    holm_family: H2_H3
+    bootstrap:
+      block_length_xnys_sessions: 10
+      replicates: 2000
+      seed: 42
+      sensitivity_block_lengths: [5, 20]

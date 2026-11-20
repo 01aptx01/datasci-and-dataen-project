@@ -5,11 +5,17 @@ description = "Asset volatility forecasting and portfolio risk pipeline"
 readme = "README.md"
 requires-python = ">=3.10, <3.11"
 dependencies = [
+    "joblib",
+    "numpy>=2.0.0, <2.3.0",
     "yfinance>=1.8.0, <1.9.0",
     "pandas>=2.2.0, <2.3.0",
     "pandas-market-calendars>=5.0.0, <6.0.0",
     "pyarrow",
     "pyyaml",
+    "river==0.22.0",
+    "scikit-learn==1.7.2",
+    "scipy",
+    "statsmodels",
 ]
 
 [dependency-groups]
@@ -19,7 +25,6 @@ dev = [
     "nbformat>=5.10, <6",
 ]
 eda = [
-    "numpy>=2.0, <2.3",
     "matplotlib>=3.9, <3.11",
     "ipykernel>=6.29, <7",
     "jupyterlab>=4.3, <5",
