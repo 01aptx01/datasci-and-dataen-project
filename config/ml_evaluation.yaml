@@ -1,0 +1,67 @@
+evaluation_config_version: "1.0.0"
+market: XNYS
+data_cutoff: "2026-09-25"
+tickers: [SPY, IEF, GLD]
+model_names:
+  - CONSTANT_BASELINE
+  - ROLLING_20D_BASELINE
+  - STATIC_SGD
+  - ONLINE_SGD
+core_features:
+  - ret_1d_t
+  - ret_lag_1d
+  - ret_lag_2d
+  - ret_trailing_5d
+  - ret_trailing_20d
+  - rv_5d
+  - rv_20d
+  - rv_60d
+
+splits:
+  train:
+    start_date: "2021-09-27"
+    end_date: "2024-09-30"
+  validation:
+    start_date: "2024-10-01"
+    end_date: "2025-09-30"
+  test:
+    start_date: "2025-10-01"
+    end_date: "2026-09-25"
+
+high_volatility:
+  train_target_quantile: 0.80
+
+temporal_diagnostics:
+  rolling_window_sessions: 20
+  # Implementation detail: show a rolling score only after at least half its window is evaluable.
+  rolling_minimum_evaluable: 10
+
+hypothesis_inference:
+  # Implementation detail: below this per-ETF paired count, report insufficient evidence.
+  minimum_pairs_per_ticker: 30
+
+portfolio:
+  default_weights:
+    SPY: 0.50
+    IEF: 0.30
+    GLD: 0.20
+  weight_sum_tolerance: 1.0e-8
+  correlation_symmetry_tolerance: 1.0e-12
+  correlation_minimum_eigenvalue: -1.0e-10
+
+# These paths bind this local run to the source snapshot and approved Stage 03-05 artifacts.
+# Update the run-specific artifact directories if those upstream stages are regenerated.
+paths:
+  dataset_config: config/ml_dataset.yaml
+  features_parquet: data/curated/asset_volatility_features.parquet
+  labels_parquet: data/curated/asset_volatility_labels.parquet
+  correlations_parquet: data/curated/asset_rolling_correlations.parquet
+  feature_manifest: data/audit/features/run_id=feat_readiness_20261115_01/manifest.json
+  target_manifest: data/audit/targets/run_id=target_integration_20261118_04/manifest.json
+  feature_transaction: data/audit/features/run_id=feat_readiness_20261115_01/publish-transaction.json
+  target_transaction: data/audit/targets/run_id=target_integration_20261118_04/publish-transaction.json
+  replay_experiment_dir: data/processed/ml_replay/experiments/3cbf81eb9242d8894d2f67f39065a17ff1ef55a2e098773aead915949ab11b12
+  training_artifact_dir: data/processed/ml_training/run_id=stage04_20261121_03
+  h1_artifact_dir: data/audit/ml_dataset/run_id=stage03_h1_20261120_01
+  hypothesis_tests_config: config/hypothesis_tests.yaml
+  output_root: data/processed/ml_evaluation/experiments
