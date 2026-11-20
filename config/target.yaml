@@ -1,0 +1,15 @@
+target:
+  start_date: "2021-09-27"
+  end_date: "2026-09-25"
+  target_version: "2.0.0"
+
+calendar:
+  market: "XNYS"
+
+paths:
+  input: "data/curated/market_prices_daily.parquet"
+  output: "data/curated/asset_volatility_labels.parquet"
+  manifest_dir: "data/audit/targets"
+
+publish:
+  overwrite_conflicts: false
