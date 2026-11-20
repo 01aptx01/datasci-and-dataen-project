@@ -1,0 +1,25 @@
+replay_config_version: "1.0.0"
+market: XNYS
+prediction_mode: HISTORICAL_REPLAY
+forecast_horizon_trading_days: 5
+replay_start_date: "2024-10-01"
+data_cutoff: "2026-09-25"
+label_availability_rule: "is_label_mature and target_obs_count == 5 and target_end_date <= replay_date"
+update_policy: mature_labels_only
+update_model: B3
+duplicate_updates_allowed: false
+processing_order:
+  - predict
+  - save_forecast
+  - evaluate
+  - adwin_monitor
+  - update_b3
+  - checkpoint_commit
+adwin:
+  detector: ADWIN
+  delta: 0.002
+  policy: monitor_only
+checkpoint:
+  cadence: every_xnys_session
+  atomic_commit: true
+  resume_policy: latest_valid_committed_checkpoint_only
