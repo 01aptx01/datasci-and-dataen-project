@@ -1,0 +1,45 @@
+training_config_version: "1.0.0"
+
+core_features:
+  - ret_1d_t
+  - ret_lag_1d
+  - ret_lag_2d
+  - ret_trailing_5d
+  - ret_trailing_20d
+  - rv_5d
+  - rv_20d
+  - rv_60d
+
+sgd:
+  estimator: SGDRegressor
+  loss: squared_error
+  penalty: l2
+  learning_rate: constant
+  shuffle: true
+  random_state: 42
+  tol: null
+  early_stopping: false
+  scaler: RobustScaler
+  scaler_fit_scope: train_only_per_etf
+
+search_grid:
+  eta0: [0.0001, 0.001, 0.01]
+  alpha: [0.00001, 0.0001, 0.001]
+  initial_max_iter: [20, 50, 100]
+
+selection:
+  objective: "(mae_b2_validation + mae_b3_validation) / 2"
+  scope: per_etf
+  scoring_split: validation
+  paired_anchor_policy: complete_coverage_required
+  minimum_paired_coverage: 1.0
+  tie_break_policy: grid_order_with_absolute_tolerance
+  tie_tolerance: 0.000000000001
+  invalid_prediction_policy: reject_and_count_without_clipping
+
+replay:
+  update_order: predict_then_update
+  online_update: mature_labels_only
+  label_maturity_rule: "is_label_mature and target_obs_count == 5 and target_end_date <= replay_date"
+  duplicate_updates_allowed: false
+  train_fit_ledger_seeded: true
