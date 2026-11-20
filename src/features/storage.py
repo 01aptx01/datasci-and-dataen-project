@@ -227,6 +227,18 @@ def _validate_table(
         _validate_utc_timestamp_column(data, "computed_at_utc", "asset_rolling_correlations")
 
 
+def validate_feature_table(
+    table: pd.DataFrame,
+    table_name: str = "asset_volatility_features",
+) -> pd.DataFrame:
+    """Validate and normalize a published feature table for downstream consumers."""
+    if not isinstance(table, pd.DataFrame):
+        raise FeaturePipelineError(f"{table_name} must be a DataFrame")
+    data = table.copy()
+    _validate_table(data, FEATURE_COLUMNS, FEATURE_KEYS, table_name)
+    return data.loc[:, FEATURE_COLUMNS].sort_values(list(FEATURE_KEYS)).reset_index(drop=True)
+
+
 def _same_value(left: Any, right: Any) -> bool:
     if _is_missing(left) or _is_missing(right):
         return _is_missing(left) and _is_missing(right)
