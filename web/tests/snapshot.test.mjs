@@ -208,6 +208,56 @@ test("D4–D5 sources keep frozen counts, splits, and source covariance parity",
   assert.ok(highVol.filter((row) => row.split === "test" && row.ticker === "IEF").every((row) => row.highVolCommonEvaluableN === 0 && row.mae === null && row.rmse === null));
 });
 
+test("portfolio rows preserve the stored 20-session correlation fields and readiness", () => {
+  const records = parseCsv(new TextDecoder().decode(sourceBytes[manifest.files.portfolioRisk.path])).records;
+  const source = records.find((row) => row.split === "test" && row.prediction_date === "2026-09-25" && row.model_name === "ONLINE_SGD");
+  assert.ok(source);
+  const selected = schemas.parsePortfolioRiskRow(source);
+  assert.deepEqual(selected.correlations, {
+    spyIef: 0.67513842411091929,
+    spyGld: 0.59199919040056614,
+    iefGld: 0.50741111540470785,
+  });
+  assert.equal(selected.correlationReady, true);
+  assert.equal(selected.correlationRunId, "feat_readiness_20261115_01");
+});
+
+test("an OK portfolio row rejects unready, out-of-range, or non-PSD correlations", () => {
+  const records = parseCsv(new TextDecoder().decode(sourceBytes[manifest.files.portfolioRisk.path])).records;
+  const source = records.find((row) => row.split === "test" && row.portfolio_status === "OK");
+  assert.ok(source);
+  assert.throws(() => schemas.parsePortfolioRiskRow({ ...source, is_corr_ready: "False" }), /ready correlations/i);
+  assert.throws(() => schemas.parsePortfolioRiskRow({ ...source, corr_spy_ief_20d: "1.01" }), /correlation.*\[-1, 1\]/i);
+  assert.throws(() => schemas.parsePortfolioRiskRow({
+    ...source,
+    corr_spy_ief_20d: "0.9",
+    corr_spy_gld_20d: "-0.9",
+    corr_ief_gld_20d: "0.9",
+  }), /correlation matrix.*positive semidefinite/i);
+});
+
+test("all eligible Test rows match default risk and their stored correlation-derived covariance", () => {
+  const records = parseCsv(new TextDecoder().decode(sourceBytes[manifest.files.portfolioRisk.path])).records;
+  const rows = parsePortfolioRisk(new TextDecoder().decode(sourceBytes[manifest.files.portfolioRisk.path]), policy)
+    .filter((row) => row.split === "test" && row.status === "OK");
+  assert.equal(rows.length, 992);
+  assert.equal(rows.filter((row) => row.modelName === "ONLINE_SGD").length, 248);
+  for (const row of rows) {
+    assert.ok(row.covariance);
+    assert.equal(row.correlationReady, true);
+    assert.ok(Math.abs(computePortfolioVolatility(row.covariance, [0.5, 0.3, 0.2]) - row.portfolioVol) <= 1e-10);
+    const [spyIef, spyGld, iefGld] = [row.correlations.spyIef, row.correlations.spyGld, row.correlations.iefGld];
+    const correlations = [[1, spyIef, spyGld], [spyIef, 1, iefGld], [spyGld, iefGld, 1]];
+    for (let first = 0; first < 3; first += 1) {
+      for (let second = 0; second < 3; second += 1) {
+        const expected = row.forecastVols[first] * row.forecastVols[second] * correlations[first][second];
+        assert.ok(Math.abs(row.covariance[first][second] - expected) <= 1e-10);
+      }
+    }
+  }
+  assert.equal(records.length, 1992);
+});
+
 test("D4–D5 row parsers reject malformed nested JSON, Test H1 points, and scored zero-sample rows", () => {
   const portfolioRecord = parseCsv(new TextDecoder().decode(sourceBytes[manifest.files.portfolioRisk.path])).records[0];
   assert.throws(() => schemas.parsePortfolioRiskRow({ ...portfolioRecord, covariance_matrix: "{" }), /valid JSON/);

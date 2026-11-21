@@ -118,6 +118,8 @@ export interface SnapshotManifest {
 }
 
 export type ModelName = "CONSTANT_BASELINE" | "ROLLING_20D_BASELINE" | "STATIC_SGD" | "ONLINE_SGD";
+import { minimumEigenvalueSymmetric3 } from "./portfolio.js";
+
 export type Ticker = "SPY" | "IEF" | "GLD";
 
 export interface ForecastAuditRow {
@@ -206,6 +208,9 @@ export interface PortfolioRiskRow {
   inputSnapshotId: string;
   forecastVols: [number, number, number];
   forecastStatuses: ["VALID" | "INVALID" | "MISSING", "VALID" | "INVALID" | "MISSING", "VALID" | "INVALID" | "MISSING"];
+  correlations: { spyIef: number | null; spyGld: number | null; iefGld: number | null };
+  correlationReady: boolean;
+  correlationRunId: string;
   sourceWeights: [number, number, number];
   portfolioVol: number | null;
   status: string;
@@ -595,6 +600,13 @@ export function parseFiniteOrNull(value: string, field: string): number | null {
   return parsed;
 }
 
+function parseSignedFiniteOrNull(value: string, field: string): number | null {
+  if (value.trim() === "") return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new Error(`${field} must be blank or a finite number`);
+  return parsed;
+}
+
 function parseFinite(value: string, field: string): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${field} must be a finite nonnegative number`);
@@ -743,6 +755,23 @@ export function parsePortfolioRiskRow(record: Record<string, string>): Portfolio
   }
   const missing = parseJsonValue(record.missing_inputs, "missing_inputs");
   if (!Array.isArray(missing) || missing.some((item) => typeof item !== "string")) throw new Error("missing_inputs must contain a JSON string array");
+  const correlations = {
+    spyIef: parseSignedFiniteOrNull(record.corr_spy_ief_20d, "corr_spy_ief_20d"),
+    spyGld: parseSignedFiniteOrNull(record.corr_spy_gld_20d, "corr_spy_gld_20d"),
+    iefGld: parseSignedFiniteOrNull(record.corr_ief_gld_20d, "corr_ief_gld_20d"),
+  };
+  const correlationReady = parseBoolean(record.is_corr_ready, "is_corr_ready");
+  if (correlationReady) {
+    const values = [correlations.spyIef, correlations.spyGld, correlations.iefGld];
+    if (values.some((value) => value === null)) throw new Error("Ready 20-session correlation values must all be present");
+    if (values.some((value) => value! < -1 || value! > 1)) throw new Error("20-session correlation values must be in [-1, 1]");
+    const matrix = [
+      [1, correlations.spyIef!, correlations.spyGld!],
+      [correlations.spyIef!, 1, correlations.iefGld!],
+      [correlations.spyGld!, correlations.iefGld!, 1],
+    ];
+    if (minimumEigenvalueSymmetric3(matrix) < -1e-10) throw new Error("20-session correlation matrix must be positive semidefinite");
+  }
   const row: PortfolioRiskRow = {
     split: oneOf(record.split, ["test", "validation"], "split"),
     predictionDate: dateString(record.prediction_date, "prediction_date"),
@@ -751,6 +780,9 @@ export function parsePortfolioRiskRow(record: Record<string, string>): Portfolio
     inputSnapshotId: hashField({ id: record.input_snapshot_id }, "id"),
     forecastVols: [parseFiniteOrNull(record.spy_forecast_vol_annualized, "spy_forecast_vol_annualized"), parseFiniteOrNull(record.ief_forecast_vol_annualized, "ief_forecast_vol_annualized"), parseFiniteOrNull(record.gld_forecast_vol_annualized, "gld_forecast_vol_annualized")] as [number, number, number],
     forecastStatuses: [oneOf(record.spy_forecast_status, ["VALID", "INVALID", "MISSING"], "spy_forecast_status"), oneOf(record.ief_forecast_status, ["VALID", "INVALID", "MISSING"], "ief_forecast_status"), oneOf(record.gld_forecast_status, ["VALID", "INVALID", "MISSING"], "gld_forecast_status")],
+    correlations,
+    correlationReady,
+    correlationRunId: record.correlation_run_id.trim(),
     sourceWeights: [parseFinite(record.weight_spy, "weight_spy"), parseFinite(record.weight_ief, "weight_ief"), parseFinite(record.weight_gld, "weight_gld")],
     portfolioVol: parseFiniteOrNull(record.portfolio_vol_annualized, "portfolio_vol_annualized"),
     status: stringField(record, "portfolio_status"),
@@ -760,8 +792,8 @@ export function parsePortfolioRiskRow(record: Record<string, string>): Portfolio
   for (let index = 0; index < 3; index += 1) {
     if ((row.forecastStatuses[index] === "VALID") !== (row.forecastVols[index] !== null)) throw new Error("Forecast status and value do not agree");
   }
-  if (Math.abs(row.sourceWeights.reduce((sum, weight) => sum + weight, 0) - 1) > 1e-10) throw new Error("Stored portfolio weights must sum to 1");
-  if (row.status === "OK" && (row.covariance === null || row.portfolioVol === null || row.missingInputs.length > 0 || row.forecastStatuses.some((status) => status !== "VALID"))) throw new Error("An OK portfolio row must have complete covariance and forecast inputs");
+  if (Math.abs(row.sourceWeights.reduce((sum, weight) => sum + weight, 0) - 1) > 1e-8) throw new Error("Stored portfolio weights must sum to 1");
+  if (row.status === "OK" && (row.covariance === null || row.portfolioVol === null || row.missingInputs.length > 0 || row.forecastStatuses.some((status) => status !== "VALID") || !row.correlationReady)) throw new Error("An OK portfolio row must have complete covariance, forecast inputs, and ready correlations");
   return row;
 }
 

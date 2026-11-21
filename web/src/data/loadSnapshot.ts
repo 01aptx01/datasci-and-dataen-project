@@ -278,6 +278,25 @@ function validateAdditionalSources(
     if (row.status !== "OK" || row.covariance === null || row.portfolioVol === null || row.missingInputs.length > 0) continue;
     const parity = computePortfolioVolatility(row.covariance, row.sourceWeights);
     if (Math.abs(parity - row.portfolioVol) > 1e-10) throw new SnapshotLoadError(`portfolio_risk.csv stored covariance does not reproduce its portfolio value for ${row.predictionDate} ${row.modelName}`, "integrity");
+    const defaultParity = computePortfolioVolatility(row.covariance, [0.5, 0.3, 0.2]);
+    if (Math.abs(defaultParity - row.portfolioVol) > 1e-10) throw new SnapshotLoadError(`portfolio_risk.csv default 50/30/20 risk does not reproduce its stored value for ${row.predictionDate} ${row.modelName}`, "integrity");
+    if (!row.correlationReady || row.correlations.spyIef === null || row.correlations.spyGld === null || row.correlations.iefGld === null) {
+      throw new SnapshotLoadError(`portfolio_risk.csv lacks ready 20-session correlations for ${row.predictionDate} ${row.modelName}`, "integrity");
+    }
+    const correlationMatrix = [
+      [1, row.correlations.spyIef, row.correlations.spyGld],
+      [row.correlations.spyIef, 1, row.correlations.iefGld],
+      [row.correlations.spyGld, row.correlations.iefGld, 1],
+    ];
+    for (let first = 0; first < 3; first += 1) {
+      for (let second = 0; second < 3; second += 1) {
+        const firstForecast = row.forecastVols[first];
+        const secondForecast = row.forecastVols[second];
+        if (firstForecast === null || secondForecast === null) throw new SnapshotLoadError(`portfolio_risk.csv has incomplete forecast inputs for ${row.predictionDate} ${row.modelName}`, "integrity");
+        const expectedCovariance = firstForecast * secondForecast * correlationMatrix[first][second];
+        if (Math.abs(row.covariance[first][second] - expectedCovariance) > 1e-10) throw new SnapshotLoadError(`portfolio_risk.csv covariance does not match the stored 20-session correlations for ${row.predictionDate} ${row.modelName}`, "integrity");
+      }
+    }
     for (let index = 0; index < 3; index += 1) {
       const ticker = (["SPY", "IEF", "GLD"] as const)[index];
       const forecast = auditByScope.get(`${row.split}:${row.predictionDate}:${ticker}:${row.modelName}`);
