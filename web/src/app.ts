@@ -37,6 +37,16 @@ const modelColors: Record<ModelName, string> = {
 };
 type DisplayUnit = "decimal" | "percent";
 type MetricName = "mae" | "rmse";
+interface TourRecord { ticker: Ticker; predictionDate: string; asOfDate: string; predictionId: string }
+interface TourStop { route: string; label: string; title: string; what: string; why: string; tryThis: string; source: string }
+const tourStops: TourStop[] = [
+  { route: "/guide", label: "คำถามวิจัย", title: "เราทำนายอะไร?", what: "เป้าหมายคือ Forward RV5: ความผันผวนของ 5 วันซื้อขายถัดไป ไม่ใช่ราคาหรือผลตอบแทน", why: "ถ้ารู้เป้าหมายก่อน จะอ่าน Forecast และ error ได้ถูกความหมาย", tryThis: "ดูคำอธิบาย RV5 และข้อจำกัดใน Guide", source: "target contract · 5 XNYS sessions" },
+  { route: "/forecasts", label: "สี่โมเดล", title: "เทียบ B0–B3 บนวันเดียวกัน", what: "ตาราง Replay แสดง prediction ของทั้งสี่โมเดลสำหรับ ETF และวันทำนายเดียวกัน", why: "การเทียบวันเดียวกันช่วยแยกความต่างของโมเดลออกจากความต่างของช่วงตลาด", tryThis: "ไล่ดูค่า Forecast และ source status ของ B0, B1, B2, B3", source: "forecast_audit.csv · same prediction date and ticker" },
+  { route: "/forecasts", label: "Label maturity", title: "ทำไม Actual จึงยังไม่แสดงทันที?", what: "Actual จะเปิดเผยได้หลัง target ครบ 5 XNYS sessions และ source row ต้องเป็น EVALUABLE", why: "label ในอนาคตใช้ให้คะแนนได้เมื่อช่วงที่วัดสิ้นสุดแล้ว; as-of นี้เป็นตัวช่วยสอน ไม่ใช่ historical-vintage proof", tryThis: "ดู as-of date แล้วกดแสดง Actual/Error หลังครบช่วง", source: "target_end_date · evaluation.csv · source Pending stays hidden" },
+  { route: "/models", label: "ช่วงและคะแนน", title: "ผลเต็มชุดต่างจากช่วงย่อยอย่างไร?", what: "Official Test เป็นค่าที่ตรึงไว้; custom range คำนวณเชิงพรรณนาจาก common paired rows", why: "N และคะแนนอาจเปลี่ยนตามช่วง แต่ H1–H3 และ p-values ต้องคงเดิม", tryThis: "เลือก Last 20 sessions หรือช่วงเอง แล้วดู paired N", source: "model_metrics.csv · evaluation.csv · common panel" },
+  { route: "/drift", label: "Online และ drift", title: "Monitor เห็นอะไรในชุดนี้?", what: "Rolling MAE20 และ ADWIN error เป็น observation ที่บันทึกไว้; snapshot นี้รายงาน 0 alerts", why: "ไม่มี alert ไม่ได้พิสูจน์ว่าไม่มี drift; update/checkpoint history ไม่ได้รวมใน handoff", tryThis: "เลือกจุดบนกราฟเพื่อดู ADWIN fields และ source record", source: "rolling_mae20.csv · drift_error_timeline.csv" },
+  { route: "/portfolio", label: "ความเสี่ยงพอร์ต", title: "น้ำหนักเปลี่ยนความเสี่ยงโดยไม่ fit ใหม่", what: "ใช้ forecast และ covariance แถวเดิมคำนวณ √(wᵀΣw); เปลี่ยนเฉพาะสัดส่วน", why: "ความเสี่ยงพอร์ตขึ้นกับทั้งความเสี่ยงสินทรัพย์และการเคลื่อนไหวร่วมกัน", tryThis: "ลอง preset 60/20/20 เทียบ Default 50/30/20", source: "portfolio_risk.csv · selected date and model" },
+];
 const iconShapes: Record<string, string> = {
   overview: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
   models: '<path d="M4 19V5M4 19h17"/><rect x="7" y="11" width="3" height="5" rx="1"/><rect x="13" y="7" width="3" height="9" rx="1"/><rect x="19" y="4" width="2" height="12" rx="1"/>',
@@ -87,7 +97,12 @@ interface ViewState {
   driftModel: ModelName;
   driftFrom: string;
   driftTo: string;
+  driftSelectedPredictionId: string;
   researchTicker: Ticker;
+  guidedActive: boolean;
+  guidedStep: number;
+  tourRecord: TourRecord | null;
+  presentationMode: boolean;
   attempt: number;
 }
 
@@ -181,6 +196,89 @@ function selectedPortfolioRow(snapshot: Extract<SnapshotState, { status: "ready"
   return snapshot.portfolioRisk.find((row) => row.split === "test" && row.predictionDate === selectedDate && row.modelName === model && row.status === "OK" && row.covariance !== null && row.portfolioVol !== null && row.missingInputs.length === 0);
 }
 
+function findTourRecord(snapshot: Extract<SnapshotState, { status: "ready" }>): TourRecord | null {
+  const candidates = snapshot.sessions
+    .filter((row) => row.isCommonPanel && row.forecastStatus === "VALID" && row.evaluationStatus === "EVALUABLE")
+    .sort((left, right) => left.predictionDate.localeCompare(right.predictionDate));
+  for (const candidate of candidates) {
+    const sameDate = selectSameDateForecasts(snapshot.sessions, candidate.ticker, candidate.predictionDate);
+    if (sameDate.length !== modelNames.length || !modelNames.every((model) => sameDate.some((row) => row.modelName === model && row.forecastStatus === "VALID" && row.evaluationStatus === "EVALUABLE" && snapshot.evaluations.has(row.predictionId)))) continue;
+    if (!sameDate.every((row) => row.targetEndDate === candidate.targetEndDate)) continue;
+    if (!selectedPortfolioRow(snapshot, candidate.predictionDate, "ONLINE_SGD")) continue;
+    const asOfDate = [...new Set(snapshot.sessions.filter((row) => row.ticker === candidate.ticker).map((row) => row.predictionDate))]
+      .filter((date) => date >= candidate.targetEndDate)
+      .sort((left, right) => left.localeCompare(right))[0];
+    if (!asOfDate) continue;
+    const online = sameDate.find((row) => row.modelName === "ONLINE_SGD");
+    if (!online) continue;
+    return { ticker: candidate.ticker, predictionDate: candidate.predictionDate, asOfDate, predictionId: online.predictionId };
+  }
+  return null;
+}
+
+function applyGuidedTourSelection(state: ViewState): void {
+  const stop = tourStops[state.guidedStep];
+  if (!stop) return;
+  state.routePath = stop.route;
+  stopSessionPlayback(state);
+  const record = state.tourRecord;
+  if ((state.guidedStep === 1 || state.guidedStep === 2) && state.snapshot.status === "ready" && record) {
+    state.ticker = record.ticker;
+    state.forecastTicker = record.ticker;
+    state.model = "ONLINE_SGD";
+    const sessions = selectRecordedSessions(state.snapshot.sessions, record.ticker, "ONLINE_SGD");
+    state.sessionIndex = Math.max(0, sessions.findIndex((row) => row.predictionDate === record.predictionDate));
+    state.sessionAsOfDate = state.guidedStep === 2 ? record.asOfDate : record.predictionDate;
+    state.sessionShowAfterMaturity = state.guidedStep === 2;
+  }
+  if (state.guidedStep === 3) {
+    state.modelTicker = "MACRO";
+    state.rangeTicker = record?.ticker ?? "MACRO";
+    state.rangeMetric = "mae";
+    state.rangePreset = "last20";
+    state.rangeFrom = "";
+    state.rangeTo = "";
+  }
+  if (state.guidedStep === 4) {
+    state.driftTicker = record?.ticker ?? "SPY";
+    state.driftModel = "ONLINE_SGD";
+    state.driftFrom = record?.predictionDate ?? "";
+    state.driftTo = record?.predictionDate ?? "";
+    state.driftSelectedPredictionId = record?.predictionId ?? "";
+  }
+  if (state.guidedStep === 5) {
+    state.portfolioDate = record?.predictionDate ?? (state.snapshot.status === "ready" ? state.snapshot.manifest.strictCutoff : "");
+    state.portfolioModel = "ONLINE_SGD";
+    state.portfolioWeights = [...portfolioDefaultWeights];
+  }
+}
+
+function setGuidedStep(root: HTMLElement, state: ViewState, step: number): void {
+  const nextStep = Math.max(0, Math.min(step, tourStops.length - 1));
+  state.guidedStep = nextStep;
+  const targetRoute = tourStops[nextStep].route;
+  if (window.location.hash !== `#${targetRoute}`) {
+    window.location.hash = targetRoute;
+    return;
+  }
+  applyGuidedTourSelection(state);
+  render(root, state);
+}
+
+function exitGuidedTour(root: HTMLElement, state: ViewState): void {
+  state.guidedActive = false;
+  state.tourRecord = null;
+  render(root, state);
+}
+
+function guidedTourPanel(state: ViewState): string {
+  if (!state.guidedActive) return "";
+  const stop = tourStops[state.guidedStep];
+  if (!stop) return "";
+  const progress = (state.guidedStep + 1) / tourStops.length * 100;
+  return `<aside class="guided-tour-panel" role="dialog" aria-label="Guided tour · ${escapeHtml(stop.label)}"><div class="guided-tour-top"><span>GUIDED MODE · ${state.guidedStep + 1} / ${tourStops.length}</span><button type="button" class="guided-tour-close" data-action="exit-guided-tour" aria-label="ออกจากทัวร์">×</button></div><div class="guided-tour-progress"><i style="width:${progress}%"></i></div><small class="guided-tour-step-label">${escapeHtml(stop.label)}</small><h2>${escapeHtml(stop.title)}</h2><p><strong>กำลังดูอะไร</strong>${escapeHtml(stop.what)}</p><p><strong>ทำไมสำคัญ</strong>${escapeHtml(stop.why)}</p><p class="guided-tour-try"><strong>ลองทำ</strong>${escapeHtml(stop.tryThis)}</p><div class="guided-tour-evidence">Evidence · ${escapeHtml(stop.source)}${state.snapshot.status === "ready" ? ` · Evaluation ${escapeHtml(state.snapshot.manifest.evaluationId.slice(0, 10))}…` : ""}</div>${state.guidedStep > 0 && !state.tourRecord ? '<p class="guided-tour-limitation">Snapshot นี้ไม่มีตัวอย่างที่ผ่านเงื่อนไขครบทุกข้อ จึงแสดงเฉพาะข้อมูลที่ยืนยันได้</p>' : ""}<div class="guided-tour-actions"><button type="button" class="tour-skip-button" data-action="exit-guided-tour">ข้ามทัวร์</button><span></span><button type="button" class="tour-nav-button" data-action="guided-previous" ${state.guidedStep === 0 ? "disabled" : ""}>ย้อนกลับ</button><button type="button" class="tour-nav-button tour-next-button" data-action="guided-next">${state.guidedStep === tourStops.length - 1 ? "เสร็จสิ้น" : "ถัดไป"}</button></div></aside>`;
+}
+
 function coverageTable(snapshot: Extract<SnapshotState, { status: "ready" }>, ticker: Ticker, evaluationId: string): string {
   const rows = coverageRowsFor(snapshot, ticker);
   if (rows.length === 0) return emptyState("Coverage ยังไม่มีข้อมูล", `ไม่พบ Test coverage สำหรับ ${ticker}`);
@@ -249,7 +347,7 @@ function overviewPage(state: ViewState): string {
   const conclusion = `B3 (Online SGD) has the lowest stored Test Macro ${metricName(state.metric)} among B0–B3 in this frozen sample. The comparison is descriptive, paired on ${b3Metric?.pairedN.toLocaleString() ?? "—"} mature valid anchors. It does not guarantee future performance; report approval remains pending.`;
   return `
     <section class="hero-card">
-      <div class="hero-copy"><div class="hero-badge"><span class="hero-badge-dot"></span> EXPERIMENT SNAPSHOT VERIFIED</div><h2>สำรวจความผันผวน<br class="desktop-break" />จากผลทดลองที่บันทึกไว้</h2><p>พื้นที่อ่านผลแบบ read-only สำหรับ SPY, IEF และ GLD ใช้ข้อมูล Frozen Snapshot ชุดเดียวตลอดการสำรวจ</p><button class="button button-primary" type="button" data-route="/forecasts">เปิด Recorded Session ${icon("arrowRight", 17)}</button><span class="hero-action-note">เลื่อนดู observation ที่บันทึกไว้ ไม่ได้เปลี่ยนหรือรันโมเดล</span></div>
+      <div class="hero-copy"><div class="hero-badge"><span class="hero-badge-dot"></span> EXPERIMENT SNAPSHOT VERIFIED</div><h2>สำรวจความผันผวน<br class="desktop-break" />จากผลทดลองที่บันทึกไว้</h2><p>พื้นที่อ่านผลแบบ read-only สำหรับ SPY, IEF และ GLD ใช้ข้อมูล Frozen Snapshot ชุดเดียวตลอดการสำรวจ</p><div class="hero-action-row"><button class="button button-primary" type="button" data-action="start-guided-tour">เริ่มเรียนรู้การทดลอง ${icon("arrowRight", 17)}</button><button class="button button-secondary" type="button" data-route="/forecasts">เปิด Replay Lab</button></div><span class="hero-action-note">เลื่อนดู observation ที่บันทึกไว้ ไม่ได้เปลี่ยนหรือรันโมเดล</span></div>
       <div class="hero-graphic" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="hero-orbit-core"><span>RV5</span><small>FROZEN</small></div><span class="orbit-point point-spy">SPY</span><span class="orbit-point point-ief">IEF</span><span class="orbit-point point-gld">GLD</span><div class="hero-graphic-caption">XNYS · 5 trading sessions</div></div>
     </section>
     <section class="metric-summary-grid" aria-label="Experiment summary">${overviewMetrics}</section>
@@ -526,15 +624,18 @@ function rollingMaeChart(rows: RollingMae20Row[], state: ViewState): string {
   return `<div class="chart-scroll"><svg class="trend-chart" role="img" aria-label="Rolling MAE20 for ${state.driftTicker} ${modelId(state.driftModel)}" viewBox="0 0 840 218"><line x1="44" y1="182" x2="804" y2="182" class="chart-axis"/><line x1="44" y1="37" x2="44" y2="182" class="chart-axis"/><polyline points="${points}" fill="none" stroke="${modelColors[state.driftModel]}" stroke-width="2"/>${circles}<text x="44" y="206" class="chart-date-label">${escapeHtml(values[0].windowEnd)}</text><text x="804" y="206" text-anchor="end" class="chart-date-label">${escapeHtml(values[values.length - 1].windowEnd)}</text><text x="5" y="42" class="chart-date-label">${formatVol(maxValue, state.unit, 2)}</text></svg></div><div class="chart-legend"><span><i style="--legend-color:${modelColors[state.driftModel]}"></i>${modelId(state.driftModel)} · source rolling MAE20</span><span>${values.length.toLocaleString()} fixed windows</span></div>${chartDataTable(`Rolling MAE20 values for ${state.driftTicker} ${modelId(state.driftModel)}`, ["Window end", "Model", "MAE", "Evaluable N", "Expected anchors", "Window sessions"], tableRows)}`;
 }
 
-function adwinTimelineChart(rows: DriftTimelineRow[], ticker: Ticker, unit: DisplayUnit): string {
+function adwinTimelineChart(rows: DriftTimelineRow[], ticker: Ticker, unit: DisplayUnit, selectedPredictionId: string): string {
   if (rows.length === 0) return emptyState("ไม่มี ADWIN row ตามตัวกรอง", "เลือกช่วงวันที่ที่อยู่ใน verified B3 Test timeline");
   const values = [...rows].sort((left, right) => left.predictionDate.localeCompare(right.predictionDate));
   const maxValue = Math.max(...values.map((row) => row.absoluteErrorAdwin), Number.EPSILON);
   const points = values.map((row, index) => `${44 + index * (760 / Math.max(values.length - 1, 1))},${182 - row.absoluteErrorAdwin / maxValue * 145}`).join(" ");
-  const circles = values.map((row, index) => `<circle cx="${44 + index * (760 / Math.max(values.length - 1, 1))}" cy="${182 - row.absoluteErrorAdwin / maxValue * 145}" r="${row.driftDetected ? 4 : 2.1}" fill="${row.driftDetected ? "#b54545" : "#496b88"}"><title>${row.predictionDate} · ${ticker} · B3 error ${formatVol(row.absoluteErrorAdwin, unit)} · drift_detected=${row.driftDetected} · alert_record_present=${row.alertRecordPresent}</title></circle>`).join("");
+  const circles = values.map((row, index) => {
+    const selected = row.predictionId === selectedPredictionId;
+    return `<circle class="adwin-observation${selected ? " selected" : ""}" tabindex="0" role="button" aria-label="เลือก ${row.predictionDate} ${ticker} B3 observation; absolute error ${formatVol(row.absoluteErrorAdwin, unit)}; drift ${row.driftDetected ? "detected" : "not detected"}" aria-pressed="${selected}" data-action="select-drift-observation" data-prediction-id="${escapeHtml(row.predictionId)}" cx="${44 + index * (760 / Math.max(values.length - 1, 1))}" cy="${182 - row.absoluteErrorAdwin / maxValue * 145}" r="${selected ? 5.2 : row.driftDetected ? 4 : 2.7}" fill="${row.driftDetected ? "#b54545" : "#496b88"}"><title>${row.predictionDate} · ${ticker} · B3 error ${formatVol(row.absoluteErrorAdwin, unit)} · drift_detected=${row.driftDetected} · alert_record_present=${row.alertRecordPresent}</title></circle>`;
+  }).join("");
   const alerts = values.filter((row) => row.driftDetected || row.alertRecordPresent).length;
-  const tableRows = values.map((row) => `<tr><th scope="row">${escapeHtml(row.predictionDate)}</th><td>${formatVol(row.absoluteErrorAdwin, unit)}</td><td>${row.driftDetected ? "Yes" : "No"}</td><td>${row.alertRecordPresent ? "Yes" : "No"}</td></tr>`);
-  return `<div class="chart-scroll"><svg class="trend-chart" role="img" aria-label="Recorded B3 ADWIN error timeline for ${ticker}; ${alerts} recorded alerts" viewBox="0 0 840 218"><line x1="44" y1="182" x2="804" y2="182" class="chart-axis"/><line x1="44" y1="37" x2="44" y2="182" class="chart-axis"/><polyline points="${points}" fill="none" stroke="#496b88" stroke-width="1.8"/>${circles}<text x="44" y="206" class="chart-date-label">${escapeHtml(values[0].predictionDate)}</text><text x="804" y="206" text-anchor="end" class="chart-date-label">${escapeHtml(values[values.length - 1].predictionDate)}</text><text x="5" y="42" class="chart-date-label">${formatVol(maxValue, unit, 2)}</text></svg></div><div class="chart-legend"><span><i style="--legend-color:#496b88"></i>Recorded absolute_error_adwin</span><span>${alerts} source-recorded alerts</span></div>${chartDataTable(`Recorded B3 ADWIN error values for ${ticker}`, ["Prediction date", "Absolute error", "Drift detected", "Alert record present"], tableRows)}`;
+  const tableRows = values.map((row) => `<tr${row.predictionId === selectedPredictionId ? ' class="selected-observation-row"' : ""}><th scope="row"><button class="table-link" type="button" data-action="select-drift-observation" data-prediction-id="${escapeHtml(row.predictionId)}" aria-pressed="${row.predictionId === selectedPredictionId}">${escapeHtml(row.predictionDate)}</button></th><td>${formatVol(row.absoluteErrorAdwin, unit)}</td><td>${row.driftDetected ? "Yes" : "No"}</td><td>${row.alertRecordPresent ? "Yes" : "No"}</td></tr>`);
+  return `<div class="chart-scroll"><svg class="trend-chart" role="img" aria-label="Recorded B3 ADWIN error timeline for ${ticker}; ${alerts} recorded alerts" viewBox="0 0 840 218"><line x1="44" y1="182" x2="804" y2="182" class="chart-axis"/><line x1="44" y1="37" x2="44" y2="182" class="chart-axis"/><polyline points="${points}" fill="none" stroke="#496b88" stroke-width="1.8"/>${circles}<text x="44" y="206" class="chart-date-label">${escapeHtml(values[0].predictionDate)}</text><text x="804" y="206" text-anchor="end" class="chart-date-label">${escapeHtml(values[values.length - 1].predictionDate)}</text><text x="5" y="42" class="chart-date-label">${formatVol(maxValue, unit, 2)}</text></svg></div><div class="chart-legend"><span><i style="--legend-color:#496b88"></i>Recorded absolute_error_adwin</span><span>${alerts} source-recorded alerts</span><span>เลือกจุดหรือวันที่เพื่อเปิดรายละเอียด</span></div>${chartDataTable(`Recorded B3 ADWIN error values for ${ticker}`, ["Prediction date", "Absolute error", "Drift detected", "Alert record present"], tableRows)}`;
 }
 
 function driftPage(state: ViewState): string {
@@ -543,10 +644,23 @@ function driftPage(state: ViewState): string {
   if (snapshot.status !== "ready") return snapshot.status === "error" ? errorState(snapshot.message) : emptyState("Drift sources ยังโหลดไม่ได้", "rolling_mae20.csv และ drift_error_timeline.csv ต้องผ่าน verification ก่อน");
   const rolling = snapshot.rollingMae20.filter((row) => row.split === "test" && row.ticker === state.driftTicker && row.modelName === state.driftModel && (!state.driftFrom || row.windowEnd >= state.driftFrom) && (!state.driftTo || row.windowEnd <= state.driftTo));
   const timeline = snapshot.driftTimeline.filter((row) => row.ticker === state.driftTicker && (!state.driftFrom || row.predictionDate >= state.driftFrom) && (!state.driftTo || row.predictionDate <= state.driftTo));
-  const alertCount = snapshot.driftTimeline.filter((row) => row.driftDetected || row.alertRecordPresent).length;
-  const filters = `<div class="forecast-filters"><label class="field-label">Asset<select data-field="drift-ticker">${tickerNames.map((ticker) => `<option value="${ticker}" ${ticker === state.driftTicker ? "selected" : ""}>${ticker}</option>`).join("")}</select></label><label class="field-label">Rolling model<select data-field="drift-model">${modelNames.map((model) => `<option value="${model}" ${model === state.driftModel ? "selected" : ""}>${modelId(model)} · ${escapeHtml(modelLabel(model))}</option>`).join("")}</select></label><label class="field-label">From<input type="date" data-field="drift-from" value="${escapeHtml(state.driftFrom)}"></label><label class="field-label">To<input type="date" data-field="drift-to" value="${escapeHtml(state.driftTo)}"></label></div>`;
-  return `<div class="page-stack"><section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">FIXED 20 XNYS SESSIONS · SOURCE VALUES</span><h2 class="analysis-title">Rolling MAE20</h2><p>ทุกจุดอ่านจาก rolling_mae20.csv; N และ coverage ใช้ค่าที่บันทึกในแต่ละ window</p></div></div>${filters}${rollingMaeChart(rolling, state)}${sourceFooter("rolling_mae20.csv", "Test", `${state.driftTicker} · ${modelId(state.driftModel)}`, rolling.length, `annualized decimal · 20 XNYS sessions`, snapshot.manifest.evaluationId)}</section>
-    <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">RECORDED ADWIN · TEST B3 ONLY</span><h3>Error timeline</h3><p>แสดงเฉพาะ error และ flag ที่บันทึกไว้ใน Stage 06; ไม่มี client-side alert rule</p></div><span class="pill pill-neutral">${alertCount} recorded alerts</span></div>${adwinTimelineChart(timeline, state.driftTicker, state.unit)}${sourceFooter("drift_error_timeline.csv", "Test · B3", state.driftTicker, timeline.length, `absolute error (${state.unit})`, snapshot.manifest.evaluationId)}</section></div>`;
+  const alertCount = timeline.filter((row) => row.driftDetected || row.alertRecordPresent).length;
+  const selectedObservation = timeline.find((row) => row.predictionId === state.driftSelectedPredictionId) ?? timeline[0];
+  const flowSteps = [
+    ["01", "Predict & save", "บันทึก forecast ณ เวลา t"],
+    ["02", "Label maturity", "รอ target ครบ 5 sessions"],
+    ["03", "Evaluate", "คำนวณ error เมื่อ evaluable"],
+    ["04", "ADWIN monitor", "ตรวจ error ที่ป้อนเข้า monitor"],
+    ["05", "B3 update", "อัปเดตตาม learning policy"],
+    ["06", "Checkpoint", "บันทึกสถานะเพื่อ resume"],
+  ];
+  const conceptualFlow = '<section class="conceptual-flow-card" aria-label="Conceptual learning flow"><div><span class="section-overline">CONCEPTUAL LEARNING FLOW · NOT A RECORDED EVENT TIMELINE</span><h2>Forecast → mature label → evaluate → monitor → update → checkpoint</h2><p>ลำดับนี้อธิบายแนวคิดของ online learning; จุดและสถานะราย observation ด้านล่างอ่านจาก source ที่บันทึกไว้</p></div><ol class="conceptual-flow">' +
+    flowSteps.map(([step, title, detail]) => "<li><span>" + step + "</span><strong>" + title + "</strong><small>" + detail + "</small></li>").join("") +
+    '</ol><p class="flow-evidence-limit">ใน handoff snapshot นี้มี rolling MAE และ ADWIN observation แต่ไม่มี event-level update/checkpoint log จึงยืนยันสถานะจริงรายวันของขั้น 05–06 ไม่ได้</p></section>';
+  const filters = `<div class="forecast-filters"><label class="field-label">Asset<select data-field="drift-ticker">${tickerNames.map((ticker) => `<option value="${ticker}" ${ticker === state.driftTicker ? "selected" : ""}>${ticker}</option>`).join("")}</select></label><label class="field-label">Rolling model<select data-field="drift-model">${modelNames.map((model) => `<option value="${model}" ${model === state.driftModel ? "selected" : ""}>${modelId(model)} · ${escapeHtml(modelLabel(model))}</option>`).join("")}</select></label><label class="field-label">From<input type="date" data-field="drift-from" value="${escapeHtml(state.driftFrom)}"></label><label class="field-label">To<input type="date" data-field="drift-to" value="${escapeHtml(state.driftTo)}"></label><label class="field-label">Inspect saved date<select data-field="drift-observation">${timeline.map((row) => `<option value="${escapeHtml(row.predictionId)}" ${row.predictionId === selectedObservation?.predictionId ? "selected" : ""}>${escapeHtml(row.predictionDate)}</option>`).join("")}</select><small>เลือก observation จาก B3 Test timeline</small></label></div>`;
+  const inspector = selectedObservation ? `<section class="drift-inspector" aria-label="รายละเอียด ADWIN observation"><div class="drift-inspector-heading"><div><span class="section-overline">SOURCE ROW INSPECTOR · TEST B3</span><h3>${escapeHtml(selectedObservation.predictionDate)} · ${selectedObservation.ticker}</h3><p>รายละเอียดจากแถวที่เลือกใน drift_error_timeline.csv</p></div><span class="pill ${selectedObservation.driftDetected || selectedObservation.alertRecordPresent ? "pill-pending" : "pill-neutral"}">${selectedObservation.driftDetected || selectedObservation.alertRecordPresent ? "Recorded alert" : "No alert recorded"}</span></div><div class="drift-inspector-grid"><div><small>Absolute error · evaluation</small><strong>${formatVol(selectedObservation.absoluteErrorEvaluation, state.unit)}</strong></div><div><small>Absolute error · ADWIN</small><strong>${formatVol(selectedObservation.absoluteErrorAdwin, state.unit)}</strong></div><div><small>Drift detected</small><strong>${selectedObservation.driftDetected ? "Yes" : "No"}</strong></div><div><small>Alert record present</small><strong>${selectedObservation.alertRecordPresent ? "Yes" : "No"}</strong></div><div><small>ADWIN delta</small><strong>${selectedObservation.adwinDelta}</strong></div><div><small>ADWIN width</small><strong>${selectedObservation.adwinWidth.toLocaleString()}</strong></div><div><small>ADWIN estimation</small><strong>${formatVol(selectedObservation.adwinEstimation, state.unit)}</strong></div></div><div class="drift-source-ids"><span>Prediction ID <code>${escapeHtml(selectedObservation.predictionId)}</code></span><span>Evaluation ID <code>${escapeHtml(snapshot.manifest.evaluationId)}</code></span><span>Replay ID <code>${escapeHtml(snapshot.manifest.replayId)}</code></span></div><p class="drift-history-limitation">Snapshot นี้ไม่มี event-level model update/checkpoint log จึงไม่สามารถยืนยันได้ว่าจุดนี้ทำให้เกิดการอัปเดตโมเดลหรือเป็น drift event นอกเหนือจาก flag ที่บันทึกไว้</p></section>` : emptyState("ไม่มี observation ให้ตรวจ", "ปรับ asset หรือช่วงวันที่ให้ตรงกับแถวใน Test B3 timeline");
+  return `<div class="page-stack">${conceptualFlow}<section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">FIXED 20 XNYS SESSIONS · SOURCE VALUES</span><h2 class="analysis-title">Rolling MAE20</h2><p>ทุกจุดอ่านจาก rolling_mae20.csv; N และ coverage ใช้ค่าที่บันทึกในแต่ละ window</p></div></div>${filters}${rollingMaeChart(rolling, state)}${sourceFooter("rolling_mae20.csv", "Test", `${state.driftTicker} · ${modelId(state.driftModel)}`, rolling.length, `annualized decimal · 20 XNYS sessions`, snapshot.manifest.evaluationId)}</section>
+    <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">RECORDED ADWIN · TEST B3 ONLY</span><h3>Error timeline</h3><p>แสดงเฉพาะ error และ flag ที่บันทึกไว้ใน Stage 06; ไม่มี client-side alert rule</p></div><span class="pill pill-neutral">${alertCount} recorded alerts in selection</span></div>${adwinTimelineChart(timeline, state.driftTicker, state.unit, selectedObservation?.predictionId ?? "")}${inspector}${sourceFooter("drift_error_timeline.csv", "Test · B3", state.driftTicker, timeline.length, `absolute error (${state.unit})`, snapshot.manifest.evaluationId)}</section><section class="limitation-card"><span class="limitation-mark">i</span><p>ไม่มี event-level update/checkpoint history ใน handoff snapshot; จุดที่เลือกจึงแสดงเฉพาะ observation และ flag ที่บันทึกไว้</p></section></div>`;
 }
 
 function scatterChart(rows: H1ScatterRow[], ticker: Ticker): string {
@@ -690,9 +804,9 @@ function shell(state: ViewState): string {
   const secondaryRoutes = routes.slice(3);
   const mobileDrawer = state.mobileMenuOpen ? `<div class="mobile-nav-overlay" data-action="close-menu"><nav class="mobile-drawer" aria-label="เมนูทั้งหมด"><div class="drawer-heading"><strong>ไปยังหน้า</strong><button class="icon-button" type="button" data-action="close-menu" aria-label="ปิดเมนู">×</button></div>${sidebarLinks}</nav></div>` : "";
   const morePanel = state.moreOpen ? `<div class="mobile-more-panel" aria-label="More pages">${secondaryRoutes.map((item) => navLink(item, item.path === state.routePath)).join("")}</div>` : "";
-  return `<div class="app-frame">
+  return `<div class="app-frame${state.presentationMode ? " presentation-mode" : ""}">
     <aside class="sidebar" aria-label="Main navigation"><div class="brand-lockup"><div class="brand-mark">A</div><div><strong>Adaptive Risk Lab</strong><span>DEDS · RESEARCH WORKBENCH</span></div></div><div class="sidebar-section-label">WORKSPACE</div><nav class="sidebar-nav">${sidebarLinks}</nav><div class="sidebar-bottom"><div class="sidebar-status-mark">${icon("lock", 16)}<span>Read-only snapshot</span></div><div class="sidebar-caption">ผลลัพธ์ที่ตรึงไว้สำหรับทบทวน<br />ไม่มีการเรียก ML pipeline</div><span class="version-label">D1–D2 FOUNDATION</span></div></aside>
-    <div class="app-main"><header class="mobile-topbar"><a class="mobile-brand" href="#/overview"><span class="brand-mark small">A</span><strong>Adaptive Risk Lab</strong></a><button class="icon-button mobile-menu-button" type="button" aria-label="เปิดเมนู" aria-expanded="${state.mobileMenuOpen}" data-action="toggle-menu">${icon("menu")}</button></header>${mobileDrawer}<main class="workspace"><div class="top-identity-row"><div class="breadcrumbs"><span>DEDS</span><span class="breadcrumb-separator">/</span><strong>Adaptive Portfolio Risk Lab</strong></div><div class="identity-state"><span class="identity-dot ${state.snapshot.status}"></span>${identity}</div></div><div class="page-heading-row"><div><div class="page-kicker">RESEARCH WORKBENCH <span>·</span> FROZEN DATASET</div><h1>${escapeHtml(route.thai)}</h1><p>${escapeHtml(route.description)}</p></div><div class="page-tools"><label class="unit-control"><span>Units</span><select aria-label="Display units" data-field="unit"><option value="decimal" ${state.unit === "decimal" ? "selected" : ""}>Decimal</option><option value="percent" ${state.unit === "percent" ? "selected" : ""}>Percent</option></select></label><button class="snapshot-id-button" type="button" title="คัดลอก Evaluation ID และ Replay ID ที่ pin ไว้" data-action="copy-id"><span class="snapshot-id-icon">${icon("lock", 15)}</span><span><small>PINNED EVALUATION</small><strong>${escapeHtml(snapshotId.slice(0, 12))}${state.snapshot.status === "ready" ? "…" : ""}</strong></span><span class="copy-hint">COPY</span></button></div></div>${snapshotBanner(state.snapshot)}${state.snapshot.status === "missing" ? errorState(state.snapshot.message, "ยังไม่มีไฟล์ snapshot ที่ตรวจสอบแล้ว") : state.snapshot.status === "error" ? errorState(state.snapshot.message) : ""}<div class="page-content">${pageContent(state)}</div><footer class="app-footer"><span>DEDS · Adaptive Portfolio Risk Lab</span><span>${icon("lock", 13)} Read-only · No live forecast</span></footer></main><nav class="mobile-bottom-nav" aria-label="Navigation">${mobilePrimary}<button class="nav-link mobile-more-link${state.moreOpen ? " active" : ""}" type="button" aria-expanded="${state.moreOpen}" data-action="toggle-more">${icon("menu", 19)}<span>More</span></button></nav>${morePanel}</div>
+    <div class="app-main"><header class="mobile-topbar"><a class="mobile-brand" href="#/overview"><span class="brand-mark small">A</span><strong>Adaptive Risk Lab</strong></a><button class="icon-button mobile-menu-button" type="button" aria-label="เปิดเมนู" aria-expanded="${state.mobileMenuOpen}" data-action="toggle-menu">${icon("menu")}</button></header>${mobileDrawer}<main class="workspace"><div class="top-identity-row"><div class="breadcrumbs"><span>DEDS</span><span class="breadcrumb-separator">/</span><strong>Adaptive Portfolio Risk Lab</strong></div><div class="identity-state"><span class="identity-dot ${state.snapshot.status}"></span>${identity}</div></div><div class="page-heading-row"><div><div class="page-kicker">RESEARCH WORKBENCH <span>·</span> FROZEN DATASET</div><h1>${escapeHtml(route.thai)}</h1><p>${escapeHtml(route.description)}</p></div><div class="page-tools"><label class="unit-control"><span>Units</span><select aria-label="Display units" data-field="unit"><option value="decimal" ${state.unit === "decimal" ? "selected" : ""}>Decimal</option><option value="percent" ${state.unit === "percent" ? "selected" : ""}>Percent</option></select></label><button class="presentation-toggle${state.presentationMode ? " active" : ""}" type="button" data-action="toggle-presentation" aria-pressed="${state.presentationMode}">${state.presentationMode ? "ออกจากโหมดนำเสนอ" : "โหมดนำเสนอ"}</button><button class="snapshot-id-button" type="button" title="คัดลอก Evaluation ID และ Replay ID ที่ pin ไว้" data-action="copy-id"><span class="snapshot-id-icon">${icon("lock", 15)}</span><span><small>PINNED EVALUATION</small><strong>${escapeHtml(snapshotId.slice(0, 12))}${state.snapshot.status === "ready" ? "…" : ""}</strong></span><span class="copy-hint">COPY</span></button></div></div>${snapshotBanner(state.snapshot)}${state.snapshot.status === "missing" ? errorState(state.snapshot.message, "ยังไม่มีไฟล์ snapshot ที่ตรวจสอบแล้ว") : state.snapshot.status === "error" ? errorState(state.snapshot.message) : ""}<div class="page-content">${pageContent(state)}</div><footer class="app-footer"><span>DEDS · Adaptive Portfolio Risk Lab</span><span>${icon("lock", 13)} Read-only · No live forecast</span></footer></main><nav class="mobile-bottom-nav" aria-label="Navigation">${mobilePrimary}<button class="nav-link mobile-more-link${state.moreOpen ? " active" : ""}" type="button" aria-expanded="${state.moreOpen}" data-action="toggle-more">${icon("menu", 19)}<span>More</span></button></nav>${morePanel}${guidedTourPanel(state)}</div>
   </div>`;
 }
 
@@ -853,7 +967,12 @@ export function startApp(root: HTMLElement): void {
     driftModel: "ONLINE_SGD",
     driftFrom: "",
     driftTo: "",
+    driftSelectedPredictionId: "",
     researchTicker: "SPY",
+    guidedActive: false,
+    guidedStep: 0,
+    tourRecord: null,
+    presentationMode: false,
     attempt: 0,
   };
 
@@ -865,9 +984,30 @@ export function startApp(root: HTMLElement): void {
     state.sessionIndex = 0;
     state.sessionAsOfDate = "";
     state.sessionShowAfterMaturity = false;
+    if (state.guidedActive) {
+      const expectedRoute = tourStops[state.guidedStep]?.route;
+      if (expectedRoute && state.routePath !== expectedRoute) {
+        window.location.hash = expectedRoute;
+        return;
+      }
+      applyGuidedTourSelection(state);
+    }
     render(root, state);
   };
   window.addEventListener("hashchange", updateRoute);
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (state.guidedActive) exitGuidedTour(root, state);
+    else if (state.presentationMode) { state.presentationMode = false; render(root, state); }
+  });
+  root.addEventListener("keydown", (event) => {
+    if (!(event instanceof KeyboardEvent) || !["Enter", " "].includes(event.key)) return;
+    const target = event.target instanceof Element ? event.target : null;
+    const observation = target?.closest<SVGElement>(".adwin-observation[data-action]");
+    if (!observation) return;
+    event.preventDefault();
+    observation.click();
+  });
   root.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     const button = target?.closest<HTMLElement>("[data-action], [data-route]");
@@ -875,6 +1015,28 @@ export function startApp(root: HTMLElement): void {
     const route = button.dataset.route;
     if (route) { window.location.hash = route; return; }
     switch (button.dataset.action) {
+      case "start-guided-tour": {
+        state.guidedActive = true;
+        state.tourRecord = state.snapshot.status === "ready" ? findTourRecord(state.snapshot) : null;
+        setGuidedStep(root, state, 0);
+        break;
+      }
+      case "guided-next":
+        if (state.guidedStep >= tourStops.length - 1) exitGuidedTour(root, state);
+        else setGuidedStep(root, state, state.guidedStep + 1);
+        break;
+      case "guided-previous": setGuidedStep(root, state, state.guidedStep - 1); break;
+      case "exit-guided-tour": exitGuidedTour(root, state); break;
+      case "toggle-presentation": state.presentationMode = !state.presentationMode; render(root, state); break;
+      case "select-drift-observation": {
+        const predictionId = button.dataset.predictionId;
+        if (predictionId && state.snapshot.status === "ready" && state.snapshot.driftTimeline.some((row) => row.predictionId === predictionId && row.ticker === state.driftTicker)) {
+          state.driftSelectedPredictionId = predictionId;
+          render(root, state);
+          root.querySelector<HTMLElement>(".drift-inspector")?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "nearest" });
+        }
+        break;
+      }
       case "toggle-menu": state.mobileMenuOpen = !state.mobileMenuOpen; render(root, state); break;
       case "close-menu": if (target === button || button.classList.contains("mobile-nav-overlay")) { state.mobileMenuOpen = false; render(root, state); } break;
       case "toggle-more": state.moreOpen = !state.moreOpen; render(root, state); break;
@@ -975,8 +1137,17 @@ export function startApp(root: HTMLElement): void {
       if (target.dataset.field === "forecast-models") state.forecastModels = Array.from(target.selectedOptions).map((option) => option.value).filter((model): model is ModelName => modelNames.includes(model as ModelName));
       if (target.dataset.field === "portfolio-date") state.portfolioDate = target.value;
       if (target.dataset.field === "portfolio-model" && modelNames.includes(target.value as ModelName)) state.portfolioModel = target.value as ModelName;
-      if (target.dataset.field === "drift-ticker" && tickerNames.includes(target.value as Ticker)) state.driftTicker = target.value as Ticker;
+      if (target.dataset.field === "drift-ticker" && tickerNames.includes(target.value as Ticker)) { state.driftTicker = target.value as Ticker; state.driftSelectedPredictionId = ""; }
       if (target.dataset.field === "drift-model" && modelNames.includes(target.value as ModelName)) state.driftModel = target.value as ModelName;
+      if (target.dataset.field === "drift-observation" && state.snapshot.status === "ready") {
+        const selected = state.snapshot.driftTimeline.find((row) => row.predictionId === target.value && row.ticker === state.driftTicker && (!state.driftFrom || row.predictionDate >= state.driftFrom) && (!state.driftTo || row.predictionDate <= state.driftTo));
+        if (selected) {
+          state.driftSelectedPredictionId = selected.predictionId;
+          render(root, state);
+          root.querySelector<HTMLElement>(".drift-inspector")?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "nearest" });
+          return;
+        }
+      }
       if (target.dataset.field === "research-ticker" && tickerNames.includes(target.value as Ticker)) state.researchTicker = target.value as Ticker;
     }
     if (target instanceof HTMLInputElement) {
@@ -989,8 +1160,8 @@ export function startApp(root: HTMLElement): void {
       if (target.dataset.field === "forecast-to") state.forecastTo = target.value;
       if (target.dataset.field === "range-from") state.rangeFrom = target.value;
       if (target.dataset.field === "range-to") state.rangeTo = target.value;
-      if (target.dataset.field === "drift-from") state.driftFrom = target.value;
-      if (target.dataset.field === "drift-to") state.driftTo = target.value;
+      if (target.dataset.field === "drift-from") { state.driftFrom = target.value; state.driftSelectedPredictionId = ""; }
+      if (target.dataset.field === "drift-to") { state.driftTo = target.value; state.driftSelectedPredictionId = ""; }
       if (target.dataset.field === "portfolio-weight" || target.dataset.field === "portfolio-weight-slider") {
         const index = Number(target.dataset.index);
         if (Number.isInteger(index) && index >= 0 && index < 3) {
@@ -1032,5 +1203,9 @@ export function startApp(root: HTMLElement): void {
   });
   if (!window.location.hash) window.location.hash = "/overview";
   render(root, state);
-  void loadSnapshot().then((snapshot) => { state.snapshot = snapshot; render(root, state); });
+  void loadSnapshot().then((snapshot) => {
+    state.snapshot = snapshot;
+    if (state.guidedActive) state.tourRecord = snapshot.status === "ready" ? findTourRecord(snapshot) : null;
+    render(root, state);
+  });
 }
