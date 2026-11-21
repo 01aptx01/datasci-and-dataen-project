@@ -1,0 +1,49 @@
+{
+  "source": {
+    "repository": "01aptx01/datasci-and-dataen-project",
+    "handoffCommit": "f826e219330b53125282234858932ad4dace3374",
+    "mainCommitAtStart": "8a842bf373acf9b367e50280834c8ecb084d37b1",
+    "zipName": "ml-results-handoff-82572c84.zip",
+    "zipSha256": "20dff91705ffbb60ab579f5c1f907537015ec2f52be001d5dfd24ea8978ae3f5"
+  },
+  "identity": {
+    "evaluationId": "82572c8417041976e1ce540d921e29a5f28c1d5d2a2d953a74c03582e7ca9be2",
+    "replayId": "3cbf81eb9242d8894d2f67f39065a17ff1ef55a2e098773aead915949ab11b12",
+    "baselineGitCommit": "b0b0782ad426923f58814c5540fbb7f7e0abf887",
+    "strictCutoff": "2026-09-25",
+    "reportApproval": "PENDING"
+  },
+  "members": {
+    "sourceIdentity": "source_identity.json",
+    "executionManifest": "approved_results/execution_manifest.json",
+    "stage05Manifest": "approved_results/stage05_experiment_manifest.json",
+    "forecastAudit": "approved_results/forecast_audit.csv",
+    "evaluation": "approved_results/evaluation.csv"
+  },
+  "memberSha256": {
+    "source_identity.json": "5e7442ab6a45dd7aa3c2a4ea8bccca34566cb6e62b54f97405aaa1fef784c0f3",
+    "approved_results/execution_manifest.json": "7d89b0072f8bcc042aa4f856da2c66955cc7d463e7aa25d5416d8cce5d3b580a",
+    "approved_results/stage05_experiment_manifest.json": "0030f4faa50476dcd6665ae3b318ada82fb00eaeb28b4b1acb73491bdf6b4f72",
+    "approved_results/forecast_audit.csv": "00124fc1181f33570f46196ddb22185ad6eaf412f37003fe8093c7a71e842a40",
+    "approved_results/evaluation.csv": "5f67a08b41cf9f700e8e28a31ae9da62505592ac7cce548a1f605c1af36cebc2"
+  },
+  "expectedHeaders": {
+    "forecastAudit": [
+      "prediction_date", "ticker", "split", "model_name", "is_label_mature", "target_end_date", "target_obs_count", "target_realized_vol_5d", "target_start_date", "target_version", "prediction_id", "model_version", "prediction_mode", "forecast_horizon_trading_days", "target_start_date_prediction", "target_end_date_prediction", "predicted_vol_annualized", "feature_set_version", "feature_run_id", "input_snapshot_id", "last_training_target_end_date", "run_id", "prediction_created_at_utc", "failure_type", "reason", "label_status", "forecast_status", "evaluation_status", "absolute_error", "squared_error", "label_available_by_cutoff", "is_common_panel"
+    ],
+    "evaluation": [
+      "experiment_id", "prediction_id", "prediction_date", "split", "ticker", "model_name", "model_version", "prediction_mode", "forecast_horizon_trading_days", "target_start_date", "target_end_date", "predicted_vol_annualized", "target_realized_vol_5d", "target_version", "feature_set_version", "input_snapshot_id", "absolute_error", "squared_error", "evaluation_date", "label_available_replay_date", "prediction_run_id", "evaluation_run_id"
+    ]
+  },
+  "expectedCounts": {
+    "forecastAuditRows": 5976,
+    "evaluationRows": 2916,
+    "testForecastRows": 2976,
+    "testEvaluableRows": 2916,
+    "testPendingRows": 60
+  },
+  "publicOutputs": {
+    "forecastAudit": "forecast_audit.csv",
+    "evaluation": "evaluation.csv"
+  }
+}

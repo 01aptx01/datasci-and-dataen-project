@@ -1,0 +1,6 @@
+node_modules/
+dist/
+public/snapshots/
+coverage/
+playwright-report/
+test-results/
