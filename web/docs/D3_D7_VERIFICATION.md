@@ -1,7 +1,7 @@
 # D3–D7 Verification Record
 
 **Date:** 2026-11-21 (Asia/Bangkok)
-**Branch:** `feat/dashboard-d1-d2`
+**Delivery branch:** `codex/dashboard-d3-d7`
 **Mode:** local, static, read-only verification; no deployment or remote action
 
 ## Frozen source identity
