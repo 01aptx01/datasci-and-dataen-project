@@ -2,6 +2,7 @@ export type CovarianceMatrix3 = [[number, number, number], [number, number, numb
 export type PortfolioWeights = [number, number, number];
 
 const tolerance = 1e-10;
+const weightSumTolerance = 1e-8;
 
 export function minimumEigenvalueSymmetric3(matrix: number[][]): number {
   if (matrix.length !== 3 || matrix.some((row) => row.length !== 3)) throw new Error("Matrix must be 3 by 3");
@@ -38,7 +39,7 @@ export function computePortfolioVolatility(covariance: number[][], weights: numb
   if (weights.length !== 3) throw new Error("Portfolio weights must contain exactly three values");
   if (weights.some((weight) => !Number.isFinite(weight))) throw new Error("Portfolio weights must be finite");
   if (weights.some((weight) => weight < 0)) throw new Error("Portfolio weights must be nonnegative");
-  if (Math.abs(weights.reduce((sum, weight) => sum + weight, 0) - 1) > tolerance) throw new Error("Portfolio weights must sum to 1");
+  if (Math.abs(weights.reduce((sum, weight) => sum + weight, 0) - 1) > weightSumTolerance) throw new Error("Portfolio weights must sum to 1");
   if (covariance.length !== 3 || covariance.some((row) => row.length !== 3)) throw new Error("Covariance matrix must be 3 by 3");
   if (covariance.some((row) => row.some((value) => !Number.isFinite(value)))) throw new Error("Covariance matrix values must be finite");
   const scale = Math.max(1, ...covariance.flat().map(Math.abs));
@@ -68,4 +69,20 @@ export function correlationFromCovariance(covariance: number[][], first: number,
   if (![varianceFirst, varianceSecond, covariancePair].every((value) => typeof value === "number" && Number.isFinite(value)) || varianceFirst! <= 0 || varianceSecond! <= 0) return null;
   const result = covariancePair! / Math.sqrt(varianceFirst! * varianceSecond!);
   return Number.isFinite(result) ? result : null;
+}
+
+export interface PortfolioRiskContributions {
+  volatility: number;
+  absoluteContributions: [number, number, number] | null;
+  relativeContributions: [number, number, number] | null;
+}
+
+export function computePortfolioRiskContributions(covariance: number[][], weights: number[]): PortfolioRiskContributions {
+  const volatility = computePortfolioVolatility(covariance, weights);
+  if (volatility === 0) return { volatility, absoluteContributions: null, relativeContributions: null };
+
+  const marginalContributions = covariance.map((row) => row.reduce((sum, value, index) => sum + value * weights[index], 0));
+  const absoluteContributions = weights.map((weight, index) => weight * marginalContributions[index] / volatility) as [number, number, number];
+  const relativeContributions = absoluteContributions.map((value) => value / volatility) as [number, number, number];
+  return { volatility, absoluteContributions, relativeContributions };
 }
