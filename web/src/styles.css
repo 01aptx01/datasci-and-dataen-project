@@ -186,6 +186,31 @@ a { color: inherit; text-decoration: none; }
 .session-play-row { display: flex; min-height: 34px; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
 .session-play-button { min-height: 32px; margin: 0; padding: 0 11px; font-size: 8px; }
 .session-play-note { color: #8190a3; font-size: 8px; }
+.session-date-controls { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 7px; }
+.session-date-controls select, .session-asof-row select { width: 100%; min-width: 0; min-height: 44px; padding: 0 11px; color: #2e4663; border: 1px solid #d8e2ed; border-radius: 8px; background: #fff; font-size: 12px; font-weight: 700; }
+.session-boundary-button { min-width: 68px; min-height: 44px; padding: 0 10px; color: #496987; border: 1px solid #d8e2ed; border-radius: 8px; background: #fff; cursor: pointer; font-size: 10px; font-weight: 700; }
+.session-boundary-button:disabled { color: #aab6c4; background: #f6f8fa; cursor: not-allowed; }
+.session-asof-row { display: grid; grid-template-columns: minmax(180px,.8fr) minmax(180px,1fr); align-items: end; gap: 9px; }
+.session-asof-row .field-label { font-size: 10px; letter-spacing: 0; }
+.maturity-reveal-button { min-height: 44px; justify-content: center; font-size: 10px; }
+.maturity-reveal-button:disabled { color: #9aa7b6; background: #f5f7f9; cursor: not-allowed; }
+.asof-caveat { margin: -3px 0 0; color: #8b98a8; font-size: 9px; line-height: 1.55; }
+.asof-overlay { display: grid; gap: 4px; margin-top: 12px; padding: 11px 13px; border: 1px solid #e1e9f1; border-radius: 9px; background: #f8fafc; }
+.asof-overlay strong { color: #435d7b; font-size: 10px; }
+.asof-overlay span { color: #74859a; font-size: 9px; line-height: 1.55; }
+.asof-status-ready { border-color: #c8e5dc; background: #f2faf7; }.asof-status-ready strong { color: #176c5c; }
+.asof-status-pending { border-color: #f1e2bf; background: #fffaf0; }.asof-status-pending strong { color: #8a641d; }
+.same-date-comparison { margin-top: 14px; padding: 14px; border: 1px solid #e4ebf2; border-radius: 10px; background: #fbfcfe; }
+.same-date-comparison > p { margin: 4px 0 11px; color: #8190a2; font-size: 9px; line-height: 1.55; }
+.same-date-comparison .section-card-heading { margin-bottom: 2px; }
+.same-date-comparison .section-card-heading h3 { font-size: 12px; }
+.session-source-details { margin-top: 12px; padding: 11px 13px; border: 1px solid #e5ebf2; border-radius: 9px; background: #fafbfd; }
+.session-source-details summary { color: #4d6786; cursor: pointer; font-size: 10px; font-weight: 700; }
+.session-source-grid { display: grid; grid-template-columns: minmax(125px,.65fr) minmax(0,1.35fr); gap: 7px 12px; margin-top: 12px; }
+.session-source-grid > span { color: #8491a2; font-size: 9px; }.session-source-grid > strong, .session-source-grid > code { min-width: 0; overflow-wrap: anywhere; color: #435a77; font-size: 9px; }
+.session-source-details > small { display: block; margin-top: 10px; color: #8794a5; font-size: 8px; line-height: 1.5; }
+.session-speed-control { min-width: 150px; font-size: 9px; letter-spacing: 0; }.session-speed-control select { min-height: 36px; }
+.session-actions .button { min-height: 36px; font-size: 9px; }
 .session-status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 12px; }
 .status-chip { display: inline-flex; min-height: 23px; align-items: center; padding: 0 8px; border-radius: 99px; font-size: 8px; font-weight: 700; letter-spacing: .035em; }
 .status-pending { color: #865d1b; background: #fff1d9; }.status-evaluable { color: #176d5e; background: #e5f4ef; }.status-outline { color: #5b6f89; border: 1px solid #e1e7ef; background: #fff; }.status-neutral { color: #67778b; background: #edf1f5; }
@@ -390,6 +415,21 @@ a { color: inherit; text-decoration: none; }
   .session-date { min-width: 0; }.session-date strong { font-size: 16px; }
   .session-timeline-meta { font-size: 7px; }
   .session-play-row { gap: 6px 9px; }
+  .session-date-controls { grid-template-columns: 1fr 1.6fr 1fr; gap: 5px; }
+  .session-date-controls select, .session-asof-row select { min-height: 46px; padding: 0 8px; font-size: 11px; }
+  .session-boundary-button { min-width: 0; min-height: 46px; padding: 0 5px; font-size: 9px; }
+  .session-asof-row { grid-template-columns: 1fr; gap: 8px; }
+  .session-asof-row .field-label { font-size: 10px; }
+  .maturity-reveal-button { width: 100%; min-height: 46px; font-size: 11px; }
+  .asof-caveat, .asof-overlay span { font-size: 9px; }
+  .asof-overlay { padding: 10px; }
+  .same-date-comparison { margin-right: -2px; margin-left: -2px; padding: 10px 8px; }
+  .same-date-comparison .section-card-heading h3 { font-size: 11px; }
+  .session-source-details { padding: 10px; }
+  .session-source-grid { grid-template-columns: minmax(86px,.6fr) minmax(0,1.4fr); gap: 7px; }
+  .session-source-grid > span, .session-source-grid > strong, .session-source-grid > code { font-size: 8px; }
+  .session-speed-control { min-width: 125px; }
+  .session-actions .button { min-height: 42px; width: 100%; justify-content: center; }
   .session-status-row { gap: 5px; }
   .status-chip { min-height: 21px; padding: 0 7px; font-size: 7px; }
   .session-horizon { width: 100%; margin: 2px 0 0; font-size: 8px; }

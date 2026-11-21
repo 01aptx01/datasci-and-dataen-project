@@ -2,6 +2,7 @@ import { filterForecastRows, loadSnapshot, selectRecordedSessions, type Forecast
 import { modelId, modelLabel, type CoverageRow, type DriftTimelineRow, type ForecastAuditRow, type H1ScatterRow, type ModelMetricRow, type ModelName, type PortfolioRiskRow, type RollingMae20Row, type Ticker } from "./data/schemas.js";
 import { computePortfolioVolatility } from "./data/portfolio.js";
 import { buildExportMetadata, buildForecastCsv } from "./data/export.js";
+import { resolveAsOfLabelView, selectSameDateForecasts } from "./data/replay.js";
 
 interface RouteDefinition {
   path: string;
@@ -58,6 +59,9 @@ interface ViewState {
   ticker: Ticker;
   model: ModelName;
   sessionIndex: number;
+  sessionAsOfDate: string;
+  sessionShowAfterMaturity: boolean;
+  sessionSpeedMs: number;
   sessionPlaying: boolean;
   sessionTimer: number | null;
   unit: DisplayUnit;
@@ -259,46 +263,77 @@ function sessionCard(state: ViewState): string {
   if (state.snapshot.status === "loading") return loadingState();
   if (state.snapshot.status === "missing") return emptyState("Recorded sessions ยังไม่พร้อม", "เมื่อ snapshot files ไม่ครบ จะไม่สร้างวันที่หรือ forecast ขึ้นมาแทน");
   if (state.snapshot.status === "error") return errorState(state.snapshot.message);
-  const available = selectRecordedSessions(state.snapshot.sessions, state.ticker, state.model);
+  const snapshot = state.snapshot;
+  const available = selectRecordedSessions(snapshot.sessions, state.ticker, state.model);
   const index = Math.max(0, Math.min(state.sessionIndex, available.length - 1));
   const row = available[index];
   const modelOptions = modelNames.map((model) => `<option value="${model}" ${state.model === model ? "selected" : ""}>${modelId(model)} · ${escapeHtml(modelLabel(model))}</option>`).join("");
   const tickerOptions = tickerNames.map((ticker) => `<option value="${ticker}" ${state.ticker === ticker ? "selected" : ""}>${ticker}</option>`).join("");
   if (!row) return `<section class="session-card"><div class="eyebrow"><span class="eyebrow-dot"></span> RECORDED SESSION · TEST</div><h2 id="session-title">สำรวจผลที่บันทึกไว้</h2><div class="session-filters"><label class="field-label">สินทรัพย์<select data-field="ticker">${tickerOptions}</select></label><label class="field-label">โมเดล<select data-field="model">${modelOptions}</select></label></div>${emptyState("ไม่มีบันทึกสำหรับตัวกรองนี้", "ไม่พบแถวใน snapshot ที่ผ่านการตรวจสอบสำหรับสินทรัพย์และโมเดลที่เลือก ลองเปลี่ยนตัวกรอง")}</section>`;
-  const evaluation = state.snapshot.evaluations.get(row.predictionId);
+  const evaluation = snapshot.evaluations.get(row.predictionId);
   const pending = row.evaluationStatus === "PENDING_LABEL";
   const isEvaluable = row.evaluationStatus === "EVALUABLE" && evaluation !== undefined;
   const validForecast = row.forecastStatus === "VALID" && row.predictedVolAnnualized !== null;
+  const asOfDates = [...new Set(snapshot.sessions.filter((item) => item.ticker === state.ticker).map((item) => item.predictionDate))]
+    .filter((date) => date >= row.predictionDate)
+    .sort((left, right) => left.localeCompare(right));
+  const asOfDate = asOfDates.includes(state.sessionAsOfDate) ? state.sessionAsOfDate : row.predictionDate;
+  const labelView = resolveAsOfLabelView(row, asOfDate, state.sessionShowAfterMaturity, evaluation);
+  const revealed = labelView.status === "revealed";
+  const overlayMessage: Record<typeof labelView.status, string> = {
+    "source-pending": "Source row นี้เป็น Pending ณ strict cutoff; การเลื่อนวันสอนจะไม่สร้าง Actual/Error ขึ้นมา",
+    "source-not-evaluable": "Source row นี้ไม่ผ่านสถานะ Evaluable จึงไม่มี Actual/Error ให้เปิดเผย",
+    "awaiting-target-end": `ยังไม่ถึงวันสิ้นสุด target ${row.targetEndDate}; label ยังไม่พร้อมให้ประเมิน ณ as-of นี้`,
+    "eligible-reveal-required": `ครบ target ถึง ${row.targetEndDate} แล้ว กดแสดง Actual/Error เพื่อดูค่าที่บันทึกไว้`,
+    "missing-evaluation": "ไม่พบ evaluation row ที่ตรงกับ prediction ID จึงซ่อน Actual/Error",
+    revealed: "Actual/Error แสดงจาก evaluation row ที่ตรงกับ prediction ID หลัง target สิ้นสุดแล้ว",
+  };
+  const overlayClass = revealed ? "asof-status-ready" : labelView.status === "source-pending" ? "asof-status-pending" : "asof-status-waiting";
+  const canReveal = row.evaluationStatus === "EVALUABLE" && evaluation !== undefined;
   const format = (value: number | null | undefined) => formatVol(value, state.unit, 6);
   const statusClass = pending ? "status-pending" : isEvaluable ? "status-evaluable" : "status-neutral";
-  const statusLabel = pending ? "PENDING · ยังไม่ครบช่วงเป้าหมาย" : isEvaluable ? "EVALUABLE · ประเมินได้" : row.evaluationStatus;
+  const statusLabel = pending ? "PENDING · ยังไม่ครบช่วงเป้าหมาย" : row.evaluationStatus === "EVALUABLE" ? "EVALUABLE · ประเมินได้" : row.evaluationStatus;
   const pendingTooltip = pending ? "Not scored: target pending by cutoff" : "";
-  const actualLabel = pending ? "Target ยังไม่ mature ณ cutoff" : "Annualized decimal · evaluation.csv";
-  const errorLabel = pending ? "ยังไม่ให้คะแนน" : "ค่าที่บันทึกใน Stage 06";
-  const noActualWarning = row.evaluationStatus === "EVALUABLE" && !evaluation ? '<p class="error-inline">ไม่พบแถวประเมินที่จับคู่กับ prediction ID นี้ จึงซ่อน actual/error</p>' : "";
+  const actualLabel = revealed ? "ค่าจาก evaluation.csv · หลัง target mature" : "ซ่อนไว้จนกว่า target จะครบและกดเปิดเผย";
+  const errorLabel = revealed ? "ค่าที่บันทึกใน Stage 06" : "ยังไม่เปิดเผยในมุมมอง as-of นี้";
+  const comparisonRows = selectSameDateForecasts(snapshot.sessions, state.ticker, row.predictionDate);
+  const comparisonTableRows = comparisonRows.map((comparison) => {
+    const comparisonEvaluation = snapshot.evaluations.get(comparison.predictionId);
+    const comparisonView = resolveAsOfLabelView(comparison, asOfDate, state.sessionShowAfterMaturity, comparisonEvaluation);
+    const forecast = comparison.forecastStatus === "VALID" ? comparison.predictedVolAnnualized : null;
+    return `<tr><th scope="row"><span class="model-chip" style="--model-color:${modelColors[comparison.modelName]}">${modelId(comparison.modelName)}</span></th><td>${formatVol(forecast, state.unit)}</td><td>${comparisonView.status === "revealed" ? formatVol(comparisonView.actual, state.unit) : "—"}</td><td>${comparisonView.status === "revealed" ? formatVol(comparisonView.absoluteError, state.unit) : "—"}</td><td><span class="status-chip ${comparison.evaluationStatus === "PENDING_LABEL" ? "status-pending" : comparison.evaluationStatus === "EVALUABLE" ? "status-evaluable" : "status-neutral"}">${escapeHtml(comparison.evaluationStatus)}</span></td><td><button class="table-link" type="button" data-action="open-session" data-prediction-id="${escapeHtml(comparison.predictionId)}">ดูแถวนี้</button></td></tr>`;
+  });
+  const portfolioReady = selectedPortfolioRow(snapshot, row.predictionDate, state.model) !== undefined;
+  const reducedMotion = typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const noForecastWarning = !validForecast ? '<p class="error-inline">ไม่มีค่าพยากรณ์ที่ใช้แสดงได้ตามสถานะใน source row</p>' : "";
   return `
     <section class="session-card" aria-labelledby="session-title">
-      <div class="session-head"><div><div class="eyebrow"><span class="eyebrow-dot"></span> RECORDED SESSION · TEST</div><h2 id="session-title">สำรวจผลที่บันทึกไว้</h2><p>เลื่อนไปยังวัน XNYS ที่มีอยู่ใน Frozen Snapshot เท่านั้น การเปลี่ยนวันไม่เรียก Replay หรือคำนวณโมเดลใหม่</p></div><span class="readonly-pill">${icon("lock", 14)} ดูอย่างเดียว</span></div>
+      <div class="session-head"><div><div class="eyebrow"><span class="eyebrow-dot"></span> DAILY REPLAY · SAVED TEST RECORDS</div><h2 id="session-title">ไล่ดู forecast รายวัน</h2><p>กำลังเปิดดู prediction ที่บันทึกไว้เท่านั้น · ไม่เรียก inference, train หรือ replay ใหม่ · วันที่เลือกได้มาจาก XNYS records ใน snapshot</p></div><span class="readonly-pill">${icon("lock", 14)} ดูอย่างเดียว</span></div>
       <div class="session-filters"><label class="field-label">สินทรัพย์<select data-field="ticker">${tickerOptions}</select></label><label class="field-label">โมเดล<select data-field="model">${modelOptions}</select></label></div>
       <div class="session-navigation" aria-label="Recorded forecast timeline">
         <div class="session-step-row">
-          <button class="session-step-button" type="button" data-action="previous" ${index === 0 ? "disabled" : ""}>${icon("arrowLeft")}<span>วันก่อนหน้า</span></button>
+          <button class="session-step-button" type="button" data-action="previous" aria-label="วันก่อนหน้า" ${index === 0 ? "disabled" : ""}>${icon("arrowLeft")}<span>วันก่อนหน้า</span></button>
           <div class="session-date" aria-live="polite"><span>วันทำนาย · XNYS</span><strong data-session-current-date>${escapeHtml(row.predictionDate)}</strong><small data-session-position>วันที่ ${index + 1} จาก ${available.length}</small></div>
-          <button class="session-step-button" type="button" data-action="next" ${index >= available.length - 1 ? "disabled" : ""}><span>วันถัดไป</span>${icon("arrowRight")}</button>
+          <button class="session-step-button" type="button" data-action="next" aria-label="วันถัดไป" ${index >= available.length - 1 ? "disabled" : ""}><span>วันถัดไป</span>${icon("arrowRight")}</button>
         </div>
         <div class="session-timeline">
-          <label for="session-index">เลื่อนไปยังวันที่บันทึกไว้</label>
+          <label for="session-index">เลือกวันจากรายการที่บันทึกไว้ · ${available.length.toLocaleString()} วันทำการ</label>
+          <div class="session-date-controls"><button class="session-boundary-button" type="button" data-action="first" ${index === 0 ? "disabled" : ""}>วันแรก</button><select id="session-date-select" data-field="session-date" aria-label="เลือกวันทำนายที่บันทึกไว้">${available.map((session, itemIndex) => `<option value="${escapeHtml(session.predictionDate)}" ${itemIndex === index ? "selected" : ""}>${escapeHtml(session.predictionDate)} · ${itemIndex + 1}/${available.length}</option>`).join("")}</select><button class="session-boundary-button" type="button" data-action="last" ${index >= available.length - 1 ? "disabled" : ""}>วันล่าสุด</button></div>
           <input id="session-index" class="session-timeline-slider" type="range" min="0" max="${available.length - 1}" step="1" value="${index}" data-field="session-index" aria-label="เลื่อนไปยังวันพยากรณ์ที่บันทึกไว้" aria-valuetext="${escapeHtml(row.predictionDate)} · วันที่ ${index + 1} จาก ${available.length}" />
           <div class="session-timeline-meta"><span>เริ่ม ${escapeHtml(available[0].predictionDate)}</span><span>สิ้นสุด ${escapeHtml(available[available.length - 1].predictionDate)}</span></div>
         </div>
-        <div class="session-play-row"><button class="button button-secondary session-play-button" type="button" data-action="toggle-session-play" aria-pressed="${state.sessionPlaying}" ${available.length < 2 ? "disabled" : ""}>${state.sessionPlaying ? "หยุดเล่น" : "เล่นวันต่อเนื่อง"}</button><button type="button" class="text-button" data-action="reset">กลับวันแรก</button><span class="session-play-note">${state.sessionPlaying ? "กำลังไล่ดูผลที่บันทึกไว้" : "เล่นเฉพาะ observation ใน snapshot · ไม่รันโมเดล"}</span></div>
+        <div class="session-asof-row"><label class="field-label" for="session-asof-select">As-of · วันที่จำลองว่าข้อมูลครบถึง<select id="session-asof-select" data-field="session-as-of" aria-describedby="session-asof-note">${asOfDates.map((date) => `<option value="${escapeHtml(date)}" ${date === asOfDate ? "selected" : ""}>${escapeHtml(date)}</option>`).join("")}</select></label><button class="button button-secondary maturity-reveal-button" type="button" data-action="toggle-maturity-reveal" aria-pressed="${state.sessionShowAfterMaturity}" ${canReveal ? "" : "disabled"}>${state.sessionShowAfterMaturity ? "ซ่อน Actual/Error" : "แสดง Actual/Error หลังครบช่วง"}</button></div>
+        <p id="session-asof-note" class="asof-caveat">As-of นี้เป็นตัวช่วยสอนตามกฎวันสิ้นสุด target ไม่ใช่การยืนยันว่าข้อมูลตลาดพร้อมใช้จริง ณ วันนั้น และไม่เปลี่ยน source status</p>
+        <div class="session-play-row"><button class="button button-secondary session-play-button" type="button" data-action="toggle-session-play" aria-pressed="${state.sessionPlaying}" ${available.length < 2 || reducedMotion ? "disabled" : ""} ${reducedMotion ? 'title="ใช้ปุ่มวันก่อนหน้า/วันถัดไปได้เมื่อเปิด reduced motion"' : ""}>${state.sessionPlaying ? "หยุดเล่น" : "เล่นวันต่อเนื่อง"}</button><label class="field-label session-speed-control">ความเร็ว<select data-field="session-speed"><option value="1600" ${state.sessionSpeedMs === 1600 ? "selected" : ""}>ช้า · 1.6 วินาที</option><option value="900" ${state.sessionSpeedMs === 900 ? "selected" : ""}>ปกติ · 0.9 วินาที</option><option value="450" ${state.sessionSpeedMs === 450 ? "selected" : ""}>เร็ว · 0.45 วินาที</option></select></label><span class="session-play-note">${reducedMotion ? "ระบบตั้งค่า reduced motion · ใช้ตัวเลื่อนหรือปุ่มวันแทน" : state.sessionPlaying ? "กำลังไล่ saved predictions · ไม่มีการรันโมเดล" : "เล่นเฉพาะ observation ที่บันทึกไว้ · ไม่มี model inference"}</span></div>
       </div>
       <div class="session-status-row"><span class="status-chip ${statusClass}" ${pending ? `title="${pendingTooltip}" aria-label="${pendingTooltip}"` : ""}>${escapeHtml(statusLabel)}</span><span class="status-chip status-outline">Forecast · ${escapeHtml(row.forecastStatus)}</span><span class="session-horizon">ช่วงเป้าหมาย ${escapeHtml(row.targetStartDatePrediction)} → ${escapeHtml(row.targetEndDatePrediction)}</span></div>
-      <div class="session-values"><div class="session-value-card"><span>Forecast RV5</span><strong>${validForecast ? format(row.predictedVolAnnualized) : "—"}</strong><small>Annualized decimal · จาก forecast_audit.csv</small></div><div class="session-value-card${pending ? " muted-value" : ""}"><span>Actual RV5</span><strong ${pending ? `title="${pendingTooltip}" aria-label="Actual RV5 · ${pendingTooltip}"` : ""}>${pending ? "—" : format(evaluation?.targetRealizedVol5d)}</strong><small>${actualLabel}</small></div><div class="session-value-card${pending ? " muted-value" : ""}"><span>Absolute error</span><strong ${pending ? `title="${pendingTooltip}" aria-label="Absolute error · ${pendingTooltip}"` : ""}>${pending ? "—" : format(evaluation?.absoluteError)}</strong><small>${errorLabel}</small></div></div>
-      ${pending ? '<p class="pending-note"><span>i</span> Target ยังไม่ครบ 5 วันซื้อขายก่อน strict cutoff จึงไม่แสดง actual หรือ error เป็นศูนย์</p>' : ""}${noActualWarning}${noForecastWarning}
+      <div class="asof-overlay ${overlayClass}" role="status" aria-live="polite"><strong>As-of ${escapeHtml(asOfDate)} · ${labelView.status === "revealed" ? "Target mature ใน source" : labelView.status === "source-pending" ? "Source Pending ณ cutoff" : "ยังไม่เปิดเผย label"}</strong><span>${escapeHtml(overlayMessage[labelView.status])}</span></div>
+      <div class="session-values"><div class="session-value-card"><span>Forecast RV5</span><strong>${validForecast ? format(row.predictedVolAnnualized) : "—"}</strong><small>Annualized volatility · forecast_audit.csv</small></div><div class="session-value-card${revealed ? "" : " muted-value"}"><span>Actual RV5</span><strong>${revealed ? format(labelView.actual) : "—"}</strong><small>${actualLabel}</small></div><div class="session-value-card${revealed ? "" : " muted-value"}"><span>Absolute error</span><strong>${revealed ? format(labelView.absoluteError) : "—"}</strong><small>${errorLabel}</small></div></div>
+      ${pending ? '<p class="pending-note"><span>i</span> Source บันทึกแถวนี้เป็น Pending ณ cutoff จึงไม่แสดง Actual/Error แม้เลื่อน as-of ไปภายหลัง</p>' : ""}${noForecastWarning}
+      <section class="same-date-comparison"><div class="section-card-heading"><div><span class="section-overline">SAME XNYS DATE · SAME ASSET</span><h3>เทียบ forecast ทั้ง 4 โมเดล · ${escapeHtml(row.predictionDate)} · ${state.ticker}</h3></div><span class="pill pill-neutral">${comparisonRows.length}/4 source rows</span></div><p>ค่าทั้งหมดผูกกับวันและสินทรัพย์เดียวกัน สถานะ source ของแต่ละโมเดลยังคงเดิม</p><div class="table-scroll"><table class="data-table"><caption class="visually-hidden">B0 to B3 recorded forecasts for ${state.ticker} on ${row.predictionDate}</caption><thead><tr><th scope="col">Model</th><th scope="col">Forecast RV5</th><th scope="col">Actual · หลัง maturity</th><th scope="col">Absolute error</th><th scope="col">Source status</th><th scope="col">Record</th></tr></thead><tbody>${comparisonTableRows.join("")}</tbody></table></div></section>
+      <details class="session-source-details"><summary>เปิด Source record และหลักฐานของแถวที่เลือก</summary><div class="session-source-grid"><span>Prediction ID</span><code>${escapeHtml(row.predictionId)}</code><span>Prediction date</span><strong>${escapeHtml(row.predictionDate)} · XNYS</strong><span>Target window</span><strong>${escapeHtml(row.targetStartDate)} → ${escapeHtml(row.targetEndDate)}</strong><span>Forecast / label / evaluation</span><strong>${escapeHtml(row.forecastStatus)} · ${escapeHtml(row.labelStatus)} · ${escapeHtml(row.evaluationStatus)}</strong><span>Source files</span><strong>forecast_audit.csv${evaluation ? " · evaluation.csv" : ""}</strong><span>Evaluation ID</span><code>${escapeHtml(snapshot.manifest.evaluationId)}</code><span>Replay ID</span><code>${escapeHtml(snapshot.manifest.replayId)}</code></div><small>As-of eligibility is an instructional overlay. Snapshot status and the official evaluation remain unchanged.</small></details>
       <div class="session-footer"><span>Prediction ID <code>${escapeHtml(row.predictionId)}</code></span><span>${escapeHtml(tickerLabel[state.ticker])} · ${modelId(state.model)}</span></div>
-      <div class="session-actions"><span>เปลี่ยนเฉพาะการเลือก observation ที่บันทึกไว้</span></div>
+      <div class="session-actions"><span>เปลี่ยนเฉพาะการเลือก observation ที่บันทึกไว้</span><button class="button button-secondary" type="button" data-action="open-portfolio" ${portfolioReady ? "" : "disabled"}>ทดลองวันเดียวกันใน Portfolio Lab →</button></div>${!portfolioReady ? `<p class="chart-note">ไม่มี portfolio row ที่สมบูรณ์สำหรับ ${escapeHtml(row.predictionDate)} · ${modelId(state.model)} จึงยังเปิด what-if วันนี้ไม่ได้</p>` : ""}
     </section>`;
 }
 
@@ -312,6 +347,8 @@ function setSessionIndex(state: ViewState, index: number): void {
   stopSessionPlayback(state);
   const available = state.snapshot.status === "ready" ? selectRecordedSessions(state.snapshot.sessions, state.ticker, state.model) : [];
   state.sessionIndex = Math.max(0, Math.min(index, Math.max(available.length - 1, 0)));
+  state.sessionAsOfDate = available[state.sessionIndex]?.predictionDate ?? "";
+  state.sessionShowAfterMaturity = false;
 }
 
 function toggleSessionPlayback(root: HTMLElement, state: ViewState): void {
@@ -322,7 +359,8 @@ function toggleSessionPlayback(root: HTMLElement, state: ViewState): void {
   }
   const available = state.snapshot.status === "ready" ? selectRecordedSessions(state.snapshot.sessions, state.ticker, state.model) : [];
   if (available.length < 2) return;
-  if (state.sessionIndex >= available.length - 1) state.sessionIndex = 0;
+  if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  if (state.sessionIndex >= available.length - 1) setSessionIndex(state, 0);
   state.sessionPlaying = true;
   state.sessionTimer = window.setInterval(() => {
     if (state.routePath !== "/forecasts" || state.snapshot.status !== "ready") {
@@ -336,9 +374,11 @@ function toggleSessionPlayback(root: HTMLElement, state: ViewState): void {
       return;
     }
     state.sessionIndex += 1;
+    state.sessionAsOfDate = currentRows[state.sessionIndex]?.predictionDate ?? "";
+    state.sessionShowAfterMaturity = false;
     if (state.sessionIndex >= currentRows.length - 1) stopSessionPlayback(state);
     render(root, state);
-  }, 900);
+  }, state.sessionSpeedMs);
   render(root, state);
 }
 
@@ -712,6 +752,9 @@ export function startApp(root: HTMLElement): void {
     ticker: "SPY",
     model: "ONLINE_SGD",
     sessionIndex: 0,
+    sessionAsOfDate: "",
+    sessionShowAfterMaturity: false,
+    sessionSpeedMs: 900,
     sessionPlaying: false,
     sessionTimer: null,
     unit: "percent",
@@ -740,6 +783,8 @@ export function startApp(root: HTMLElement): void {
     state.mobileMenuOpen = false;
     state.moreOpen = false;
     state.sessionIndex = 0;
+    state.sessionAsOfDate = "";
+    state.sessionShowAfterMaturity = false;
     render(root, state);
   };
   window.addEventListener("hashchange", updateRoute);
@@ -756,7 +801,27 @@ export function startApp(root: HTMLElement): void {
       case "previous": setSessionIndex(state, state.sessionIndex - 1); render(root, state); break;
       case "next": setSessionIndex(state, state.sessionIndex + 1); render(root, state); break;
       case "reset": setSessionIndex(state, 0); render(root, state); break;
+      case "first": setSessionIndex(state, 0); render(root, state); break;
+      case "last": {
+        const sessions = state.snapshot.status === "ready" ? selectRecordedSessions(state.snapshot.sessions, state.ticker, state.model) : [];
+        setSessionIndex(state, sessions.length - 1);
+        render(root, state);
+        break;
+      }
+      case "toggle-maturity-reveal": state.sessionShowAfterMaturity = !state.sessionShowAfterMaturity; render(root, state); break;
       case "toggle-session-play": toggleSessionPlayback(root, state); break;
+      case "open-portfolio": {
+        if (state.snapshot.status === "ready") {
+          const sessions = selectRecordedSessions(state.snapshot.sessions, state.ticker, state.model);
+          const selected = sessions[state.sessionIndex];
+          if (selected && selectedPortfolioRow(state.snapshot, selected.predictionDate, state.model)) {
+            state.portfolioDate = selected.predictionDate;
+            state.portfolioModel = state.model;
+            window.location.hash = "/portfolio";
+          }
+        }
+        break;
+      }
       case "portfolio-source-weights": {
         if (state.snapshot.status === "ready") {
           const row = selectedPortfolioRow(state.snapshot, state.portfolioDate || state.snapshot.manifest.strictCutoff, state.portfolioModel);
@@ -775,6 +840,8 @@ export function startApp(root: HTMLElement): void {
             state.ticker = row.ticker;
             state.model = row.modelName;
             state.sessionIndex = selectRecordedSessions(state.snapshot.sessions, row.ticker, row.modelName).findIndex((session) => session.predictionId === predictionId);
+            state.sessionAsOfDate = row.predictionDate;
+            state.sessionShowAfterMaturity = false;
             render(root, state);
           }
         }
@@ -792,8 +859,19 @@ export function startApp(root: HTMLElement): void {
   root.addEventListener("change", (event) => {
     const target = event.target;
     if (target instanceof HTMLSelectElement) {
-      if (target.dataset.field === "ticker" && tickerNames.includes(target.value as Ticker)) { stopSessionPlayback(state); state.ticker = target.value as Ticker; state.sessionIndex = 0; }
-      if (target.dataset.field === "model" && modelNames.includes(target.value as ModelName)) { stopSessionPlayback(state); state.model = target.value as ModelName; state.sessionIndex = 0; }
+      if (target.dataset.field === "ticker" && tickerNames.includes(target.value as Ticker)) { stopSessionPlayback(state); state.ticker = target.value as Ticker; state.sessionIndex = 0; state.sessionAsOfDate = ""; state.sessionShowAfterMaturity = false; }
+      if (target.dataset.field === "model" && modelNames.includes(target.value as ModelName)) { stopSessionPlayback(state); state.model = target.value as ModelName; state.sessionIndex = 0; state.sessionAsOfDate = ""; state.sessionShowAfterMaturity = false; }
+      if (target.dataset.field === "session-date") {
+        const sessions = state.snapshot.status === "ready" ? selectRecordedSessions(state.snapshot.sessions, state.ticker, state.model) : [];
+        const selectedIndex = sessions.findIndex((session) => session.predictionDate === target.value);
+        if (selectedIndex >= 0) setSessionIndex(state, selectedIndex);
+      }
+      if (target.dataset.field === "session-as-of" && state.snapshot.status === "ready") {
+        const selected = selectRecordedSessions(state.snapshot.sessions, state.ticker, state.model)[state.sessionIndex];
+        const exists = state.snapshot.sessions.some((session) => session.ticker === state.ticker && session.predictionDate === target.value);
+        if (selected && exists && target.value >= selected.predictionDate) state.sessionAsOfDate = target.value;
+      }
+      if (target.dataset.field === "session-speed" && [450, 900, 1600].includes(Number(target.value))) state.sessionSpeedMs = Number(target.value);
       if (target.dataset.field === "unit" && ["decimal", "percent"].includes(target.value)) state.unit = target.value as DisplayUnit;
       if (target.dataset.field === "metric" && ["mae", "rmse"].includes(target.value)) state.metric = target.value as MetricName;
       if (target.dataset.field === "model-ticker" && metricTickerNames.includes(target.value as Ticker | "MACRO")) state.modelTicker = target.value as Ticker | "MACRO";
@@ -838,10 +916,16 @@ export function startApp(root: HTMLElement): void {
       stopSessionPlayback(state);
       state.sessionIndex = Math.max(0, Math.min(Number(target.value), available.length - 1));
       const selected = available[state.sessionIndex];
+      state.sessionAsOfDate = selected.predictionDate;
+      state.sessionShowAfterMaturity = false;
       const currentDate = root.querySelector<HTMLElement>("[data-session-current-date]");
       const position = root.querySelector<HTMLElement>("[data-session-position]");
+      const dateSelect = root.querySelector<HTMLSelectElement>('[data-field="session-date"]');
+      const asOfSelect = root.querySelector<HTMLSelectElement>('[data-field="session-as-of"]');
       if (currentDate) currentDate.textContent = selected.predictionDate;
       if (position) position.textContent = `วันที่ ${state.sessionIndex + 1} จาก ${available.length}`;
+      if (dateSelect) dateSelect.value = selected.predictionDate;
+      if (asOfSelect) asOfSelect.value = selected.predictionDate;
       target.setAttribute("aria-valuetext", `${selected.predictionDate} · วันที่ ${state.sessionIndex + 1} จาก ${available.length}`);
       return;
     }
