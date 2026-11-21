@@ -28,6 +28,9 @@ logs/*
 data/*
 !data/**/.gitkeep
 
+# Local handoff bundles and exported review artifacts
+/dist/
+
 # Temporary & atomic write swap files
 *.tmp
 *.tmp.parquet
