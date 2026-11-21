@@ -518,7 +518,7 @@ function descriptiveRangePanel(state: ViewState, snapshot: Extract<SnapshotState
     const b3 = result.scores.find((score) => score.modelName === "ONLINE_SGD");
     const tableRows = result.scores.map((score) => {
       const delta = score.modelName === "ONLINE_SGD" || score.mae === null || b3?.mae === null || b3?.mae === undefined ? null : score.mae - b3.mae;
-      const relative = delta === null || score.mae === 0 ? null : delta / score.mae * 100;
+      const relative = delta === null || score.mae === null || score.mae === 0 ? null : delta / score.mae * 100;
       return `<tr><th scope="row">${modelId(score.modelName)}</th><td>${formatVol(score.mae, state.unit)}</td><td>${formatVol(score.rmse, state.unit)}</td><td>${score.n.toLocaleString()}</td><td>${delta === null ? "—" : formatVol(delta, state.unit)}</td><td>${relative === null ? "—" : `${relative.toFixed(2)}%`}</td></tr>`;
     }).join("");
     const tickerN = state.rangeTicker === "MACRO"
@@ -574,7 +574,7 @@ function portfolioPage(state: ViewState): string {
   const forecastCards = names.map((ticker, index) => `<div class="portfolio-input-row"><span>${ticker}</span><strong>${formatVol(row.forecastVols[index], state.unit)}</strong><small>${row.forecastStatuses[index]}</small></div>`).join("");
   const storedWeights = row.sourceWeights.map((weight, index) => `${names[index]} ${Math.round(weight * 100)}%`).join(" · ");
   const allocationColors = ["#2e62a5", "#518d7f", "#c38a36"];
-  const allocationSegments = names.map((ticker, index) => {
+  const allocationSegments = names.map((_, index) => {
     const value = state.portfolioWeights[index];
     const width = Number.isFinite(value) ? Math.min(1, Math.max(0, value)) * 100 : 0;
     return `<span class="portfolio-allocation-segment" data-allocation-segment="${index}" style="width:${width}%;background:${allocationColors[index]}"></span>`;
@@ -1006,7 +1006,7 @@ export function startApp(root: HTMLElement): void {
     const observation = target?.closest<SVGElement>(".adwin-observation[data-action]");
     if (!observation) return;
     event.preventDefault();
-    observation.click();
+    observation.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
   root.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
