@@ -36,6 +36,31 @@ This records the local pre-D9 implementation baseline. The attached v1.1 plan is
 - User-defined budget has no default. Weight changes remain client-only calculations against stored same-day covariance.
 - Optional allocation-risk simplex map is outside the essential D9-U1–U5 scope.
 
-## Verification still required after implementation
+## Implementation and verification update
 
-Test the exact eligible-row parity, invalid/missing states, date/model and scenario URL round-trip, As-of future-date filtering, line gaps, A/B calculations, budget counts, source correlation table, and D8 Replay return path. Inspect the built desktop and 360/390px layout if browser tooling is available; report any interaction not independently exercised. Keep every Git action local; do not push, merge, publish, or deploy.
+The local `/portfolio` route now hosts the D9 Risk Center, Risk Drivers, and Scenario Lab using the shared D8 selection. D9 scenario state is validated and serialized with the existing selection URL. The UI uses the exact selected date/model covariance, preserves the source correlation fields, reports signed risk contributions, compares fixed A/B weights over the same historical rows, and supports an explicitly user-entered risk budget. Trust & Methods exposes source identity, model context, strict cutoff, PIT limitation, formulas, and links back to Replay and evidence pages.
+
+The optional D9-U6 allocation simplex is deferred; it is P1 in the plan and is not required for the core D9-U1–U5 workflow.
+
+### Acceptance evidence
+
+| Criteria | Evidence / status |
+|---|---|
+| D9U-01–06 | Baseline audit completed. Route keeps one shared D8 selection, all three ETF inputs, exact-date/model row validation, and matching-model covariance. Browser flow confirmed selection context and return route. |
+| D9U-07 | All eligible Test rows reproduce stored default risk and covariance source math; automated test passed. |
+| D9U-08–10 | Invalid weights and covariance fail closed; contribution signs and zero-risk guard tested. |
+| D9U-11–12 | Correlation table renders stored `corr_*_20d`; same-day A/B comparison uses percentage-point deltas. Source values and delta units tested in the renderer. |
+| D9U-13–15 | Scenario A/B timelines recalculate with each date's same-model covariance; invalid source rows break segments. Prior comparable date and gap count are named. Tests cover gap and prior-date behavior. |
+| D9U-16–18 | Budget is blank by default, uses annualized decimal internally, counts valid dates only, and labels As-of versus Retrospective. Browser reload retained the entered threshold and selected view. |
+| D9U-19–23 | Source IDs, target horizon, unit, cutoff, PIT status and model Test metrics are visible. Copy and labels avoid return/P&L, advice, causality, and optimization claims. The app performs no fit or external market-data request. |
+| D9U-24–26 | Browser review covered desktop plus 390/360px layouts, route/query restoration, scenario edits, budget, source correlations, and same-session Replay navigation. The latest Scenario Lab render showed both timeline lines and synchronized number/slider controls; keyboard slider input produced an explicit 101% validation state without changing the saved URL scenario. `npm test` passed 58/58, including snapshot verification, typecheck, compile, and static build. |
+
+### Source-verified demo
+
+`D9_DEMO_EVIDENCE.md` records the selected B3 Test row, source IDs, exact default-risk parity, illustrative 60/20/20 result, and interpretation limits. The selected date is 2026-09-25; no live/current-market value is presented.
+
+### Remaining scope
+
+- The v1.0 parent D9 plan referenced by v1.1 is absent from this checkout. Numerical and QA contracts used here are explicit in v1.1 and cross-checked against `src/ml_evaluation/portfolio.py` and the frozen snapshot.
+- The optional allocation map remains deferred.
+- Browser screenshots were reviewed in the local CUA session but are not committed as project artifacts. All Git changes remain local; no push, merge, publication, or deployment was performed.
