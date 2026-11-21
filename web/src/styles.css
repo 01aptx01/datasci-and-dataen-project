@@ -273,6 +273,8 @@ a { color: inherit; text-decoration: none; }
 .portfolio-preset-row > span { margin-right: 3px; color: #8290a2; font-size: 8px; font-weight: 700; }
 .portfolio-preset-button { min-height: 30px; padding: 0 9px; color: #4a6688; border: 1px solid #d9e2ec; border-radius: 7px; background: #fff; cursor: pointer; font-size: 8px; font-weight: 700; }
 .portfolio-preset-button:hover { color: #2456a6; border-color: #b7c9dd; background: #f4f8fc; }
+.portfolio-reset-button { min-height: 34px; padding: 0 10px; color: #365f89; border: 1px solid #cfdbe8; border-radius: 7px; background: #f5f8fc; cursor: pointer; font-size: 9px; font-weight: 700; }
+.portfolio-reset-button:hover { border-color: #9fb8d3; background: #edf4fb; }
 .portfolio-controls { margin-top: 9px; padding: 14px; border: 1px solid #e8edf3; border-radius: 10px; background: #fafbfd; }
 .portfolio-allocation-wrap { margin-bottom: 14px; padding: 11px 12px 10px; border: 1px solid #e5ebf2; border-radius: 9px; background: #fff; }
 .portfolio-allocation-wrap[hidden] { display: none; }
@@ -294,7 +296,7 @@ a { color: inherit; text-decoration: none; }
 .weight-slider-row output { min-width: 34px; color: #536982; font-size: 9px; font-weight: 700; text-align: right; }
 .field-help { margin: 9px 0 0; color: #728197; font-size: 9px; }
 .field-help.weight-error { color: #a33d3d; font-weight: 700; }
-.portfolio-results { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; margin-top: 11px; }
+.portfolio-results { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 9px; margin-top: 11px; }
 .portfolio-result-card { display: grid; min-width: 0; gap: 5px; padding: 13px; border: 1px solid #e3e9f0; border-radius: 9px; background: #fff; }
 .portfolio-result-card > span { color: #7b899c; font-size: 8px; font-weight: 700; }
 .portfolio-result-card strong { color: #263e60; font-size: clamp(16px,2vw,22px); font-variant-numeric: tabular-nums; }
@@ -304,6 +306,20 @@ a { color: inherit; text-decoration: none; }
 .portfolio-delta-lower { color: #19725e !important; }
 .portfolio-delta-higher { color: #a34f46 !important; }
 .portfolio-delta-same { color: #64768c !important; }
+.portfolio-risk-compare { margin-top: 13px; padding: 13px 14px; border: 1px solid #e3eaf1; border-radius: 10px; background: linear-gradient(130deg,#fbfcfe,#f4f7fa); }
+.portfolio-risk-compare .portfolio-subheading { margin-bottom: 8px; }
+.portfolio-risk-row { display: grid; grid-template-columns: minmax(110px,.8fr) minmax(100px,2fr) minmax(55px,.45fr); align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid #e9edf2; }
+.portfolio-risk-row > span { color: #667a93; font-size: 9px; font-weight: 700; }
+.portfolio-risk-row > strong { color: #304b6d; font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
+.portfolio-risk-track { height: 10px; overflow: hidden; border-radius: 20px; background: #e8edf3; }
+.portfolio-risk-track i { display: block; height: 100%; border-radius: inherit; background: #8296af; transition: width .16s ease; }
+.portfolio-risk-track i.portfolio-risk-current { background: #2e62a5; }
+.portfolio-risk-compare > p { margin: 6px 0 0; color: #7d8b9e; font-size: 8px; line-height: 1.55; }
+.portfolio-correlation-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; margin-top: 10px; }
+.portfolio-correlation-card { display: grid; gap: 4px; padding: 9px 10px; border: 1px solid #e8edf2; border-radius: 8px; background: #fbfcfd; }
+.portfolio-correlation-card span { color: #74849a; font-size: 8px; font-weight: 700; }
+.portfolio-correlation-card strong { color: #3b5879; font-size: 14px; font-variant-numeric: tabular-nums; }
+.portfolio-correlation-card small { color: #98a3b1; font-size: 7px; }
 .portfolio-input-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; margin-top: 11px; }
 .portfolio-input-row { display: grid; grid-template-columns: 1fr auto; gap: 3px 7px; padding: 9px 10px; border: 1px solid #edf0f4; border-radius: 8px; background: #fff; }
 .portfolio-input-row span { color: #78879a; font-size: 8px; font-weight: 700; }
@@ -565,6 +581,7 @@ a { color: inherit; text-decoration: none; }
   .metric-summary-grid { gap: 8px; }
   .metric-summary-card { padding: 12px; }
   .analysis-card { padding: 15px; }
+  .portfolio-results { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
 @media (max-width: 680px) {
   .page-tools { align-items: end; margin-left: auto; }
@@ -575,6 +592,16 @@ a { color: inherit; text-decoration: none; }
   .metric-summary-card { grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 3px 9px; padding: 10px 12px; }
   .metric-summary-card > span, .metric-summary-card small, .metric-summary-card code { grid-column: 1; }
   .metric-summary-card strong { grid-column: 2; grid-row: 1 / span 3; font-size: 16px; text-align: right; }
+  .portfolio-results { grid-template-columns: 1fr; }
+  .portfolio-correlation-grid { grid-template-columns: 1fr; gap: 6px; }
+  .portfolio-correlation-card { grid-template-columns: 1fr auto; align-items: center; gap: 3px 8px; }
+  .portfolio-correlation-card strong { grid-column: 2; grid-row: 1 / span 2; }
+  .portfolio-correlation-card small { grid-column: 1; }
+  .portfolio-risk-compare { padding: 10px; }
+  .portfolio-risk-row { grid-template-columns: minmax(90px,.85fr) minmax(80px,1.3fr) minmax(48px,.4fr); gap: 6px; }
+  .portfolio-risk-row > span { font-size: 8px; }
+  .portfolio-risk-row > strong { font-size: 9px; }
+  .portfolio-reset-button { min-height: 42px; }
   .analysis-grid { grid-template-columns: 1fr; gap: 9px; }
   .analysis-card-wide { grid-column: auto; }
   .analysis-card { padding: 13px 11px; }

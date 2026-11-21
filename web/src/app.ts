@@ -1,6 +1,6 @@
 import { filterForecastRows, loadSnapshot, selectRecordedSessions, type ForecastFilter, type SnapshotState } from "./data/loadSnapshot.js";
 import { modelId, modelLabel, type CoverageRow, type DriftTimelineRow, type ForecastAuditRow, type H1ScatterRow, type ModelMetricRow, type ModelName, type PortfolioRiskRow, type RollingMae20Row, type Ticker } from "./data/schemas.js";
-import { computePortfolioVolatility } from "./data/portfolio.js";
+import { computePortfolioVolatility, correlationFromCovariance } from "./data/portfolio.js";
 import { buildExportMetadata, buildForecastCsv } from "./data/export.js";
 import { resolveAsOfLabelView, selectSameDateForecasts } from "./data/replay.js";
 import { calculateDescriptiveRangeMetrics } from "./data/rangeMetrics.js";
@@ -27,6 +27,7 @@ const routes: RouteDefinition[] = [
 const modelNames: ModelName[] = ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"];
 const tickerNames: Ticker[] = ["SPY", "IEF", "GLD"];
 const metricTickerNames: (Ticker | "MACRO")[] = ["MACRO", "SPY", "IEF", "GLD"];
+const portfolioDefaultWeights: [number, number, number] = [0.5, 0.3, 0.2];
 const tickerLabel: Record<Ticker, string> = { SPY: "SPY · US equities", IEF: "IEF · Treasury bonds", GLD: "GLD · Gold" };
 const modelColors: Record<ModelName, string> = {
   CONSTANT_BASELINE: "#8798ad",
@@ -459,7 +460,10 @@ function portfolioPage(state: ViewState): string {
   const row = selectedPortfolioRow(snapshot, date, state.portfolioModel);
   if (!row || !row.covariance || row.portfolioVol === null) return emptyState("ไม่พบ portfolio row ที่พร้อมคำนวณ", `ไม่พบ Test covariance ที่ผ่านการตรวจสำหรับ ${date} · ${modelId(state.portfolioModel)}`, sourceFooter("portfolio_risk.csv", "Test", `${date} · ${modelId(state.portfolioModel)}`, 0, "annualized decimal", snapshot.manifest.evaluationId));
   let whatIfValue: number | null = null;
+  let defaultRiskValue: number | null = null;
   let validationMessage = "";
+  try { defaultRiskValue = computePortfolioVolatility(row.covariance, portfolioDefaultWeights); }
+  catch (error) { validationMessage = error instanceof Error ? error.message : "Stored covariance is invalid"; }
   try { whatIfValue = computePortfolioVolatility(row.covariance, state.portfolioWeights); }
   catch (error) { validationMessage = error instanceof Error ? error.message : "Weights are invalid"; }
   const names = ["SPY", "IEF", "GLD"] as const;
@@ -470,7 +474,7 @@ function portfolioPage(state: ViewState): string {
     return `<div class="weight-field"><label class="field-label" for="portfolio-weight-${index}">${ticker} weight</label><div class="weight-slider-row"><input type="range" min="0" max="1" step="0.01" data-field="portfolio-weight-slider" data-index="${index}" value="${safeSliderWeight}" aria-label="${ticker} portfolio weight slider" aria-valuetext="${Math.round(safeSliderWeight * 100)}% of portfolio" /><output data-portfolio-weight-percent="${index}">${validSliderWeight ? `${Math.round(weight * 100)}%` : "Invalid"}</output></div><input id="portfolio-weight-${index}" type="number" min="0" max="1" step="0.01" data-field="portfolio-weight" data-index="${index}" value="${Number.isFinite(weight) ? escapeHtml(String(weight)) : ""}" aria-label="${ticker} portfolio weight" /></div>`;
   }).join("");
   const forecastCards = names.map((ticker, index) => `<div class="portfolio-input-row"><span>${ticker}</span><strong>${formatVol(row.forecastVols[index], state.unit)}</strong><small>${row.forecastStatuses[index]}</small></div>`).join("");
-  const storedWeights = row.sourceWeights.map((weight, index) => `${names[index]} ${weight.toFixed(2)}`).join(" · ");
+  const storedWeights = row.sourceWeights.map((weight, index) => `${names[index]} ${Math.round(weight * 100)}%`).join(" · ");
   const allocationColors = ["#2e62a5", "#518d7f", "#c38a36"];
   const allocationSegments = names.map((ticker, index) => {
     const value = state.portfolioWeights[index];
@@ -478,24 +482,34 @@ function portfolioPage(state: ViewState): string {
     return `<span class="portfolio-allocation-segment" data-allocation-segment="${index}" style="width:${width}%;background:${allocationColors[index]}"></span>`;
   }).join("");
   const allocationLegend = names.map((ticker, index) => `<span class="portfolio-allocation-item"><i style="background:${allocationColors[index]}"></i><strong>${ticker}</strong><output data-allocation-label="${index}">${Math.round(state.portfolioWeights[index] * 100)}%</output></span>`).join("");
-  const difference = whatIfValue === null ? null : whatIfValue - row.portfolioVol;
+  const difference = whatIfValue === null || defaultRiskValue === null ? null : whatIfValue - defaultRiskValue;
   const differenceClass = difference === null ? "" : difference < -1e-12 ? "portfolio-delta-lower" : difference > 1e-12 ? "portfolio-delta-higher" : "portfolio-delta-same";
   const differenceText = difference === null ? "—" : `${difference > 0 ? "+" : ""}${formatVol(difference, state.unit)}`;
+  const riskScale = Math.max(defaultRiskValue ?? 0, whatIfValue ?? 0, Number.EPSILON);
+  const defaultBarWidth = (defaultRiskValue ?? 0) / riskScale * 100;
+  const whatIfBarWidth = (whatIfValue ?? 0) / riskScale * 100;
+  const correlationPairs = [[0, 1], [0, 2], [1, 2]] as const;
+  const correlationCards = correlationPairs.map(([first, second]) => {
+    const value = correlationFromCovariance(row.covariance!, first, second);
+    return `<article class="portfolio-correlation-card"><span>${names[first]} ↔ ${names[second]}</span><strong>${value === null ? "—" : value.toFixed(3)}</strong><small>Correlation proxy · stored covariance</small></article>`;
+  }).join("");
   return `<div class="page-stack">
     <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">STORED COVARIANCE · LOCAL WHAT-IF</span><h2 class="analysis-title">Portfolio Lab</h2><p>คำนวณ √(wᵀΣw) จาก covariance ที่บันทึกไว้ในแถวเดียวกับวันที่และ model ที่เลือกเท่านั้น</p></div><span class="readonly-pill">${icon("lock", 14)} No inference</span></div>
       <div class="inline-controls"><label class="field-label">Recorded date<select data-field="portfolio-date">${dates.map((value) => `<option value="${value}" ${value === date ? "selected" : ""}>${value}</option>`).join("")}</select></label><label class="field-label">Model<select data-field="portfolio-model">${modelNames.map((model) => `<option value="${model}" ${model === state.portfolioModel ? "selected" : ""}>${modelId(model)} · ${escapeHtml(modelLabel(model))}</option>`).join("")}</select></label></div>
-      <div class="portfolio-preset-row"><span>เริ่มจากสัดส่วน</span><button type="button" class="portfolio-preset-button" data-action="portfolio-source-weights">ที่บันทึกไว้</button><button type="button" class="portfolio-preset-button" data-action="portfolio-equal-weights">ใกล้เคียงเท่ากัน · 34/33/33</button></div>
+      <div class="portfolio-preset-row"><span>ลองสัดส่วน</span><button type="button" class="portfolio-preset-button" data-action="portfolio-default-weights">Default · 50/30/20</button><button type="button" class="portfolio-preset-button" data-action="portfolio-weights-60-20-20">60/20/20</button><button type="button" class="portfolio-preset-button" data-action="portfolio-equal-weights">เท่ากัน · 33/33/33</button><button type="button" class="portfolio-preset-button" data-action="portfolio-source-weights">Source · ${row.sourceWeights.map((weight) => Math.round(weight * 100)).join("/")}</button><button type="button" class="portfolio-reset-button" data-action="portfolio-reset">คืนค่า 50/30/20</button></div>
       <div class="portfolio-controls">
         <div class="portfolio-allocation-wrap" data-portfolio-allocation ${validationMessage ? "hidden" : ""}><div class="portfolio-allocation-heading"><strong>สัดส่วนพอร์ต</strong><span>รวม 100%</span></div><div class="portfolio-allocation-bar" role="img" aria-label="Current portfolio allocation">${allocationSegments}</div><div class="portfolio-allocation-legend">${allocationLegend}</div></div>
         <div class="weight-control-grid">${weightInputs}</div>
         <p class="field-help ${validationMessage ? "weight-error" : ""}" role="${validationMessage ? "alert" : "status"}" aria-live="polite" data-portfolio-weight-status>${validationMessage ? `No result · ${escapeHtml(validationMessage)}` : `Weight total ${(state.portfolioWeights.reduce((sum, value) => sum + value, 0) * 100).toFixed(1)}% · ปรับ slider หรือตัวเลขได้`}</p>
         <div class="portfolio-results">
-          <article class="portfolio-result-card"><span>ค่าที่บันทึกใน Stage 06</span><strong>${formatVol(row.portfolioVol, state.unit)}</strong><small>Source weights · ${escapeHtml(storedWeights)}</small></article>
-          <article class="portfolio-result-card portfolio-whatif-card"><span>ความเสี่ยงจากสัดส่วนปัจจุบัน</span><strong data-portfolio-whatif>${whatIfValue === null ? "—" : formatVol(whatIfValue, state.unit)}</strong><small>คำนวณจาก covariance แถวเดิม</small></article>
-          <article class="portfolio-result-card portfolio-difference-card"><span>เปลี่ยนจากค่าที่บันทึก</span><strong class="${differenceClass}" data-portfolio-delta>${differenceText}</strong><small>หน่วยเดียวกับความผันผวนพอร์ต</small></article>
+          <article class="portfolio-result-card"><span>ค่าที่บันทึกใน Stage 06</span><strong>${formatVol(row.portfolioVol, state.unit)}</strong><small>Weights · ${escapeHtml(storedWeights)}</small></article>
+          <article class="portfolio-result-card"><span>Default · 50/30/20</span><strong data-portfolio-default>${defaultRiskValue === null ? "—" : formatVol(defaultRiskValue, state.unit)}</strong><small>คำนวณจาก covariance แถวนี้</small></article>
+          <article class="portfolio-result-card portfolio-whatif-card"><span>สัดส่วนปัจจุบัน</span><strong data-portfolio-whatif>${whatIfValue === null ? "—" : formatVol(whatIfValue, state.unit)}</strong><small>คำนวณจาก forecast/covariance เดิม</small></article>
+          <article class="portfolio-result-card portfolio-difference-card"><span>เปลี่ยนจาก Default</span><strong class="${differenceClass}" data-portfolio-delta>${differenceText}</strong><small>หน่วยเดียวกับ annualized volatility</small></article>
         </div>
       </div>
-      <div class="portfolio-input-section"><div class="portfolio-subheading"><strong>Forecast volatility ของแต่ละสินทรัพย์</strong><span>จากแถวเดียวกันใน snapshot</span></div><div class="portfolio-input-grid">${forecastCards}</div></div>
+      <div class="portfolio-risk-compare" data-portfolio-risk-comparison><div class="portfolio-subheading"><strong>เปรียบเทียบความเสี่ยงพอร์ต</strong><span>ตัวเลขถูกคำนวณใหม่เฉพาะจากสัดส่วน · ไม่มีการ fit model</span></div><div class="portfolio-risk-row"><span>Default · 50/30/20</span><div class="portfolio-risk-track"><i data-risk-bar-default style="width:${defaultBarWidth}%"></i></div><strong data-risk-label-default>${defaultRiskValue === null ? "—" : formatVol(defaultRiskValue, state.unit)}</strong></div><div class="portfolio-risk-row"><span>สัดส่วนปัจจุบัน</span><div class="portfolio-risk-track"><i class="portfolio-risk-current" data-risk-bar-current style="width:${whatIfBarWidth}%"></i></div><strong data-risk-label-current>${whatIfValue === null ? "—" : formatVol(whatIfValue, state.unit)}</strong></div><p>การเปลี่ยนน้ำหนักเปลี่ยนสัดส่วนความเสี่ยงของพอร์ต ขณะที่ forecast และ covariance ของวันเดิมคงที่</p></div>
+      <div class="portfolio-input-section"><div class="portfolio-subheading"><strong>Forecast volatility ของแต่ละสินทรัพย์</strong><span>จากแถวเดียวกันใน snapshot</span></div><div class="portfolio-input-grid">${forecastCards}</div><div class="portfolio-correlation-grid">${correlationCards}</div></div>
       <div class="portfolio-explainer"><strong>ทำไมน้ำหนักถึงเปลี่ยนความเสี่ยงพอร์ต?</strong><p>ผลลัพธ์ใช้ความผันผวนของ SPY, IEF และ GLD ร่วมกับ covariance ของแถวที่เลือก จึงรวมผลจากการเคลื่อนไหวร่วมกันของสินทรัพย์ด้วย การปรับน้ำหนักไม่เปลี่ยน forecast หรือ model</p></div>
       <p class="chart-note">Covariance and forecast inputs come from the same source row: ${escapeHtml(row.predictionDate)} · ${modelId(row.modelName)}. Changing weights performs a local calculation and leaves the frozen snapshot identity unchanged.</p>${sourceFooter("portfolio_risk.csv", "Test", `${row.predictionDate} · ${modelId(row.modelName)}`, 1, `annualized volatility (${state.unit})`, snapshot.manifest.evaluationId)}</section>
     <section class="limitation-card"><span class="limitation-mark">i</span><p>Portfolio risk is a historical source calculation, not a live portfolio estimate or investment recommendation.</p></section>
@@ -704,6 +718,7 @@ function updatePortfolioWeightPreview(root: HTMLElement, state: ViewState, chang
   });
   const status = root.querySelector<HTMLElement>("[data-portfolio-weight-status]");
   const result = root.querySelector<HTMLElement>("[data-portfolio-whatif]");
+  const defaultResult = root.querySelector<HTMLElement>("[data-portfolio-default]");
   const difference = root.querySelector<HTMLElement>("[data-portfolio-delta]");
   const allocation = root.querySelector<HTMLElement>("[data-portfolio-allocation]");
   if (!status || !result) return;
@@ -718,17 +733,28 @@ function updatePortfolioWeightPreview(root: HTMLElement, state: ViewState, chang
   try {
     const row = selectedPortfolioRow(state.snapshot, state.portfolioDate, state.portfolioModel);
     if (!row?.covariance) throw new Error("No verified covariance row is selected");
+    const defaultRisk = computePortfolioVolatility(row.covariance, portfolioDefaultWeights);
     const value = computePortfolioVolatility(row.covariance, state.portfolioWeights);
     status.textContent = `Weight total ${(total * 100).toFixed(1)}%`;
     status.classList.remove("weight-error");
     status.setAttribute("role", "status");
+    if (defaultResult) defaultResult.textContent = formatVol(defaultRisk, state.unit);
     result.textContent = formatVol(value, state.unit);
     if (difference) {
-      const delta = value - row.portfolioVol;
+      const delta = value - defaultRisk;
       difference.textContent = `${delta > 0 ? "+" : ""}${formatVol(delta, state.unit)}`;
       difference.classList.remove("portfolio-delta-lower", "portfolio-delta-higher", "portfolio-delta-same");
       difference.classList.add(Math.abs(delta) <= 1e-12 ? "portfolio-delta-same" : delta < 0 ? "portfolio-delta-lower" : "portfolio-delta-higher");
     }
+    const scale = Math.max(defaultRisk, value, Number.EPSILON);
+    const defaultBar = root.querySelector<HTMLElement>("[data-risk-bar-default]");
+    const currentBar = root.querySelector<HTMLElement>("[data-risk-bar-current]");
+    const defaultLabel = root.querySelector<HTMLElement>("[data-risk-label-default]");
+    const currentLabel = root.querySelector<HTMLElement>("[data-risk-label-current]");
+    if (defaultBar) defaultBar.style.width = `${defaultRisk / scale * 100}%`;
+    if (currentBar) currentBar.style.width = `${value / scale * 100}%`;
+    if (defaultLabel) defaultLabel.textContent = formatVol(defaultRisk, state.unit);
+    if (currentLabel) currentLabel.textContent = formatVol(value, state.unit);
     if (allocation) allocation.hidden = false;
   } catch (error) {
     status.textContent = `No result · ${error instanceof Error ? error.message : "Weights are invalid"}`;
@@ -884,7 +910,10 @@ export function startApp(root: HTMLElement): void {
         render(root, state);
         break;
       }
-      case "portfolio-equal-weights": state.portfolioWeights = [0.34, 0.33, 0.33]; render(root, state); break;
+      case "portfolio-default-weights":
+      case "portfolio-reset": state.portfolioWeights = [...portfolioDefaultWeights]; render(root, state); break;
+      case "portfolio-weights-60-20-20": state.portfolioWeights = [0.6, 0.2, 0.2]; render(root, state); break;
+      case "portfolio-equal-weights": state.portfolioWeights = [1 / 3, 1 / 3, 1 / 3]; render(root, state); break;
       case "open-session": {
         const predictionId = button.dataset.predictionId;
         if (state.snapshot.status === "ready" && predictionId) {

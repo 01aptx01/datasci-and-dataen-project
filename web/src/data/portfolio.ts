@@ -28,3 +28,13 @@ export function computePortfolioVolatility(covariance: number[][], weights: numb
   if (!Number.isFinite(variance) || variance < -psdTolerance) throw new Error("Portfolio variance is invalid for the selected weights");
   return Math.sqrt(Math.max(0, variance));
 }
+
+export function correlationFromCovariance(covariance: number[][], first: number, second: number): number | null {
+  if (first === second || covariance.length !== 3 || covariance.some((row) => row.length !== 3)) return null;
+  const varianceFirst = covariance[first]?.[first];
+  const varianceSecond = covariance[second]?.[second];
+  const covariancePair = covariance[first]?.[second];
+  if (![varianceFirst, varianceSecond, covariancePair].every((value) => typeof value === "number" && Number.isFinite(value)) || varianceFirst! <= 0 || varianceSecond! <= 0) return null;
+  const result = covariancePair! / Math.sqrt(varianceFirst! * varianceSecond!);
+  return Number.isFinite(result) ? result : null;
+}
