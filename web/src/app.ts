@@ -3,6 +3,7 @@ import { modelId, modelLabel, type CoverageRow, type DriftTimelineRow, type Fore
 import { computePortfolioVolatility } from "./data/portfolio.js";
 import { buildExportMetadata, buildForecastCsv } from "./data/export.js";
 import { resolveAsOfLabelView, selectSameDateForecasts } from "./data/replay.js";
+import { calculateDescriptiveRangeMetrics } from "./data/rangeMetrics.js";
 
 interface RouteDefinition {
   path: string;
@@ -67,6 +68,11 @@ interface ViewState {
   unit: DisplayUnit;
   metric: MetricName;
   modelTicker: Ticker | "MACRO";
+  rangeTicker: Ticker | "MACRO";
+  rangeMetric: MetricName;
+  rangePreset: "all-test" | "last20" | "custom";
+  rangeFrom: string;
+  rangeTo: string;
   forecastTicker: Ticker;
   forecastSplit: "test" | "validation";
   forecastModels: ModelName[];
@@ -382,6 +388,48 @@ function toggleSessionPlayback(root: HTMLElement, state: ViewState): void {
   render(root, state);
 }
 
+function descriptiveRangePanel(state: ViewState, snapshot: Extract<SnapshotState, { status: "ready" }>): string {
+  const commonDates = [...new Set(snapshot.sessions
+    .filter((row) => row.isCommonPanel && row.evaluationStatus === "EVALUABLE" && row.forecastStatus === "VALID")
+    .map((row) => row.predictionDate))]
+    .sort((left, right) => left.localeCompare(right));
+  const firstDate = commonDates[0] ?? "";
+  const lastDate = commonDates[commonDates.length - 1] ?? "";
+  const last20Start = commonDates[Math.max(0, commonDates.length - 20)] ?? firstDate;
+  const startDate = state.rangePreset === "all-test" ? firstDate : state.rangePreset === "last20" ? last20Start : state.rangeFrom || firstDate;
+  const endDate = state.rangePreset === "all-test" ? lastDate : state.rangePreset === "last20" ? lastDate : state.rangeTo || lastDate;
+  const result = calculateDescriptiveRangeMetrics(snapshot.sessions, snapshot.evaluations, startDate, endDate, state.rangeTicker);
+  const rangeTickerOptions = metricTickerNames.map((ticker) => `<option value="${ticker}" ${ticker === state.rangeTicker ? "selected" : ""}>${ticker === "MACRO" ? "MACRO · equal ETF aggregate" : ticker}</option>`).join("");
+  const presetOptions = [
+    ["all-test", "All Test"], ["last20", "Last 20 available sessions"], ["custom", "Custom range"],
+  ].map(([value, label]) => `<option value="${value}" ${state.rangePreset === value ? "selected" : ""}>${label}</option>`).join("");
+  let resultContent: string;
+  if (result.status === "insufficient") {
+    resultContent = emptyState("Insufficient Evidence", `${result.reason} · เลือกช่วงที่มี common paired rows ของ B0–B3 ครบก่อน`);
+  } else {
+    const values = result.scores.map((score) => state.rangeMetric === "mae" ? score.mae : score.rmse).filter((value): value is number => value !== null);
+    const maxValue = Math.max(...values, Number.EPSILON);
+    const bars = result.scores.map((score, index) => {
+      const value = state.rangeMetric === "mae" ? score.mae : score.rmse;
+      if (value === null) return "";
+      const y = 13 + index * 39;
+      const barWidth = Math.max(2, 510 * value / maxValue);
+      return `<g><text class="chart-model-label" x="0" y="${y + 18}">${modelId(score.modelName)}</text><rect x="54" y="${y + 3}" width="${barWidth}" height="19" rx="5" fill="${modelColors[score.modelName]}"><title>${modelId(score.modelName)} ${metricName(state.rangeMetric)} ${formatVol(value, state.unit)} · N=${score.n}</title></rect><text class="chart-value-label" x="${Math.min(565, 64 + barWidth)}" y="${y + 18}">${formatVol(value, state.unit)}</text></g>`;
+    }).join("");
+    const b3 = result.scores.find((score) => score.modelName === "ONLINE_SGD");
+    const tableRows = result.scores.map((score) => {
+      const delta = score.modelName === "ONLINE_SGD" || score.mae === null || b3?.mae === null || b3?.mae === undefined ? null : score.mae - b3.mae;
+      const relative = delta === null || score.mae === 0 ? null : delta / score.mae * 100;
+      return `<tr><th scope="row">${modelId(score.modelName)}</th><td>${formatVol(score.mae, state.unit)}</td><td>${formatVol(score.rmse, state.unit)}</td><td>${score.n.toLocaleString()}</td><td>${delta === null ? "—" : formatVol(delta, state.unit)}</td><td>${relative === null ? "—" : `${relative.toFixed(2)}%`}</td></tr>`;
+    }).join("");
+    const tickerN = state.rangeTicker === "MACRO"
+      ? ["SPY", "IEF", "GLD"].map((ticker) => `${ticker} ${result.nByTicker[ticker as Ticker] ?? 0}`).join(" · ")
+      : `${state.rangeTicker} ${result.nByTicker[state.rangeTicker] ?? 0}`;
+    resultContent = `${result.smallSample ? '<p class="range-warning"><strong>ตัวอย่างมีขนาดเล็ก</strong> · ใช้อ่านแนวโน้มในช่วงที่เลือกเท่านั้น ไม่ควรนำไปอ้างแทนผล Test เต็ม</p>' : ""}<div class="range-summary-strip"><span>Common paired N <strong>${result.n.toLocaleString()}</strong></span><span>แยกตาม ETF <strong>${tickerN}</strong></span></div><div class="chart-scroll"><svg class="metric-bar-chart range-metric-chart" role="img" aria-label="Exploratory ${metricName(state.rangeMetric)} by model from ${startDate} to ${endDate}" viewBox="0 0 660 180" preserveAspectRatio="xMinYMin meet">${bars}</svg></div><div class="table-scroll"><table class="data-table"><caption class="visually-hidden">Descriptive paired metrics for selected Test range</caption><thead><tr><th scope="col">Model</th><th scope="col">MAE</th><th scope="col">RMSE</th><th scope="col">N</th><th scope="col">ΔMAE vs B3</th><th scope="col">Relative Δ</th></tr></thead><tbody>${tableRows}</tbody></table></div>`;
+  }
+  return `<section class="analysis-card descriptive-range-card"><div class="section-card-heading"><div><span class="section-overline">EXPLORE A SUBSET · DERIVED FROM VERIFIED ROWS</span><h3>ทดลองเลือกช่วงวันที่</h3><p>คำนวณ MAE/RMSE เฉพาะ mature common pairs ของ B0–B3 · ใช้แถววันเดียวกันเพื่อเทียบกันอย่างยุติธรรม</p></div><span class="pill pill-neutral">Common panel · locked on</span></div><div class="range-filter-grid"><label class="field-label">ช่วงข้อมูล<select data-field="range-preset">${presetOptions}</select></label><label class="field-label">ETF / aggregate<select data-field="range-ticker">${rangeTickerOptions}</select></label><label class="field-label">Metric<select data-field="range-metric"><option value="mae" ${state.rangeMetric === "mae" ? "selected" : ""}>MAE</option><option value="rmse" ${state.rangeMetric === "rmse" ? "selected" : ""}>RMSE</option></select></label><label class="field-label">From<input type="date" data-field="range-from" min="${escapeHtml(firstDate)}" max="${escapeHtml(lastDate)}" value="${escapeHtml(startDate)}" ${state.rangePreset !== "custom" ? "disabled" : ""}></label><label class="field-label">To<input type="date" data-field="range-to" min="${escapeHtml(firstDate)}" max="${escapeHtml(lastDate)}" value="${escapeHtml(endDate)}" ${state.rangePreset !== "custom" ? "disabled" : ""}></label></div><div class="range-result-heading"><strong>${escapeHtml(startDate || "—")} → ${escapeHtml(endDate || "—")}</strong><span>Exploratory subset · descriptive only</span></div>${resultContent}${sourceFooter("forecast_audit.csv + evaluation.csv", "Test · selected date range", `${state.rangeTicker} · ${startDate} → ${endDate}`, result.n, `annualized volatility (${state.unit}) · common paired anchors`, snapshot.manifest.evaluationId)}<p class="range-limitation">เป็นค่าสรุปเชิงพรรณนาของช่วงที่เลือกเท่านั้น · ไม่ใช่ H2/H3 test ใหม่ · p-values, CIs และ Official Test ด้านบนไม่เปลี่ยนตามตัวกรองนี้ · <a href="#/research">ดูผล H1–H3 ที่ตรึงไว้</a></p></section>`;
+}
+
 function modelsPage(state: ViewState): string {
   const snapshot = state.snapshot;
   if (snapshot.status === "loading") return loadingState();
@@ -395,7 +443,8 @@ function modelsPage(state: ViewState): string {
     : emptyState("ไม่มี paired comparison สำหรับตัวเลือกนี้", "แสดงเฉพาะ comparison ที่อยู่ใน frozen source.");
   return `<div class="page-stack">
     <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">STAGE 06 · TEST-ONLY SCORES</span><h2 class="analysis-title">เปรียบเทียบ B0–B3 บน common panel</h2><p>ใช้ค่าที่บันทึกไว้ใน source; paired N และ panel แสดงตามแถว Stage 06 โดยตรง</p></div><span class="readonly-pill">${icon("lock", 14)} Frozen result</span></div><div class="inline-controls"><label class="field-label">Asset / aggregate<select data-field="model-ticker">${metricTickerNames.map((ticker) => `<option value="${ticker}" ${state.modelTicker === ticker ? "selected" : ""}>${ticker === "MACRO" ? "MACRO · equal ETF aggregate" : ticker}</option>`).join("")}</select></label><label class="field-label">Metric<select data-field="metric"><option value="mae" ${state.metric === "mae" ? "selected" : ""}>MAE</option><option value="rmse" ${state.metric === "rmse" ? "selected" : ""}>RMSE</option></select></label></div>${metricChart(metricRows, state.metric, state.unit, `Stored Test ${state.modelTicker} ${metricName(state.metric)} by model`)}<div class="model-definition-grid">${modelNames.map((model) => `<article class="model-definition" style="--model-color:${modelColors[model]}"><span class="model-chip">${modelId(model)}</span><strong>${escapeHtml(modelLabel(model))}</strong><small>${model === "ONLINE_SGD" ? "B3 · online model" : `${modelId(model)} · comparator`}</small></article>`).join("")}</div><div class="comparison-note"><strong>Common-panel caveat</strong><span>ค่าทั้งสี่แถวใช้ paired matured-valid anchors ตามค่า comparison_panel; MACRO เป็นค่าที่ Stage 06 บันทึก ไม่ได้นำ RMSE ราย ETF มาเฉลี่ยใน browser.</span></div>${sourceFooter("model_metrics.csv", "Test", `${state.modelTicker} · B0–B3`, metricRows[0]?.pairedN ?? 0, `annualized decimal (${state.unit}) · paired N per row`, snapshot.manifest.evaluationId)}</section>
-    <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">PAIRED DESCRIPTIVE DELTAS</span><h3>B3 เทียบกับ baseline</h3></div><span class="pill pill-neutral">Positive ΔMAE = B3 error lower</span></div>${pairTable}</section>
+    ${descriptiveRangePanel(state, snapshot)}
+    <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">PAIRED DESCRIPTIVE DELTAS</span><h3>B3 เทียบกับ baseline · Official Test</h3></div><span class="pill pill-neutral">Positive ΔMAE = B3 error lower</span></div>${pairTable}</section>
     <section class="limitation-card"><span class="limitation-mark">i</span><p>ผลนี้อธิบาย frozen Test sample เท่านั้น ไม่ยืนยันความเหนือกว่าในอนาคต และไม่ใช่ผล Validation หรือผลคาดการณ์สด</p></section>
   </div>`;
 }
@@ -760,6 +809,11 @@ export function startApp(root: HTMLElement): void {
     unit: "percent",
     metric: "mae",
     modelTicker: "MACRO",
+    rangeTicker: "MACRO",
+    rangeMetric: "mae",
+    rangePreset: "all-test",
+    rangeFrom: "",
+    rangeTo: "",
     forecastTicker: "SPY",
     forecastSplit: "test",
     forecastModels: ["ONLINE_SGD"],
@@ -874,6 +928,16 @@ export function startApp(root: HTMLElement): void {
       if (target.dataset.field === "session-speed" && [450, 900, 1600].includes(Number(target.value))) state.sessionSpeedMs = Number(target.value);
       if (target.dataset.field === "unit" && ["decimal", "percent"].includes(target.value)) state.unit = target.value as DisplayUnit;
       if (target.dataset.field === "metric" && ["mae", "rmse"].includes(target.value)) state.metric = target.value as MetricName;
+      if (target.dataset.field === "range-metric" && ["mae", "rmse"].includes(target.value)) state.rangeMetric = target.value as MetricName;
+      if (target.dataset.field === "range-ticker" && metricTickerNames.includes(target.value as Ticker | "MACRO")) state.rangeTicker = target.value as Ticker | "MACRO";
+      if (target.dataset.field === "range-preset" && ["all-test", "last20", "custom"].includes(target.value)) {
+        state.rangePreset = target.value as ViewState["rangePreset"];
+        if (state.rangePreset === "custom" && state.snapshot.status === "ready") {
+          const commonDates = [...new Set(state.snapshot.sessions.filter((row) => row.isCommonPanel && row.evaluationStatus === "EVALUABLE" && row.forecastStatus === "VALID").map((row) => row.predictionDate))].sort((left, right) => left.localeCompare(right));
+          if (!state.rangeFrom) state.rangeFrom = commonDates[0] ?? "";
+          if (!state.rangeTo) state.rangeTo = commonDates[commonDates.length - 1] ?? "";
+        }
+      }
       if (target.dataset.field === "model-ticker" && metricTickerNames.includes(target.value as Ticker | "MACRO")) state.modelTicker = target.value as Ticker | "MACRO";
       if (target.dataset.field === "coverage-ticker" && tickerNames.includes(target.value as Ticker)) state.forecastTicker = target.value as Ticker;
       if (target.dataset.field === "forecast-ticker" && tickerNames.includes(target.value as Ticker)) state.forecastTicker = target.value as Ticker;
@@ -894,6 +958,8 @@ export function startApp(root: HTMLElement): void {
       }
       if (target.dataset.field === "forecast-from") state.forecastFrom = target.value;
       if (target.dataset.field === "forecast-to") state.forecastTo = target.value;
+      if (target.dataset.field === "range-from") state.rangeFrom = target.value;
+      if (target.dataset.field === "range-to") state.rangeTo = target.value;
       if (target.dataset.field === "drift-from") state.driftFrom = target.value;
       if (target.dataset.field === "drift-to") state.driftTo = target.value;
       if (target.dataset.field === "portfolio-weight" || target.dataset.field === "portfolio-weight-slider") {

@@ -126,6 +126,7 @@ export interface ForecastAuditRow {
   split: "test" | "validation";
   modelName: ModelName;
   isLabelMature: boolean;
+  isCommonPanel: boolean;
   targetStartDate: string;
   targetEndDate: string;
   predictionId: string;
@@ -861,6 +862,7 @@ export function parseForecastAuditRow(record: Record<string, string>): ForecastA
     split: oneOf(record.split, ["test", "validation"], "split"),
     modelName: oneOf(record.model_name, ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"], "model_name"),
     isLabelMature: parseBoolean(record.is_label_mature, "is_label_mature"),
+    isCommonPanel: parseBoolean(record.is_common_panel, "is_common_panel"),
     targetStartDate: dateString(record.target_start_date, "target_start_date"),
     targetEndDate: dateString(record.target_end_date, "target_end_date"),
     predictionId: record.prediction_id,
@@ -875,6 +877,7 @@ export function parseForecastAuditRow(record: Record<string, string>): ForecastA
   };
   if (typeof row.predictionId !== "string" || row.predictionId.length === 0) throw new Error("prediction_id must be a nonempty string");
   if (row.forecastStatus === "VALID" && row.predictedVolAnnualized === null) throw new Error("A VALID forecast must contain a finite forecast value");
+  if (row.isCommonPanel && (row.evaluationStatus !== "EVALUABLE" || row.forecastStatus !== "VALID")) throw new Error(`Common-panel forecast ${row.predictionId} must be valid and evaluable`);
   assertPendingLabelsHaveNoActual(row);
   return row;
 }
