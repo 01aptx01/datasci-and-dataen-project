@@ -58,6 +58,8 @@ interface ViewState {
   ticker: Ticker;
   model: ModelName;
   sessionIndex: number;
+  sessionPlaying: boolean;
+  sessionTimer: number | null;
   unit: DisplayUnit;
   metric: MetricName;
   modelTicker: Ticker | "MACRO";
@@ -262,13 +264,12 @@ function sessionCard(state: ViewState): string {
   const row = available[index];
   const modelOptions = modelNames.map((model) => `<option value="${model}" ${state.model === model ? "selected" : ""}>${modelId(model)} · ${escapeHtml(modelLabel(model))}</option>`).join("");
   const tickerOptions = tickerNames.map((ticker) => `<option value="${ticker}" ${state.ticker === ticker ? "selected" : ""}>${ticker}</option>`).join("");
-  const dateOptions = available.map((session, sessionIndex) => `<option value="${sessionIndex}" ${index === sessionIndex ? "selected" : ""}>${escapeHtml(session.predictionDate)}</option>`).join("");
   if (!row) return `<section class="session-card"><div class="eyebrow"><span class="eyebrow-dot"></span> RECORDED SESSION · TEST</div><h2 id="session-title">สำรวจผลที่บันทึกไว้</h2><div class="session-filters"><label class="field-label">สินทรัพย์<select data-field="ticker">${tickerOptions}</select></label><label class="field-label">โมเดล<select data-field="model">${modelOptions}</select></label></div>${emptyState("ไม่มีบันทึกสำหรับตัวกรองนี้", "ไม่พบแถวใน snapshot ที่ผ่านการตรวจสอบสำหรับสินทรัพย์และโมเดลที่เลือก ลองเปลี่ยนตัวกรอง")}</section>`;
   const evaluation = state.snapshot.evaluations.get(row.predictionId);
   const pending = row.evaluationStatus === "PENDING_LABEL";
   const isEvaluable = row.evaluationStatus === "EVALUABLE" && evaluation !== undefined;
   const validForecast = row.forecastStatus === "VALID" && row.predictedVolAnnualized !== null;
-  const format = (value: number | null | undefined) => value === null || value === undefined ? "—" : value.toFixed(6);
+  const format = (value: number | null | undefined) => formatVol(value, state.unit, 6);
   const statusClass = pending ? "status-pending" : isEvaluable ? "status-evaluable" : "status-neutral";
   const statusLabel = pending ? "PENDING · ยังไม่ครบช่วงเป้าหมาย" : isEvaluable ? "EVALUABLE · ประเมินได้" : row.evaluationStatus;
   const pendingTooltip = pending ? "Not scored: target pending by cutoff" : "";
@@ -279,14 +280,66 @@ function sessionCard(state: ViewState): string {
   return `
     <section class="session-card" aria-labelledby="session-title">
       <div class="session-head"><div><div class="eyebrow"><span class="eyebrow-dot"></span> RECORDED SESSION · TEST</div><h2 id="session-title">สำรวจผลที่บันทึกไว้</h2><p>เลื่อนไปยังวัน XNYS ที่มีอยู่ใน Frozen Snapshot เท่านั้น การเปลี่ยนวันไม่เรียก Replay หรือคำนวณโมเดลใหม่</p></div><span class="readonly-pill">${icon("lock", 14)} ดูอย่างเดียว</span></div>
-      <div class="session-filters"><label class="field-label">สินทรัพย์<select data-field="ticker">${tickerOptions}</select></label><label class="field-label">โมเดล<select data-field="model">${modelOptions}</select></label><label class="field-label">วันที่บันทึกไว้<select aria-label="เลือกวันที่บันทึกไว้" data-field="date">${dateOptions}</select></label></div>
-      <div class="session-date-row"><button class="icon-button" type="button" aria-label="วันก่อนหน้า" data-action="previous" ${index === 0 ? "disabled" : ""}>${icon("arrowLeft")}</button><div class="session-date"><span>วันทำนาย · XNYS</span><strong>${escapeHtml(row.predictionDate)}</strong><small>บันทึกที่ ${index + 1} จาก ${available.length}</small></div><button class="icon-button" type="button" aria-label="วันถัดไป" data-action="next" ${index >= available.length - 1 ? "disabled" : ""}>${icon("arrowRight")}</button></div>
+      <div class="session-filters"><label class="field-label">สินทรัพย์<select data-field="ticker">${tickerOptions}</select></label><label class="field-label">โมเดล<select data-field="model">${modelOptions}</select></label></div>
+      <div class="session-navigation" aria-label="Recorded forecast timeline">
+        <div class="session-step-row">
+          <button class="session-step-button" type="button" data-action="previous" ${index === 0 ? "disabled" : ""}>${icon("arrowLeft")}<span>วันก่อนหน้า</span></button>
+          <div class="session-date" aria-live="polite"><span>วันทำนาย · XNYS</span><strong data-session-current-date>${escapeHtml(row.predictionDate)}</strong><small data-session-position>วันที่ ${index + 1} จาก ${available.length}</small></div>
+          <button class="session-step-button" type="button" data-action="next" ${index >= available.length - 1 ? "disabled" : ""}><span>วันถัดไป</span>${icon("arrowRight")}</button>
+        </div>
+        <div class="session-timeline">
+          <label for="session-index">เลื่อนไปยังวันที่บันทึกไว้</label>
+          <input id="session-index" class="session-timeline-slider" type="range" min="0" max="${available.length - 1}" step="1" value="${index}" data-field="session-index" aria-label="เลื่อนไปยังวันพยากรณ์ที่บันทึกไว้" aria-valuetext="${escapeHtml(row.predictionDate)} · วันที่ ${index + 1} จาก ${available.length}" />
+          <div class="session-timeline-meta"><span>เริ่ม ${escapeHtml(available[0].predictionDate)}</span><span>สิ้นสุด ${escapeHtml(available[available.length - 1].predictionDate)}</span></div>
+        </div>
+        <div class="session-play-row"><button class="button button-secondary session-play-button" type="button" data-action="toggle-session-play" aria-pressed="${state.sessionPlaying}" ${available.length < 2 ? "disabled" : ""}>${state.sessionPlaying ? "หยุดเล่น" : "เล่นวันต่อเนื่อง"}</button><button type="button" class="text-button" data-action="reset">กลับวันแรก</button><span class="session-play-note">${state.sessionPlaying ? "กำลังไล่ดูผลที่บันทึกไว้" : "เล่นเฉพาะ observation ใน snapshot · ไม่รันโมเดล"}</span></div>
+      </div>
       <div class="session-status-row"><span class="status-chip ${statusClass}" ${pending ? `title="${pendingTooltip}" aria-label="${pendingTooltip}"` : ""}>${escapeHtml(statusLabel)}</span><span class="status-chip status-outline">Forecast · ${escapeHtml(row.forecastStatus)}</span><span class="session-horizon">ช่วงเป้าหมาย ${escapeHtml(row.targetStartDatePrediction)} → ${escapeHtml(row.targetEndDatePrediction)}</span></div>
       <div class="session-values"><div class="session-value-card"><span>Forecast RV5</span><strong>${validForecast ? format(row.predictedVolAnnualized) : "—"}</strong><small>Annualized decimal · จาก forecast_audit.csv</small></div><div class="session-value-card${pending ? " muted-value" : ""}"><span>Actual RV5</span><strong ${pending ? `title="${pendingTooltip}" aria-label="Actual RV5 · ${pendingTooltip}"` : ""}>${pending ? "—" : format(evaluation?.targetRealizedVol5d)}</strong><small>${actualLabel}</small></div><div class="session-value-card${pending ? " muted-value" : ""}"><span>Absolute error</span><strong ${pending ? `title="${pendingTooltip}" aria-label="Absolute error · ${pendingTooltip}"` : ""}>${pending ? "—" : format(evaluation?.absoluteError)}</strong><small>${errorLabel}</small></div></div>
       ${pending ? '<p class="pending-note"><span>i</span> Target ยังไม่ครบ 5 วันซื้อขายก่อน strict cutoff จึงไม่แสดง actual หรือ error เป็นศูนย์</p>' : ""}${noActualWarning}${noForecastWarning}
       <div class="session-footer"><span>Prediction ID <code>${escapeHtml(row.predictionId)}</code></span><span>${escapeHtml(tickerLabel[state.ticker])} · ${modelId(state.model)}</span></div>
-      <div class="session-actions"><span>เปลี่ยนเฉพาะการเลือก observation ที่บันทึกไว้</span><button type="button" class="text-button" data-action="reset">Reset ไปวันแรก</button></div>
+      <div class="session-actions"><span>เปลี่ยนเฉพาะการเลือก observation ที่บันทึกไว้</span></div>
     </section>`;
+}
+
+function stopSessionPlayback(state: ViewState): void {
+  if (state.sessionTimer !== null) window.clearInterval(state.sessionTimer);
+  state.sessionTimer = null;
+  state.sessionPlaying = false;
+}
+
+function setSessionIndex(state: ViewState, index: number): void {
+  stopSessionPlayback(state);
+  const available = state.snapshot.status === "ready" ? selectRecordedSessions(state.snapshot.sessions, state.ticker, state.model) : [];
+  state.sessionIndex = Math.max(0, Math.min(index, Math.max(available.length - 1, 0)));
+}
+
+function toggleSessionPlayback(root: HTMLElement, state: ViewState): void {
+  if (state.sessionPlaying) {
+    stopSessionPlayback(state);
+    render(root, state);
+    return;
+  }
+  const available = state.snapshot.status === "ready" ? selectRecordedSessions(state.snapshot.sessions, state.ticker, state.model) : [];
+  if (available.length < 2) return;
+  if (state.sessionIndex >= available.length - 1) state.sessionIndex = 0;
+  state.sessionPlaying = true;
+  state.sessionTimer = window.setInterval(() => {
+    if (state.routePath !== "/forecasts" || state.snapshot.status !== "ready") {
+      stopSessionPlayback(state);
+      return;
+    }
+    const currentRows = selectRecordedSessions(state.snapshot.sessions, state.ticker, state.model);
+    if (state.sessionIndex >= currentRows.length - 1) {
+      stopSessionPlayback(state);
+      render(root, state);
+      return;
+    }
+    state.sessionIndex += 1;
+    if (state.sessionIndex >= currentRows.length - 1) stopSessionPlayback(state);
+    render(root, state);
+  }, 900);
+  render(root, state);
 }
 
 function modelsPage(state: ViewState): string {
@@ -329,11 +382,33 @@ function portfolioPage(state: ViewState): string {
   }).join("");
   const forecastCards = names.map((ticker, index) => `<div class="portfolio-input-row"><span>${ticker}</span><strong>${formatVol(row.forecastVols[index], state.unit)}</strong><small>${row.forecastStatuses[index]}</small></div>`).join("");
   const storedWeights = row.sourceWeights.map((weight, index) => `${names[index]} ${weight.toFixed(2)}`).join(" · ");
+  const allocationColors = ["#2e62a5", "#518d7f", "#c38a36"];
+  const allocationSegments = names.map((ticker, index) => {
+    const value = state.portfolioWeights[index];
+    const width = Number.isFinite(value) ? Math.min(1, Math.max(0, value)) * 100 : 0;
+    return `<span class="portfolio-allocation-segment" data-allocation-segment="${index}" style="width:${width}%;background:${allocationColors[index]}"></span>`;
+  }).join("");
+  const allocationLegend = names.map((ticker, index) => `<span class="portfolio-allocation-item"><i style="background:${allocationColors[index]}"></i><strong>${ticker}</strong><output data-allocation-label="${index}">${Math.round(state.portfolioWeights[index] * 100)}%</output></span>`).join("");
+  const difference = whatIfValue === null ? null : whatIfValue - row.portfolioVol;
+  const differenceClass = difference === null ? "" : difference < -1e-12 ? "portfolio-delta-lower" : difference > 1e-12 ? "portfolio-delta-higher" : "portfolio-delta-same";
+  const differenceText = difference === null ? "—" : `${difference > 0 ? "+" : ""}${formatVol(difference, state.unit)}`;
   return `<div class="page-stack">
     <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">STORED COVARIANCE · LOCAL WHAT-IF</span><h2 class="analysis-title">Portfolio Lab</h2><p>คำนวณ √(wᵀΣw) จาก covariance ที่บันทึกไว้ในแถวเดียวกับวันที่และ model ที่เลือกเท่านั้น</p></div><span class="readonly-pill">${icon("lock", 14)} No inference</span></div>
       <div class="inline-controls"><label class="field-label">Recorded date<select data-field="portfolio-date">${dates.map((value) => `<option value="${value}" ${value === date ? "selected" : ""}>${value}</option>`).join("")}</select></label><label class="field-label">Model<select data-field="portfolio-model">${modelNames.map((model) => `<option value="${model}" ${model === state.portfolioModel ? "selected" : ""}>${modelId(model)} · ${escapeHtml(modelLabel(model))}</option>`).join("")}</select></label></div>
-      <div class="portfolio-controls"><div class="weight-control-grid">${weightInputs}</div><p class="field-help ${validationMessage ? "weight-error" : ""}" role="${validationMessage ? "alert" : "status"}" aria-live="polite" data-portfolio-weight-status>${validationMessage ? `No result · ${escapeHtml(validationMessage)}` : `Weight total ${(state.portfolioWeights.reduce((sum, value) => sum + value, 0) * 100).toFixed(1)}%`}</p><div class="portfolio-results"><article class="portfolio-result-card"><span>Stored Stage 06 portfolio value</span><strong>${formatVol(row.portfolioVol, state.unit)}</strong><small>Source weights · ${escapeHtml(storedWeights)}</small></article><article class="portfolio-result-card portfolio-whatif-card"><span>Local what-if value</span><strong data-portfolio-whatif>${whatIfValue === null ? "—" : formatVol(whatIfValue, state.unit)}</strong><small>Recalculated from this row’s stored covariance</small></article></div></div>
-      <div class="portfolio-input-grid">${forecastCards}</div><p class="chart-note">Covariance and forecast inputs come from the same source row: ${escapeHtml(row.predictionDate)} · ${modelId(row.modelName)}. Changing weights performs a local calculation and leaves the frozen snapshot identity unchanged.</p>${sourceFooter("portfolio_risk.csv", "Test", `${row.predictionDate} · ${modelId(row.modelName)}`, 1, `annualized volatility (${state.unit})`, snapshot.manifest.evaluationId)}</section>
+      <div class="portfolio-preset-row"><span>เริ่มจากสัดส่วน</span><button type="button" class="portfolio-preset-button" data-action="portfolio-source-weights">ที่บันทึกไว้</button><button type="button" class="portfolio-preset-button" data-action="portfolio-equal-weights">ใกล้เคียงเท่ากัน · 34/33/33</button></div>
+      <div class="portfolio-controls">
+        <div class="portfolio-allocation-wrap" data-portfolio-allocation ${validationMessage ? "hidden" : ""}><div class="portfolio-allocation-heading"><strong>สัดส่วนพอร์ต</strong><span>รวม 100%</span></div><div class="portfolio-allocation-bar" role="img" aria-label="Current portfolio allocation">${allocationSegments}</div><div class="portfolio-allocation-legend">${allocationLegend}</div></div>
+        <div class="weight-control-grid">${weightInputs}</div>
+        <p class="field-help ${validationMessage ? "weight-error" : ""}" role="${validationMessage ? "alert" : "status"}" aria-live="polite" data-portfolio-weight-status>${validationMessage ? `No result · ${escapeHtml(validationMessage)}` : `Weight total ${(state.portfolioWeights.reduce((sum, value) => sum + value, 0) * 100).toFixed(1)}% · ปรับ slider หรือตัวเลขได้`}</p>
+        <div class="portfolio-results">
+          <article class="portfolio-result-card"><span>ค่าที่บันทึกใน Stage 06</span><strong>${formatVol(row.portfolioVol, state.unit)}</strong><small>Source weights · ${escapeHtml(storedWeights)}</small></article>
+          <article class="portfolio-result-card portfolio-whatif-card"><span>ความเสี่ยงจากสัดส่วนปัจจุบัน</span><strong data-portfolio-whatif>${whatIfValue === null ? "—" : formatVol(whatIfValue, state.unit)}</strong><small>คำนวณจาก covariance แถวเดิม</small></article>
+          <article class="portfolio-result-card portfolio-difference-card"><span>เปลี่ยนจากค่าที่บันทึก</span><strong class="${differenceClass}" data-portfolio-delta>${differenceText}</strong><small>หน่วยเดียวกับความผันผวนพอร์ต</small></article>
+        </div>
+      </div>
+      <div class="portfolio-input-section"><div class="portfolio-subheading"><strong>Forecast volatility ของแต่ละสินทรัพย์</strong><span>จากแถวเดียวกันใน snapshot</span></div><div class="portfolio-input-grid">${forecastCards}</div></div>
+      <div class="portfolio-explainer"><strong>ทำไมน้ำหนักถึงเปลี่ยนความเสี่ยงพอร์ต?</strong><p>ผลลัพธ์ใช้ความผันผวนของ SPY, IEF และ GLD ร่วมกับ covariance ของแถวที่เลือก จึงรวมผลจากการเคลื่อนไหวร่วมกันของสินทรัพย์ด้วย การปรับน้ำหนักไม่เปลี่ยน forecast หรือ model</p></div>
+      <p class="chart-note">Covariance and forecast inputs come from the same source row: ${escapeHtml(row.predictionDate)} · ${modelId(row.modelName)}. Changing weights performs a local calculation and leaves the frozen snapshot identity unchanged.</p>${sourceFooter("portfolio_risk.csv", "Test", `${row.predictionDate} · ${modelId(row.modelName)}`, 1, `annualized volatility (${state.unit})`, snapshot.manifest.evaluationId)}</section>
     <section class="limitation-card"><span class="limitation-mark">i</span><p>Portfolio risk is a historical source calculation, not a live portfolio estimate or investment recommendation.</p></section>
   </div>`;
 }
@@ -460,11 +535,11 @@ function forecastExplorerPage(state: ViewState): string {
   const modelOptions = modelNames.map((model) => `<option value="${model}" ${state.forecastModels.includes(model) ? "selected" : ""}>${modelId(model)} · ${escapeHtml(modelLabel(model))}</option>`).join("");
   const selectedModelsLabel = state.forecastModels.map(modelId).join(", ") || "none";
   return `<div class="page-stack forecasts-page">
+    ${sessionCard(state)}
     <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">RECORDED FORECASTS · NO INFERENCE</span><h2 class="analysis-title">Forecast Explorer</h2><p>ตัวกรองเลือกเฉพาะแถวที่บันทึกไว้ใน audit; ไม่มีการเรียก Train หรือ Replay<br>กด Export CSV และ Export metadata แยกกัน โดยคงตัวกรองเดิมไว้เพื่อให้ hash ตรงกัน</p></div><div class="forecast-export-actions"><span class="readonly-pill">${icon("lock", 14)} ${snapshot.manifest.strictCutoff} cutoff</span><button class="button button-secondary export-button" type="button" data-action="export-forecasts-csv" ${rows.length === 0 ? "disabled" : ""}>Export CSV</button><button class="button button-secondary export-button" type="button" data-action="export-forecasts-metadata" ${rows.length === 0 ? "disabled" : ""}>Export metadata</button></div></div>
       <div class="forecast-filters"><label class="field-label">Split<select data-field="forecast-split"><option value="test" ${state.forecastSplit === "test" ? "selected" : ""}>Test</option><option value="validation" ${state.forecastSplit === "validation" ? "selected" : ""}>Validation</option></select></label><label class="field-label">Asset<select data-field="forecast-ticker">${tickerNames.map((ticker) => `<option value="${ticker}" ${state.forecastTicker === ticker ? "selected" : ""}>${ticker}</option>`).join("")}</select></label><label class="field-label">Models<select data-field="forecast-models" multiple size="4" aria-describedby="model-filter-help">${modelOptions}</select><small id="model-filter-help">เลือกหลายโมเดลได้ด้วย Ctrl/Command</small></label><label class="field-label">Label status<select data-field="forecast-status"><option value="all" ${state.forecastStatus === "all" ? "selected" : ""}>All</option><option value="mature" ${state.forecastStatus === "mature" ? "selected" : ""}>Mature / evaluable</option><option value="pending" ${state.forecastStatus === "pending" ? "selected" : ""}>Pending</option><option value="invalid" ${state.forecastStatus === "invalid" ? "selected" : ""}>Invalid / missing</option></select></label><label class="field-label">From<input type="date" data-field="forecast-from" value="${escapeHtml(state.forecastFrom)}"></label><label class="field-label">To<input type="date" data-field="forecast-to" value="${escapeHtml(state.forecastTo)}"></label></div>
       <div class="chart-heading-row"><div><h3>${state.forecastSplit} · ${state.forecastTicker}</h3><p>Target window t+1…t+5 trading sessions · annualized volatility</p></div><span class="result-count">${rows.length.toLocaleString()} rows · ${selectedModelsLabel}</span></div>${forecastExplorerChart(rows, state)}${sourceFooter("forecast_audit.csv + evaluation.csv", state.forecastSplit, `${state.forecastTicker} · ${selectedModelsLabel}`, rows.length, `annualized decimal (${state.unit})`, snapshot.manifest.evaluationId)}</section>
     <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">FILTERED SOURCE ROWS</span><h3>ข้อมูลราย observation</h3><p>แสดง ${Math.min(rows.length, 100).toLocaleString()} จาก ${rows.length.toLocaleString()} แถวแรก เรียงตามวันและโมเดล</p></div><span class="pill pill-neutral">Source columns retained</span></div>${rows.length === 0 ? emptyState("ไม่พบแถวตามตัวกรอง", "ลองปรับตัวกรองด้านบน.") : `<div class="table-scroll"><table class="data-table forecast-data-table"><caption class="visually-hidden">Filtered recorded forecasts for ${state.forecastTicker} in ${state.forecastSplit}</caption><thead><tr><th scope="col">Prediction date</th><th scope="col">Ticker</th><th scope="col">Model</th><th scope="col">Forecast</th><th scope="col">Actual</th><th scope="col">Absolute error</th><th scope="col">Evaluation</th><th scope="col">Forecast</th><th scope="col">Prediction ID</th><th scope="col">Target end</th></tr></thead><tbody>${tableRows}</tbody></table></div>`}${sourceFooter("forecast_audit.csv + evaluation.csv", state.forecastSplit, `${state.forecastTicker} · ${selectedModelsLabel}`, rows.length, `annualized decimal (${state.unit})`, snapshot.manifest.evaluationId)}</section>
-    ${sessionCard(state)}
   </div>`;
 }
 
@@ -540,7 +615,16 @@ function updatePortfolioWeightPreview(root: HTMLElement, state: ViewState, chang
   });
   const status = root.querySelector<HTMLElement>("[data-portfolio-weight-status]");
   const result = root.querySelector<HTMLElement>("[data-portfolio-whatif]");
+  const difference = root.querySelector<HTMLElement>("[data-portfolio-delta]");
+  const allocation = root.querySelector<HTMLElement>("[data-portfolio-allocation]");
   if (!status || !result) return;
+  const allocationLabels = root.querySelectorAll<HTMLOutputElement>("[data-allocation-label]");
+  const allocationSegments = root.querySelectorAll<HTMLElement>("[data-allocation-segment]");
+  state.portfolioWeights.forEach((weight, index) => {
+    const safeWeight = Number.isFinite(weight) ? Math.min(1, Math.max(0, weight)) : 0;
+    if (allocationLabels[index]) allocationLabels[index].textContent = Number.isFinite(weight) ? `${Math.round(weight * 100)}%` : "Invalid";
+    if (allocationSegments[index]) allocationSegments[index].style.width = `${safeWeight * 100}%`;
+  });
   const total = state.portfolioWeights.reduce((sum, weight) => sum + weight, 0);
   try {
     const row = selectedPortfolioRow(state.snapshot, state.portfolioDate, state.portfolioModel);
@@ -550,11 +634,23 @@ function updatePortfolioWeightPreview(root: HTMLElement, state: ViewState, chang
     status.classList.remove("weight-error");
     status.setAttribute("role", "status");
     result.textContent = formatVol(value, state.unit);
+    if (difference) {
+      const delta = value - row.portfolioVol;
+      difference.textContent = `${delta > 0 ? "+" : ""}${formatVol(delta, state.unit)}`;
+      difference.classList.remove("portfolio-delta-lower", "portfolio-delta-higher", "portfolio-delta-same");
+      difference.classList.add(Math.abs(delta) <= 1e-12 ? "portfolio-delta-same" : delta < 0 ? "portfolio-delta-lower" : "portfolio-delta-higher");
+    }
+    if (allocation) allocation.hidden = false;
   } catch (error) {
     status.textContent = `No result · ${error instanceof Error ? error.message : "Weights are invalid"}`;
     status.classList.add("weight-error");
     status.setAttribute("role", "alert");
     result.textContent = "—";
+    if (difference) {
+      difference.textContent = "—";
+      difference.classList.remove("portfolio-delta-lower", "portfolio-delta-higher", "portfolio-delta-same");
+    }
+    if (allocation) allocation.hidden = true;
   }
 }
 
@@ -616,6 +712,8 @@ export function startApp(root: HTMLElement): void {
     ticker: "SPY",
     model: "ONLINE_SGD",
     sessionIndex: 0,
+    sessionPlaying: false,
+    sessionTimer: null,
     unit: "percent",
     metric: "mae",
     modelTicker: "MACRO",
@@ -637,6 +735,7 @@ export function startApp(root: HTMLElement): void {
   };
 
   const updateRoute = () => {
+    stopSessionPlayback(state);
     state.routePath = currentRoute();
     state.mobileMenuOpen = false;
     state.moreOpen = false;
@@ -654,14 +753,25 @@ export function startApp(root: HTMLElement): void {
       case "toggle-menu": state.mobileMenuOpen = !state.mobileMenuOpen; render(root, state); break;
       case "close-menu": if (target === button || button.classList.contains("mobile-nav-overlay")) { state.mobileMenuOpen = false; render(root, state); } break;
       case "toggle-more": state.moreOpen = !state.moreOpen; render(root, state); break;
-      case "previous": state.sessionIndex = Math.max(0, state.sessionIndex - 1); render(root, state); break;
-      case "next": state.sessionIndex += 1; render(root, state); break;
-      case "reset": state.sessionIndex = 0; render(root, state); break;
+      case "previous": setSessionIndex(state, state.sessionIndex - 1); render(root, state); break;
+      case "next": setSessionIndex(state, state.sessionIndex + 1); render(root, state); break;
+      case "reset": setSessionIndex(state, 0); render(root, state); break;
+      case "toggle-session-play": toggleSessionPlayback(root, state); break;
+      case "portfolio-source-weights": {
+        if (state.snapshot.status === "ready") {
+          const row = selectedPortfolioRow(state.snapshot, state.portfolioDate || state.snapshot.manifest.strictCutoff, state.portfolioModel);
+          if (row) state.portfolioWeights = [row.sourceWeights[0], row.sourceWeights[1], row.sourceWeights[2]];
+        }
+        render(root, state);
+        break;
+      }
+      case "portfolio-equal-weights": state.portfolioWeights = [0.34, 0.33, 0.33]; render(root, state); break;
       case "open-session": {
         const predictionId = button.dataset.predictionId;
         if (state.snapshot.status === "ready" && predictionId) {
           const row = state.snapshot.sessions.find((session) => session.predictionId === predictionId);
           if (row) {
+            stopSessionPlayback(state);
             state.ticker = row.ticker;
             state.model = row.modelName;
             state.sessionIndex = selectRecordedSessions(state.snapshot.sessions, row.ticker, row.modelName).findIndex((session) => session.predictionId === predictionId);
@@ -682,9 +792,8 @@ export function startApp(root: HTMLElement): void {
   root.addEventListener("change", (event) => {
     const target = event.target;
     if (target instanceof HTMLSelectElement) {
-      if (target.dataset.field === "ticker" && tickerNames.includes(target.value as Ticker)) { state.ticker = target.value as Ticker; state.sessionIndex = 0; }
-      if (target.dataset.field === "model" && modelNames.includes(target.value as ModelName)) { state.model = target.value as ModelName; state.sessionIndex = 0; }
-      if (target.dataset.field === "date") state.sessionIndex = Number(target.value);
+      if (target.dataset.field === "ticker" && tickerNames.includes(target.value as Ticker)) { stopSessionPlayback(state); state.ticker = target.value as Ticker; state.sessionIndex = 0; }
+      if (target.dataset.field === "model" && modelNames.includes(target.value as ModelName)) { stopSessionPlayback(state); state.model = target.value as ModelName; state.sessionIndex = 0; }
       if (target.dataset.field === "unit" && ["decimal", "percent"].includes(target.value)) state.unit = target.value as DisplayUnit;
       if (target.dataset.field === "metric" && ["mae", "rmse"].includes(target.value)) state.metric = target.value as MetricName;
       if (target.dataset.field === "model-ticker" && metricTickerNames.includes(target.value as Ticker | "MACRO")) state.modelTicker = target.value as Ticker | "MACRO";
@@ -700,6 +809,11 @@ export function startApp(root: HTMLElement): void {
       if (target.dataset.field === "research-ticker" && tickerNames.includes(target.value as Ticker)) state.researchTicker = target.value as Ticker;
     }
     if (target instanceof HTMLInputElement) {
+      if (target.dataset.field === "session-index") {
+        setSessionIndex(state, Number(target.value));
+        render(root, state);
+        return;
+      }
       if (target.dataset.field === "forecast-from") state.forecastFrom = target.value;
       if (target.dataset.field === "forecast-to") state.forecastTo = target.value;
       if (target.dataset.field === "drift-from") state.driftFrom = target.value;
@@ -717,16 +831,25 @@ export function startApp(root: HTMLElement): void {
   });
   root.addEventListener("input", (event) => {
     const target = event.target;
-    if (!(target instanceof HTMLInputElement) || (target.dataset.field !== "portfolio-weight" && target.dataset.field !== "portfolio-weight-slider")) return;
+    if (!(target instanceof HTMLInputElement)) return;
+    if (target.dataset.field === "session-index") {
+      const available = state.snapshot.status === "ready" ? selectRecordedSessions(state.snapshot.sessions, state.ticker, state.model) : [];
+      if (available.length === 0) return;
+      stopSessionPlayback(state);
+      state.sessionIndex = Math.max(0, Math.min(Number(target.value), available.length - 1));
+      const selected = available[state.sessionIndex];
+      const currentDate = root.querySelector<HTMLElement>("[data-session-current-date]");
+      const position = root.querySelector<HTMLElement>("[data-session-position]");
+      if (currentDate) currentDate.textContent = selected.predictionDate;
+      if (position) position.textContent = `วันที่ ${state.sessionIndex + 1} จาก ${available.length}`;
+      target.setAttribute("aria-valuetext", `${selected.predictionDate} · วันที่ ${state.sessionIndex + 1} จาก ${available.length}`);
+      return;
+    }
+    if (target.dataset.field !== "portfolio-weight" && target.dataset.field !== "portfolio-weight-slider") return;
     const index = Number(target.dataset.index);
     if (!Number.isInteger(index) || index < 0 || index > 2) return;
     state.portfolioWeights[index] = target.value.trim() ? Number(target.value) : Number.NaN;
     updatePortfolioWeightPreview(root, state, index, target.dataset.field === "portfolio-weight-slider" ? "slider" : "number");
-  });
-  root.addEventListener("keydown", (event) => {
-    if (!(event instanceof KeyboardEvent) || !(event.target instanceof Element) || !event.target.closest(".session-date-row")) return;
-    if (event.key === "ArrowLeft") { event.preventDefault(); state.sessionIndex = Math.max(0, state.sessionIndex - 1); render(root, state); }
-    if (event.key === "ArrowRight") { event.preventDefault(); state.sessionIndex += 1; render(root, state); }
   });
   if (!window.location.hash) window.location.hash = "/overview";
   render(root, state);
