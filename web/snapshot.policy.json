@@ -18,14 +18,38 @@
     "executionManifest": "approved_results/execution_manifest.json",
     "stage05Manifest": "approved_results/stage05_experiment_manifest.json",
     "forecastAudit": "approved_results/forecast_audit.csv",
-    "evaluation": "approved_results/evaluation.csv"
+    "evaluation": "approved_results/evaluation.csv",
+    "modelMetrics": "approved_results/model_metrics.csv",
+    "pairComparisons": "approved_results/pair_comparisons.csv",
+    "coverage": "approved_results/coverage.csv",
+    "portfolioRisk": "approved_results/portfolio_risk.csv",
+    "rollingMae20": "approved_results/rolling_mae20.csv",
+    "driftErrorTimeline": "approved_results/drift_error_timeline.csv",
+    "h1ScatterData": "approved_results/H1_scatter_data.csv",
+    "h1Results": "approved_results/H1_results.csv",
+    "h1Sensitivity": "approved_results/H1_sensitivity.csv",
+    "hypothesisResults": "approved_results/hypothesis_results.csv",
+    "bootstrapDiagnostics": "approved_results/bootstrap_diagnostics.csv",
+    "highVolatilityMetrics": "approved_results/high_volatility_metrics.csv"
   },
   "memberSha256": {
     "source_identity.json": "5e7442ab6a45dd7aa3c2a4ea8bccca34566cb6e62b54f97405aaa1fef784c0f3",
     "approved_results/execution_manifest.json": "7d89b0072f8bcc042aa4f856da2c66955cc7d463e7aa25d5416d8cce5d3b580a",
     "approved_results/stage05_experiment_manifest.json": "0030f4faa50476dcd6665ae3b318ada82fb00eaeb28b4b1acb73491bdf6b4f72",
     "approved_results/forecast_audit.csv": "00124fc1181f33570f46196ddb22185ad6eaf412f37003fe8093c7a71e842a40",
-    "approved_results/evaluation.csv": "5f67a08b41cf9f700e8e28a31ae9da62505592ac7cce548a1f605c1af36cebc2"
+    "approved_results/evaluation.csv": "5f67a08b41cf9f700e8e28a31ae9da62505592ac7cce548a1f605c1af36cebc2",
+    "approved_results/model_metrics.csv": "270f984b671635ddf49d393b256b9837398af89c3c13b1495373ff148c023a71",
+    "approved_results/pair_comparisons.csv": "7768079d422935d6cb5f6f4ba474fa9bcf2844deb5b662e80e648c7f32149f0a",
+    "approved_results/coverage.csv": "3f9bb19c0c0322338f1f4fcb432f6f1c3893c9ec306487d491281c898a3664f5",
+    "approved_results/portfolio_risk.csv": "1efe3ba7a78fa0fda6a49a75ee602365b9953682cb8eeac8b9df1ce1a53af8e3",
+    "approved_results/rolling_mae20.csv": "20f64e2a84afa6317213aa2a7b6c6afe155f666517a7921eaf28292cbf652b42",
+    "approved_results/drift_error_timeline.csv": "9ee9ee6c36c31d591df9bdff997236e890e943ca6fb0842008ff34d45c9865a9",
+    "approved_results/H1_scatter_data.csv": "8ab28525e5dd3c63c3c31798cbb968f62fa4619e74d6c5d4ce83078be387d112",
+    "approved_results/H1_results.csv": "48a909871ada7d48335a068decb0ee66b2b7d869183b0f5eb77ce0a69535f376",
+    "approved_results/H1_sensitivity.csv": "c6771e32138e5007593b81a2ae82feb9b203ff52921ed48a40f5569d57863918",
+    "approved_results/hypothesis_results.csv": "298c0e7af50baef26132348b1f15c14cd9249c9c1500b3822d6e22aa84072b29",
+    "approved_results/bootstrap_diagnostics.csv": "0fcd20b256c7da4b6d24e6ed77f24964face5a9080c22920e661e0a7dac6e601",
+    "approved_results/high_volatility_metrics.csv": "ea8ac67d480b41b07beafd4d41a1720b348fbb3b6c9762ed89a380b421476d4f"
   },
   "expectedHeaders": {
     "forecastAudit": [
@@ -33,17 +57,61 @@
     ],
     "evaluation": [
       "experiment_id", "prediction_id", "prediction_date", "split", "ticker", "model_name", "model_version", "prediction_mode", "forecast_horizon_trading_days", "target_start_date", "target_end_date", "predicted_vol_annualized", "target_realized_vol_5d", "target_version", "feature_set_version", "input_snapshot_id", "absolute_error", "squared_error", "evaluation_date", "label_available_replay_date", "prediction_run_id", "evaluation_run_id"
-    ]
+    ],
+    "modelMetrics": [
+      "split", "ticker", "model_name", "paired_n", "expected_eligible_anchor_count", "mae", "rmse", "comparison_panel"
+    ],
+    "pairComparisons": [
+      "comparison_id", "baseline_model", "online_model", "ticker", "paired_n", "baseline_mae", "online_mae", "delta_mae_baseline_minus_online", "relative_improvement_pct", "baseline_rmse", "online_rmse", "common_all_four_n", "pairing_policy"
+    ],
+    "coverage": [
+      "split", "ticker", "model_name", "expected_eligible_prediction_anchors", "forecast_success_count", "invalid_forecast_count", "missing_forecast_count", "mature_target_count", "pending_label_count", "invalid_or_missing_target_count", "mature_evaluable_count", "common_panel_count", "forecast_coverage", "evaluation_coverage"
+    ],
+    "portfolioRisk": [
+      "split", "prediction_date", "model_name", "prediction_mode", "feature_run_id", "replay_run_id", "input_snapshot_id", "spy_forecast_vol_annualized", "ief_forecast_vol_annualized", "gld_forecast_vol_annualized", "spy_forecast_status", "ief_forecast_status", "gld_forecast_status", "corr_spy_ief_20d", "corr_spy_gld_20d", "corr_ief_gld_20d", "is_corr_ready", "correlation_run_id", "weight_spy", "weight_ief", "weight_gld", "portfolio_vol_annualized", "portfolio_status", "missing_inputs", "covariance_matrix"
+    ],
+    "rollingMae20": ["split", "ticker", "model_name", "window_start", "window_end", "window_session_count", "expected_anchor_count", "evaluable_count", "coverage", "mae", "rmse"],
+    "driftErrorTimeline": ["prediction_id", "prediction_date", "ticker", "absolute_error_evaluation", "absolute_error_adwin", "drift_detected", "adwin_delta", "adwin_width", "adwin_estimation", "alert_record_present"],
+    "h1ScatterData": ["date", "ticker", "split", "target_end_date", "rv_5d", "target_realized_vol_5d"],
+    "h1Results": ["ticker", "n", "expected_n", "missing_xnys_anchors", "train_start_date", "train_end_date", "beta", "intercept", "hac_se", "test_statistic", "p_raw_one_sided", "p_holm", "ci95_lower", "ci95_upper", "hac_lag", "decision", "effect_size_interpretation", "decision_reason"],
+    "h1Sensitivity": ["ticker", "hac_maxlags", "n", "beta", "intercept", "hac_se", "test_statistic", "p_raw_one_sided", "ci95_lower", "ci95_upper", "status"],
+    "hypothesisResults": ["hypothesis_id", "ticker_or_macro", "null", "alternative", "dataset_split", "n_expected", "n_paired", "paired_n_by_ticker", "alpha", "method", "test_statistic", "effect_size", "raw_p_value", "adjusted_p_value", "confidence_interval_95", "decision", "effect_size_interpretation", "analysis_config_id", "statistical_status", "bootstrap_standard_error", "block_length_xnys_sessions", "bootstrap_replicates", "bootstrap_seed", "invalid_bootstrap_replicates"],
+    "bootstrapDiagnostics": ["hypothesis_id", "role", "block_length_xnys_sessions", "replicates", "seed", "status", "observed_delta", "bootstrap_standard_error", "ci95_lower", "ci95_upper", "p_raw_one_sided", "n_by_ticker", "invalid_replicates"],
+    "highVolatilityMetrics": ["split", "ticker", "model_name", "train_target_p80_threshold", "threshold_train_n", "high_vol_target_anchor_count", "high_vol_common_evaluable_n", "mae", "rmse", "evaluation_coverage", "subset_policy"]
   },
   "expectedCounts": {
     "forecastAuditRows": 5976,
     "evaluationRows": 2916,
     "testForecastRows": 2976,
     "testEvaluableRows": 2916,
-    "testPendingRows": 60
+    "testPendingRows": 60,
+    "modelMetricsRows": 16,
+    "pairComparisonsRows": 12,
+    "coverageRows": 24,
+    "portfolioRiskRows": 1992,
+    "rollingMae20Rows": 5520,
+    "driftErrorTimelineRows": 729,
+    "h1ScatterDataRows": 2256,
+    "h1ResultsRows": 3,
+    "h1SensitivityRows": 9,
+    "hypothesisResultsRows": 5,
+    "bootstrapDiagnosticsRows": 4,
+    "highVolatilityMetricsRows": 12
   },
   "publicOutputs": {
     "forecastAudit": "forecast_audit.csv",
-    "evaluation": "evaluation.csv"
+    "evaluation": "evaluation.csv",
+    "modelMetrics": "model_metrics.csv",
+    "pairComparisons": "pair_comparisons.csv",
+    "coverage": "coverage.csv",
+    "portfolioRisk": "portfolio_risk.csv",
+    "rollingMae20": "rolling_mae20.csv",
+    "driftErrorTimeline": "drift_error_timeline.csv",
+    "h1ScatterData": "H1_scatter_data.csv",
+    "h1Results": "H1_results.csv",
+    "h1Sensitivity": "H1_sensitivity.csv",
+    "hypothesisResults": "hypothesis_results.csv",
+    "bootstrapDiagnostics": "bootstrap_diagnostics.csv",
+    "highVolatilityMetrics": "high_volatility_metrics.csv"
   }
 }

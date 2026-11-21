@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import shutil
 import json
+import hashlib
 from pathlib import Path
 
 WEB_ROOT = Path(__file__).resolve().parents[1]
@@ -29,13 +30,26 @@ if snapshot_manifest.is_file():
         raise SystemExit("Refusing to publish a snapshot with mismatched Evaluation or Replay ID")
     output_dir = DIST / "snapshots" / evaluation_id
     output_dir.mkdir(parents=True, exist_ok=True)
-    outputs = [
-        snapshot_manifest,
-        snapshot_source / policy["publicOutputs"]["forecastAudit"],
-        snapshot_source / policy["publicOutputs"]["evaluation"],
-    ]
-    for source in outputs:
+    artifacts = manifest.get("files", {})
+    public_outputs = policy.get("publicOutputs", {})
+    if not public_outputs or set(artifacts) != set(public_outputs):
+        raise SystemExit("Refusing to publish a snapshot whose manifest file list differs from the runtime allowlist")
+    expected_names = {"dashboard_snapshot_manifest.json", *public_outputs.values()}
+    if output_dir.resolve().parent != (DIST / "snapshots").resolve():
+        raise SystemExit("Refusing to publish outside the dashboard snapshot directory")
+    if output_dir.exists() and any(path.name not in expected_names for path in output_dir.iterdir()):
+        raise SystemExit("Refusing to publish beside an unexpected snapshot file")
+
+    for key, filename in public_outputs.items():
+        artifact = artifacts.get(key, {})
+        if artifact.get("path") != filename:
+            raise SystemExit(f"Refusing to publish an unapproved output path for {key}")
+        source = snapshot_source / filename
         if source.parent.resolve() != snapshot_source.resolve() or not source.is_file():
             raise SystemExit(f"Refusing to publish a missing or out-of-scope snapshot file: {source.name}")
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        if digest != artifact.get("sha256") or source.stat().st_size != artifact.get("bytes"):
+            raise SystemExit(f"Refusing to publish a changed snapshot file: {source.name}")
         shutil.copy2(source, output_dir / source.name)
+    shutil.copy2(snapshot_manifest, output_dir / snapshot_manifest.name)
 print(f"STATIC BUILD READY: {DIST}")

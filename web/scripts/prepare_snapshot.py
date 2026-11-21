@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the pinned Stage 06 handoff and emit only the Forecast UI CSV subset."""
+"""Verify the pinned Stage 06 handoff and emit only approved dashboard CSVs."""
 
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ def parse_csv_bytes(payload: bytes, filename: str, expected_headers: list[str]) 
     if headers != expected_headers:
         raise SnapshotError(f"{filename} header does not match the pinned schema")
     rows = list(reader)
-    if any(None in row for row in rows):
+    if any(None in row or any(value is None for value in row.values()) for row in rows):
         raise SnapshotError(f"{filename} contains a row with the wrong number of fields")
     return rows, headers
 
@@ -121,6 +121,243 @@ def validate_status_row(row: dict[str, str], row_number: int) -> None:
         raise SnapshotError(f"Unknown evaluation_status on forecast audit row {row_number}: {evaluation}")
     if forecast not in {"VALID", "INVALID", "MISSING"}:
         raise SnapshotError(f"Unknown forecast_status on forecast audit row {row_number}: {forecast}")
+
+
+def signed_finite(value: str, field: str, row_number: int) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as error:
+        raise SnapshotError(f"Invalid {field} on CSV row {row_number}") from error
+    if not math.isfinite(result):
+        raise SnapshotError(f"Invalid finite {field} on CSV row {row_number}")
+    return result
+
+
+def source_json(value: str, field: str, row_number: int) -> Any:
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise SnapshotError(f"Invalid JSON in {field} on CSV row {row_number}") from error
+
+
+def source_bool(value: str, field: str, row_number: int) -> bool:
+    if value.lower() == "true":
+        return True
+    if value.lower() == "false":
+        return False
+    raise SnapshotError(f"Invalid boolean {field} on CSV row {row_number}")
+
+
+def source_date(value: str, field: str, row_number: int) -> str:
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise SnapshotError(f"Invalid {field} date on CSV row {row_number}")
+    return value
+
+
+def portfolio_volatility(matrix: list[list[float]], weights: list[float], row_number: int) -> float:
+    if len(matrix) != 3 or any(len(row) != 3 for row in matrix) or len(weights) != 3:
+        raise SnapshotError(f"portfolio covariance/weight dimensions are invalid on CSV row {row_number}")
+    if any(not math.isfinite(value) for row in matrix for value in row) or any(not math.isfinite(value) or value < 0 for value in weights):
+        raise SnapshotError(f"portfolio covariance/weights contain invalid values on CSV row {row_number}")
+    if abs(sum(weights) - 1) > 1e-10:
+        raise SnapshotError(f"Stored portfolio weights do not sum to one on CSV row {row_number}")
+    if any(abs(matrix[row][column] - matrix[column][row]) > 1e-10 for row in range(3) for column in range(row + 1, 3)):
+        raise SnapshotError(f"portfolio covariance is not symmetric on CSV row {row_number}")
+    a, b, c = matrix[0][0], matrix[1][1], matrix[2][2]
+    d, e, f = matrix[0][1], matrix[0][2], matrix[1][2]
+    minors = (a * b - d * d, a * c - e * e, b * c - f * f)
+    determinant = a * (b * c - f * f) - d * (d * c - e * f) + e * (d * f - b * e)
+    if min(a, b, c, *minors, determinant) < -1e-10:
+        raise SnapshotError(f"portfolio covariance is not positive semidefinite on CSV row {row_number}")
+    variance = sum(weights[row] * weights[column] * matrix[row][column] for row in range(3) for column in range(3))
+    if not math.isfinite(variance) or variance < -1e-10:
+        raise SnapshotError(f"portfolio variance is invalid on CSV row {row_number}")
+    return math.sqrt(max(0.0, variance))
+
+
+def validate_d4_d5_sources(
+    audit_rows: list[dict[str, str]], evaluation_rows: list[dict[str, str]],
+    sources: dict[str, list[dict[str, str]]], policy: dict[str, Any],
+) -> None:
+    models = {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"}
+    tickers = {"SPY", "IEF", "GLD"}
+    audit_by_scope = {(row["split"], row["prediction_date"], row["ticker"], row["model_name"]): row for row in audit_rows}
+    portfolio_keys: set[tuple[str, str, str]] = set()
+    for row_number, row in enumerate(sources["portfolioRisk"], start=2):
+        key = (row["split"], row["prediction_date"], row["model_name"])
+        if key in portfolio_keys or row["split"] not in {"test", "validation"} or row["model_name"] not in models:
+            raise SnapshotError(f"Unsupported or duplicate portfolio_risk.csv scope on row {row_number}")
+        portfolio_keys.add(key)
+        source_date(row["prediction_date"], "prediction_date", row_number)
+        if row["split"] == "test" and row["prediction_date"] > policy["identity"]["strictCutoff"]:
+            raise SnapshotError(f"portfolio_risk.csv exceeds the strict cutoff on row {row_number}")
+        if row["prediction_mode"] != "HISTORICAL_REPLAY":
+            raise SnapshotError(f"portfolio_risk.csv contains an unsupported prediction mode on row {row_number}")
+        if not row["replay_run_id"] or not row["correlation_run_id"] or not re.fullmatch(r"[a-fA-F0-9]{64}", row["input_snapshot_id"]):
+            raise SnapshotError(f"portfolio_risk.csv is missing source lineage on row {row_number}")
+        missing = source_json(row["missing_inputs"], "missing_inputs", row_number)
+        matrix = source_json(row["covariance_matrix"], "covariance_matrix", row_number)
+        if not isinstance(missing, list) or any(not isinstance(item, str) for item in missing) or not isinstance(matrix, list) or any(not isinstance(item, list) for item in matrix):
+            raise SnapshotError(f"portfolio_risk.csv JSON fields are malformed on row {row_number}")
+        weights = [number_or_none(row[f"weight_{ticker.lower()}"], f"weight_{ticker.lower()}", row_number) for ticker in ("SPY", "IEF", "GLD")]
+        forecast_values = [number_or_none(row[f"{ticker.lower()}_forecast_vol_annualized"], f"{ticker.lower()}_forecast_vol_annualized", row_number) for ticker in ("SPY", "IEF", "GLD")]
+        forecast_statuses = [row[f"{ticker.lower()}_forecast_status"] for ticker in ("SPY", "IEF", "GLD")]
+        if any(status not in {"VALID", "INVALID", "MISSING"} for status in forecast_statuses) or any((status == "VALID") != (value is not None) for status, value in zip(forecast_statuses, forecast_values)):
+            raise SnapshotError(f"portfolio_risk.csv forecast statuses disagree with values on row {row_number}")
+        if row["portfolio_status"] == "OK":
+            if missing or not source_bool(row["is_corr_ready"], "is_corr_ready", row_number) or any(status != "VALID" for status in forecast_statuses):
+                raise SnapshotError(f"An OK portfolio row has incomplete inputs on row {row_number}")
+            parsed_matrix = [[signed_finite(str(value), "covariance_matrix", row_number) for value in matrix_row] for matrix_row in matrix]
+            if any(len(matrix_row) != 3 for matrix_row in parsed_matrix):
+                raise SnapshotError(f"portfolio covariance dimensions are invalid on row {row_number}")
+            calculated = portfolio_volatility(parsed_matrix, [value or 0.0 for value in weights], row_number)
+            stored = number_or_none(row["portfolio_vol_annualized"], "portfolio_vol_annualized", row_number)
+            if stored is None or not math.isclose(calculated, stored, rel_tol=0.0, abs_tol=1e-10):
+                raise SnapshotError(f"Stored portfolio value does not match covariance and source weights on row {row_number}")
+            for ticker, value, status in zip(("SPY", "IEF", "GLD"), forecast_values, forecast_statuses):
+                audit = audit_by_scope.get((row["split"], row["prediction_date"], ticker, row["model_name"]))
+                if audit is None or audit["forecast_status"] != status or not math.isclose(number_or_none(audit["predicted_vol_annualized"], "predicted_vol_annualized", 0) or -1, value or -2, rel_tol=0.0, abs_tol=1e-12):
+                    raise SnapshotError(f"portfolio forecast inputs do not match forecast_audit.csv on row {row_number}")
+        else:
+            raise SnapshotError(f"Unexpected portfolio_status on source row {row_number}: {row['portfolio_status']}")
+
+    rolling_keys: set[tuple[str, str, str, str]] = set()
+    for row_number, row in enumerate(sources["rollingMae20"], start=2):
+        key = (row["split"], row["ticker"], row["model_name"], row["window_end"])
+        if key in rolling_keys or row["split"] not in {"test", "validation"} or row["ticker"] not in tickers or row["model_name"] not in models:
+            raise SnapshotError(f"Unsupported or duplicate rolling_mae20.csv row {row_number}")
+        rolling_keys.add(key)
+        start = source_date(row["window_start"], "window_start", row_number)
+        end = source_date(row["window_end"], "window_end", row_number)
+        window_sessions, expected_n, evaluable_n = (int(row[field]) for field in ("window_session_count", "expected_anchor_count", "evaluable_count"))
+        coverage = signed_finite(row["coverage"], "coverage", row_number)
+        if start > end or window_sessions != 20 or expected_n <= 0 or not 0 < evaluable_n <= expected_n or not math.isclose(coverage, evaluable_n / expected_n, rel_tol=0.0, abs_tol=1e-10):
+            raise SnapshotError(f"rolling_mae20.csv source window/count/coverage is inconsistent on row {row_number}")
+        number_or_none(row["mae"], "mae", row_number)
+        number_or_none(row["rmse"], "rmse", row_number)
+
+    evaluations_by_id = {row["prediction_id"]: row for row in evaluation_rows if row["model_name"] == "ONLINE_SGD"}
+    drift_ids: set[str] = set()
+    for row_number, row in enumerate(sources["driftErrorTimeline"], start=2):
+        prediction_id = row["prediction_id"]
+        if prediction_id in drift_ids:
+            raise SnapshotError(f"Duplicate prediction ID in drift_error_timeline.csv row {row_number}")
+        drift_ids.add(prediction_id)
+        evaluation = evaluations_by_id.get(prediction_id)
+        if evaluation is None or evaluation["ticker"] != row["ticker"] or evaluation["prediction_date"] != row["prediction_date"]:
+            raise SnapshotError(f"Drift row does not match a B3 Test evaluation at row {row_number}")
+        if not math.isclose(signed_finite(row["absolute_error_evaluation"], "absolute_error_evaluation", row_number), float(evaluation["absolute_error"]), rel_tol=0.0, abs_tol=1e-12):
+            raise SnapshotError(f"Drift error disagrees with evaluation.csv on row {row_number}")
+        signed_finite(row["absolute_error_adwin"], "absolute_error_adwin", row_number)
+        if source_bool(row["drift_detected"], "drift_detected", row_number) or source_bool(row["alert_record_present"], "alert_record_present", row_number):
+            raise SnapshotError("Pinned B3 Test drift source contains an unapproved alert event")
+        if signed_finite(row["adwin_delta"], "adwin_delta", row_number) <= 0 or int(row["adwin_width"]) <= 0:
+            raise SnapshotError(f"Invalid ADWIN diagnostics on row {row_number}")
+        signed_finite(row["adwin_estimation"], "adwin_estimation", row_number)
+    if drift_ids != set(evaluations_by_id):
+        raise SnapshotError("Drift timeline does not cover the verified B3 Test evaluation set")
+
+    h1_results = sources["h1Results"]
+    h1_by_ticker: dict[str, dict[str, str]] = {}
+    for row_number, row in enumerate(h1_results, start=2):
+        if row["ticker"] not in tickers or row["ticker"] in h1_by_ticker:
+            raise SnapshotError(f"Unsupported or duplicate H1 result at row {row_number}")
+        h1_by_ticker[row["ticker"]] = row
+        if int(row["n"]) <= 0 or int(row["n"]) != int(row["expected_n"]) or int(row["hac_lag"]) != 5:
+            raise SnapshotError(f"H1 primary results must use the complete Train sample and HAC lag 5 on row {row_number}")
+        for field in ("beta", "intercept", "hac_se", "test_statistic", "p_raw_one_sided", "p_holm", "ci95_lower", "ci95_upper"):
+            signed_finite(row[field], field, row_number)
+
+    scatter_counts: dict[str, int] = {ticker: 0 for ticker in tickers}
+    scatter_keys: set[tuple[str, str]] = set()
+    for row_number, row in enumerate(sources["h1ScatterData"], start=2):
+        if row["split"] != "train" or row["ticker"] not in tickers:
+            raise SnapshotError(f"H1 scatter data must be Train-only on row {row_number}")
+        key = (row["date"], row["ticker"])
+        if key in scatter_keys:
+            raise SnapshotError(f"Duplicate H1 scatter observation on row {row_number}")
+        scatter_keys.add(key)
+        source_date(row["date"], "date", row_number)
+        source_date(row["target_end_date"], "target_end_date", row_number)
+        signed_finite(row["rv_5d"], "rv_5d", row_number)
+        signed_finite(row["target_realized_vol_5d"], "target_realized_vol_5d", row_number)
+        scatter_counts[row["ticker"]] += 1
+    if set(h1_by_ticker) != tickers or any(scatter_counts[ticker] != int(h1_by_ticker[ticker]["n"]) for ticker in tickers):
+        raise SnapshotError("H1 scatter sample counts do not match H1_results.csv")
+
+    sensitivity_keys: set[tuple[str, int]] = set()
+    for row_number, row in enumerate(sources["h1Sensitivity"], start=2):
+        lag, n = int(row["hac_maxlags"]), int(row["n"])
+        key = (row["ticker"], lag)
+        if row["ticker"] not in tickers or lag not in {5, 10, 20} or key in sensitivity_keys or row["status"] != "computed":
+            raise SnapshotError(f"Unsupported or duplicate H1 sensitivity row {row_number}")
+        sensitivity_keys.add(key)
+        for field in ("beta", "intercept", "hac_se", "test_statistic", "p_raw_one_sided", "ci95_lower", "ci95_upper"):
+            signed_finite(row[field], field, row_number)
+        if n != int(h1_by_ticker[row["ticker"]]["n"]):
+            raise SnapshotError(f"H1 sensitivity sample size differs from the primary row on {row_number}")
+        if lag == 5 and not math.isclose(float(row["beta"]), float(h1_by_ticker[row["ticker"]]["beta"]), rel_tol=0.0, abs_tol=1e-12):
+            raise SnapshotError(f"H1 sensitivity lag 5 does not match the primary estimate on row {row_number}")
+
+    hypothesis_keys: set[tuple[str, str]] = set()
+    for row_number, row in enumerate(sources["hypothesisResults"], start=2):
+        key = (row["hypothesis_id"], row["ticker_or_macro"])
+        expected_split = "train" if row["hypothesis_id"] == "H1" else "test"
+        if key in hypothesis_keys or row["dataset_split"] != expected_split or (row["hypothesis_id"] == "H1" and row["ticker_or_macro"] not in tickers) or (row["hypothesis_id"] in {"H2", "H3"} and row["ticker_or_macro"] != "MACRO"):
+            raise SnapshotError(f"Hypothesis split/ticker identity is inconsistent on row {row_number}")
+        hypothesis_keys.add(key)
+        ticker_counts = source_json(row["paired_n_by_ticker"], "paired_n_by_ticker", row_number)
+        interval = source_json(row["confidence_interval_95"], "confidence_interval_95", row_number)
+        if not isinstance(ticker_counts, dict) or any(ticker not in tickers or not isinstance(n, int) or n < 0 for ticker, n in ticker_counts.items()) or not ticker_counts or not isinstance(interval, list) or len(interval) != 2:
+            raise SnapshotError(f"Hypothesis nested JSON values are malformed on row {row_number}")
+        for field in ("alpha", "test_statistic", "effect_size", "raw_p_value", "adjusted_p_value", "confidence_interval_95"):
+            if field == "confidence_interval_95":
+                for item in interval:
+                    signed_finite(str(item), field, row_number)
+            else:
+                value = signed_finite(row[field], field, row_number)
+                if field in {"alpha", "raw_p_value", "adjusted_p_value"} and not 0 <= value <= 1:
+                    raise SnapshotError(f"Invalid hypothesis probability value on row {row_number}")
+        if int(row["n_paired"]) > int(row["n_expected"]):
+            raise SnapshotError(f"Hypothesis paired sample exceeds expected sample on row {row_number}")
+    expected_hypothesis_keys = {("H1", ticker) for ticker in tickers} | {("H2", "MACRO"), ("H3", "MACRO")}
+    if hypothesis_keys != expected_hypothesis_keys:
+        raise SnapshotError("Hypothesis source does not contain the required H1–H3 rows")
+
+    bootstrap_keys: set[tuple[str, int]] = set()
+    for row_number, row in enumerate(sources["bootstrapDiagnostics"], start=2):
+        key = (row["hypothesis_id"], int(row["block_length_xnys_sessions"]))
+        if key[0] not in {"H2", "H3"} or key[1] not in {5, 20} or key in bootstrap_keys or row["status"] != "COMPUTED":
+            raise SnapshotError(f"Unsupported or duplicate bootstrap diagnostic row {row_number}")
+        bootstrap_keys.add(key)
+        nested = source_json(row["n_by_ticker"], "n_by_ticker", row_number)
+        if not isinstance(nested, dict) or set(nested) != tickers or any(not isinstance(n, int) or n <= 0 for n in nested.values()):
+            raise SnapshotError(f"Bootstrap ticker counts are malformed on row {row_number}")
+        for field in ("observed_delta", "bootstrap_standard_error", "ci95_lower", "ci95_upper", "p_raw_one_sided"):
+            signed_finite(row[field], field, row_number)
+    if bootstrap_keys != {(hypothesis, lag) for hypothesis in ("H2", "H3") for lag in (5, 20)}:
+        raise SnapshotError("Bootstrap diagnostic source does not contain H2/H3 sensitivity lags 5 and 20")
+
+    high_vol_keys: set[tuple[str, str, str]] = set()
+    for row_number, row in enumerate(sources["highVolatilityMetrics"], start=2):
+        key = (row["split"], row["ticker"], row["model_name"])
+        if row["split"] not in {"test", "validation"} or row["ticker"] not in tickers or row["model_name"] not in models or key in high_vol_keys:
+            raise SnapshotError(f"Unsupported or duplicate high-volatility row {row_number}")
+        high_vol_keys.add(key)
+        if int(row["threshold_train_n"]) <= 0:
+            raise SnapshotError(f"High-volatility threshold sample is missing on row {row_number}")
+        count = int(row["high_vol_target_anchor_count"])
+        evaluable = int(row["high_vol_common_evaluable_n"])
+        if evaluable > count:
+            raise SnapshotError(f"High-volatility evaluable count exceeds the subset on row {row_number}")
+        if evaluable == 0:
+            if any(row[field].strip() for field in ("mae", "rmse", "evaluation_coverage")):
+                raise SnapshotError(f"Zero-sample high-volatility row must keep metrics blank on row {row_number}")
+        else:
+            for field in ("mae", "rmse", "evaluation_coverage"):
+                number_or_none(row[field], field, row_number)
+        if row["split"] == "test" and row["ticker"] == "IEF" and (count != 0 or evaluable != 0 or any(row[field].strip() for field in ("mae", "rmse", "evaluation_coverage"))):
+            raise SnapshotError("IEF Test high-volatility metrics must remain blank at n=0")
 
 
 def validate_json_identity(
@@ -194,7 +431,11 @@ def verify_archive(repo_root: Path, policy: dict[str, Any]) -> tuple[dict[str, b
             raise SnapshotError("Handoff member hashes differ from the pinned adapter policy")
 
         member_names = policy["members"]
-        required = [member_names[key] for key in ("sourceIdentity", "executionManifest", "stage05Manifest", "forecastAudit", "evaluation")]
+        required = [member_names[key] for key in (
+            "sourceIdentity", "executionManifest", "stage05Manifest", "forecastAudit", "evaluation",
+            "modelMetrics", "pairComparisons", "coverage", "portfolioRisk", "rollingMae20", "driftErrorTimeline",
+            "h1ScatterData", "h1Results", "h1Sensitivity", "hypothesisResults", "bootstrapDiagnostics", "highVolatilityMetrics",
+        )]
         for name in required:
             if name not in internal_member_checksums:
                 raise SnapshotError(f"Required handoff member is missing: {name}")
@@ -214,9 +455,111 @@ def validate_handoff_csvs(payloads: dict[str, bytes], policy: dict[str, Any]) ->
     headers = policy["expectedHeaders"]
     audit_rows, audit_headers = parse_csv_bytes(payloads[members["forecastAudit"]], members["forecastAudit"], headers["forecastAudit"])
     evaluation_rows, evaluation_headers = parse_csv_bytes(payloads[members["evaluation"]], members["evaluation"], headers["evaluation"])
+    model_metric_rows, model_metric_headers = parse_csv_bytes(payloads[members["modelMetrics"]], members["modelMetrics"], headers["modelMetrics"])
+    pair_rows, pair_headers = parse_csv_bytes(payloads[members["pairComparisons"]], members["pairComparisons"], headers["pairComparisons"])
+    coverage_rows, coverage_headers = parse_csv_bytes(payloads[members["coverage"]], members["coverage"], headers["coverage"])
     counts = policy["expectedCounts"]
     if len(audit_rows) != counts["forecastAuditRows"] or len(evaluation_rows) != counts["evaluationRows"]:
         raise SnapshotError("CSV row counts do not match the pinned review snapshot")
+    if len(model_metric_rows) != counts["modelMetricsRows"] or len(pair_rows) != counts["pairComparisonsRows"] or len(coverage_rows) != counts["coverageRows"]:
+        raise SnapshotError("D3 model or coverage CSV row counts do not match the pinned review snapshot")
+
+    additional_keys = (
+        "portfolioRisk", "rollingMae20", "driftErrorTimeline", "h1ScatterData", "h1Results", "h1Sensitivity",
+        "hypothesisResults", "bootstrapDiagnostics", "highVolatilityMetrics",
+    )
+    additional_rows: dict[str, list[dict[str, str]]] = {}
+    additional_headers: dict[str, list[str]] = {}
+    for key in additional_keys:
+        rows, actual_headers = parse_csv_bytes(payloads[members[key]], members[key], headers[key])
+        additional_rows[key] = rows
+        additional_headers[key] = actual_headers
+        if len(rows) != counts[f"{key}Rows"]:
+            raise SnapshotError(f"{members[key]} row count does not match the pinned review snapshot")
+
+    validate_d4_d5_sources(audit_rows, evaluation_rows, additional_rows, policy)
+
+    models = {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"}
+    tickers = {"SPY", "IEF", "GLD"}
+    macro_tickers = tickers | {"MACRO"}
+    metric_keys: set[tuple[str, str, str]] = set()
+    for row_number, row in enumerate(model_metric_rows, start=2):
+        if row["split"] != "test":
+            raise SnapshotError(f"model_metrics.csv is Test-only (row {row_number})")
+        if row["ticker"] not in macro_tickers or row["model_name"] not in models:
+            raise SnapshotError(f"Unsupported model/ticker in model_metrics.csv row {row_number}")
+        key = (row["split"], row["ticker"], row["model_name"])
+        if key in metric_keys:
+            raise SnapshotError(f"Duplicate model_metrics.csv row {row_number}")
+        metric_keys.add(key)
+        try:
+            paired_n = int(row["paired_n"])
+            expected_n = int(row["expected_eligible_anchor_count"])
+        except ValueError as error:
+            raise SnapshotError(f"Invalid model metric count on row {row_number}") from error
+        if paired_n <= 0 or expected_n <= 0 or paired_n > expected_n:
+            raise SnapshotError(f"Inconsistent model metric count on row {row_number}")
+        number_or_none(row["mae"], "mae", row_number)
+        number_or_none(row["rmse"], "rmse", row_number)
+        if not row["comparison_panel"].strip():
+            raise SnapshotError(f"Missing comparison_panel on model_metrics.csv row {row_number}")
+
+    baseline_by_comparison = {
+        "B0": "CONSTANT_BASELINE", "B1": "ROLLING_20D_BASELINE", "B2": "STATIC_SGD",
+        "H2": "STATIC_SGD", "H3": "ROLLING_20D_BASELINE",
+    }
+    pair_keys: set[tuple[str, str]] = set()
+    for row_number, row in enumerate(pair_rows, start=2):
+        comparison = row["comparison_id"]
+        if comparison not in baseline_by_comparison or row["baseline_model"] != baseline_by_comparison[comparison] or row["online_model"] != "ONLINE_SGD":
+            raise SnapshotError(f"Pair comparison identity is inconsistent on row {row_number}")
+        if row["ticker"] not in macro_tickers:
+            raise SnapshotError(f"Unsupported ticker in pair_comparisons.csv row {row_number}")
+        key = (comparison, row["ticker"])
+        if key in pair_keys:
+            raise SnapshotError(f"Duplicate pair_comparisons.csv row {row_number}")
+        pair_keys.add(key)
+        try:
+            paired_n = int(row["paired_n"])
+            common_n = int(row["common_all_four_n"])
+            signed_values = [float(row[field]) for field in ("delta_mae_baseline_minus_online", "relative_improvement_pct")]
+        except ValueError as error:
+            raise SnapshotError(f"Invalid paired comparison value on row {row_number}") from error
+        if paired_n <= 0 or common_n > paired_n or not all(math.isfinite(value) for value in signed_values):
+            raise SnapshotError(f"Inconsistent paired comparison value on row {row_number}")
+        for field in ("baseline_mae", "online_mae"):
+            number_or_none(row[field], field, row_number)
+        baseline_rmse = number_or_none(row["baseline_rmse"], "baseline_rmse", row_number)
+        online_rmse = number_or_none(row["online_rmse"], "online_rmse", row_number)
+        if (row["ticker"] == "MACRO") != (baseline_rmse is None and online_rmse is None):
+            raise SnapshotError(f"Macro RMSE must remain blank while ETF RMSE is present on pair row {row_number}")
+
+    coverage_keys: set[tuple[str, str, str]] = set()
+    for row_number, row in enumerate(coverage_rows, start=2):
+        if row["split"] not in {"test", "validation"} or row["ticker"] not in tickers or row["model_name"] not in models:
+            raise SnapshotError(f"Unsupported split/model/ticker in coverage.csv row {row_number}")
+        key = (row["split"], row["ticker"], row["model_name"])
+        if key in coverage_keys:
+            raise SnapshotError(f"Duplicate coverage.csv row {row_number}")
+        coverage_keys.add(key)
+        count_fields = (
+            "expected_eligible_prediction_anchors", "forecast_success_count", "invalid_forecast_count",
+            "missing_forecast_count", "mature_target_count", "pending_label_count",
+            "invalid_or_missing_target_count", "mature_evaluable_count", "common_panel_count",
+        )
+        try:
+            row_counts = {field: int(row[field]) for field in count_fields}
+            coverage_rates = [float(row[field]) for field in ("forecast_coverage", "evaluation_coverage")]
+        except ValueError as error:
+            raise SnapshotError(f"Invalid coverage value on row {row_number}") from error
+        if any(value < 0 for value in row_counts.values()) or any(not math.isfinite(value) or value < 0 or value > 1 for value in coverage_rates):
+            raise SnapshotError(f"Invalid nonnegative coverage value on row {row_number}")
+        forecast_count = row_counts["forecast_success_count"] + row_counts["invalid_forecast_count"] + row_counts["missing_forecast_count"]
+        target_count = row_counts["mature_target_count"] + row_counts["pending_label_count"] + row_counts["invalid_or_missing_target_count"]
+        if forecast_count != row_counts["expected_eligible_prediction_anchors"] or target_count != row_counts["expected_eligible_prediction_anchors"]:
+            raise SnapshotError(f"Coverage counts do not reconcile on row {row_number}")
+        if row_counts["mature_evaluable_count"] > row_counts["mature_target_count"] or row_counts["common_panel_count"] > row_counts["mature_evaluable_count"]:
+            raise SnapshotError(f"Coverage maturity counts are inconsistent on row {row_number}")
 
     prediction_ids: set[str] = set()
     for row_number, row in enumerate(audit_rows, start=2):
@@ -261,10 +604,18 @@ def validate_handoff_csvs(payloads: dict[str, bytes], policy: dict[str, Any]) ->
         "testForecastRows": len(test_rows),
         "testEvaluableRows": len(evaluable_rows),
         "testPendingRows": len(pending_rows),
+        "modelMetricsRows": len(model_metric_rows),
+        "pairComparisonsRows": len(pair_rows),
+        "coverageRows": len(coverage_rows),
+        **{f"{key}Rows": len(additional_rows[key]) for key in additional_keys},
         "recordedTestDates": len({row["prediction_date"] for row in test_rows}),
     }
     return audit_headers, audit_rows, evaluation_rows, {
-        "headers": {"forecastAudit": audit_headers, "evaluation": evaluation_headers},
+        "headers": {
+            "forecastAudit": audit_headers, "evaluation": evaluation_headers,
+            "modelMetrics": model_metric_headers, "pairComparisons": pair_headers, "coverage": coverage_headers,
+            **additional_headers,
+        },
         "counts": summary,
     }
 
@@ -296,11 +647,20 @@ def safe_replace_generated_directory(target: Path, expected_evaluation_id: str, 
         raise SnapshotError(f"Refusing to replace an invalid snapshot marker: {target}") from error
     if existing.get("evaluationId") != expected_evaluation_id or existing.get("sourceZipSha256") != expected_zip_sha:
         raise SnapshotError(f"Refusing to replace a different snapshot in {target}")
-    expected_names = {"forecast_audit.csv", "evaluation.csv", "dashboard_snapshot_manifest.json"}
-    if {path.name for path in target.iterdir()} != expected_names:
+    public_outputs = existing.get("files", {})
+    approved_names = {
+        "forecast_audit.csv", "evaluation.csv", "model_metrics.csv", "pair_comparisons.csv", "coverage.csv",
+        "portfolio_risk.csv", "rolling_mae20.csv", "drift_error_timeline.csv", "H1_scatter_data.csv", "H1_results.csv",
+        "H1_sensitivity.csv", "hypothesis_results.csv", "bootstrap_diagnostics.csv", "high_volatility_metrics.csv",
+    }
+    artifact_names = {artifact.get("path") for artifact in public_outputs.values()}
+    expected_names = artifact_names | {"dashboard_snapshot_manifest.json"}
+    if not artifact_names or not artifact_names.issubset(approved_names) or {path.name for path in target.iterdir()} != expected_names:
         raise SnapshotError(f"Refusing to replace unexpected files in {target}")
-    for filename, member_key in (("forecast_audit.csv", "forecastAudit"), ("evaluation.csv", "evaluation")):
-        artifact = existing.get("files", {}).get(member_key, {})
+    for artifact in public_outputs.values():
+        filename = artifact.get("path")
+        if filename not in approved_names:
+            raise SnapshotError(f"Refusing to replace unexpected generated artifact: {filename}")
         digest = hashlib.sha256((target / filename).read_bytes()).hexdigest()
         if digest != artifact.get("sha256"):
             raise SnapshotError(f"Refusing to replace a modified generated artifact: {filename}")
@@ -321,17 +681,22 @@ def prepare_snapshot(repo_root: Path, output_root: Path, policy_path: Path) -> P
     temporary.mkdir()
     try:
         public_files: dict[str, dict[str, Any]] = {}
-        for key, filename, member_key in (
-            ("forecastAudit", policy["publicOutputs"]["forecastAudit"], "forecastAudit"),
-            ("evaluation", policy["publicOutputs"]["evaluation"], "evaluation"),
-        ):
+        count_keys = {
+            "forecastAudit": "forecastAuditRows", "evaluation": "evaluationRows", "modelMetrics": "modelMetricsRows",
+            "pairComparisons": "pairComparisonsRows", "coverage": "coverageRows",
+            "portfolioRisk": "portfolioRiskRows", "rollingMae20": "rollingMae20Rows", "driftErrorTimeline": "driftErrorTimelineRows",
+            "h1ScatterData": "h1ScatterDataRows", "h1Results": "h1ResultsRows", "h1Sensitivity": "h1SensitivityRows",
+            "hypothesisResults": "hypothesisResultsRows", "bootstrapDiagnostics": "bootstrapDiagnosticsRows", "highVolatilityMetrics": "highVolatilityMetricsRows",
+        }
+        for key, filename in policy["publicOutputs"].items():
+            member_key = key
             payload = payloads[policy["members"][member_key]]
             (temporary / filename).write_bytes(payload)
             public_files[key] = {
                 "path": filename,
                 "sha256": sha256(payload),
                 "bytes": len(payload),
-                "rowCount": table_summary["counts"]["forecastAuditRows" if key == "forecastAudit" else "evaluationRows"],
+                "rowCount": table_summary["counts"][count_keys[key]],
                 "headers": table_summary["headers"][key],
             }
 
