@@ -8,13 +8,14 @@ One Stage 06 evaluation was frozen for this review pack. The output folder named
 
 ## Start here
 
-1. Open the offline report: [ml_results_review.html](../../dist/ml-results-handoff-82572c84/report/ml_results_review.html).
-2. Use the read-only [review notebook](../../notebooks/03_ml_results_review.ipynb) for tables, figures, and explanations.
-3. Inspect the frozen CSV/JSON files under [approved_results](../../dist/ml-results-handoff-82572c84/approved_results/).
-4. Verify exported files with [CHECKSUMS.sha256](../../dist/ml-results-handoff-82572c84/CHECKSUMS.sha256) and [source_identity.json](../../dist/ml-results-handoff-82572c84/source_identity.json).
-5. The portable archive is [ml-results-handoff-82572c84.zip](../../dist/ml-results-handoff-82572c84.zip); it is generated locally and intentionally ignored by Git.
+1. Read the [experiment overview](01_experiment_overview.md), [model performance](02_model_performance.md), [H1–H3 results](03_hypotheses_h1_h3.md), [portfolio and drift report](04_portfolio_and_drift.md), and [data dictionary](05_data_dictionary.md).
+2. Browse the [eight report figures](figures/); the charts are also embedded in the relevant report pages.
+3. Use the read-only [review notebook](../../notebooks/03_ml_results_review.ipynb) for tables, figures, and explanations.
+4. Download the [standalone offline HTML report](https://raw.githubusercontent.com/01aptx01/datasci-and-dataen-project/docs/ml-results-handoff/docs/ml-results/downloads/ml_results_review.html).
+5. Download the [complete ZIP bundle](https://raw.githubusercontent.com/01aptx01/datasci-and-dataen-project/docs/ml-results-handoff/docs/ml-results/downloads/ml-results-handoff-82572c84.zip).
+6. Verify the downloaded files with [SHA256SUMS.txt](downloads/SHA256SUMS.txt). After extracting the ZIP, verify its contents with [bundle-CHECKSUMS.sha256](downloads/bundle-CHECKSUMS.sha256).
 
-The `dist/` links above resolve in the working copy where the local Stage 06 artifacts exist. They will not resolve on GitHub or in a fresh clone until the ZIP is placed in an approved team file location.
+The direct download URLs point to this branch and will work after the reviewed files are committed and pushed. GitHub can display the Markdown reports and figures directly from this folder. The original generated `dist/` directory remains local and ignored by Git.
 
 ## Frozen identity
 
@@ -32,15 +33,15 @@ All model, hypothesis, and drift outputs in this handoff refer to this same Eval
 
 ## What is inside
 
-- `01_experiment_overview.md` — research question, scope, periods, target, and limitations.
-- `02_model_performance.md` — Test metrics, paired comparisons, coverage, and high-volatility subset.
-- `03_hypotheses_h1_h3.md` — Stage 06 H1–H3 results and sensitivity outputs.
-- `04_portfolio_and_drift.md` — ADWIN monitor and forecast-based portfolio risk.
-- `05_data_dictionary.md` — key columns, units, statuses, and file groups.
-- `verification_report.md` — source, notebook, statistical, security, and packaging gates.
-- `dashboard_data_requirements.md` — future UI data requirements only; no API or dashboard is implemented.
-- `figures/` — eight figures generated from the frozen result files.
-- `dist/ml-results-handoff-82572c84/` — local portable review pack, including the CSV snapshot, notebook, HTML, QA evidence, and ZIP.
+- [01_experiment_overview.md](01_experiment_overview.md) — research question, scope, periods, target, and limitations.
+- [02_model_performance.md](02_model_performance.md) — Test metrics, paired comparisons, coverage, and high-volatility subset.
+- [03_hypotheses_h1_h3.md](03_hypotheses_h1_h3.md) — Stage 06 H1–H3 results and sensitivity outputs.
+- [04_portfolio_and_drift.md](04_portfolio_and_drift.md) — ADWIN monitor and forecast-based portfolio risk.
+- [05_data_dictionary.md](05_data_dictionary.md) — key columns, units, statuses, and file groups.
+- [verification_report.md](verification_report.md) — source, notebook, statistical, security, and packaging gates.
+- [dashboard_data_requirements.md](dashboard_data_requirements.md) — future UI data requirements only; no API or dashboard is implemented.
+- [figures/](figures/) — eight figures generated from the frozen result files.
+- [downloads/](downloads/) — shareable ZIP, standalone HTML report, and SHA-256 checksum files.
 
 ## Open the notebook
 
