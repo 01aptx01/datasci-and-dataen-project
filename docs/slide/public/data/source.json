@@ -1,0 +1,11 @@
+{
+  "source_archive": "ml-results-handoff-82572c84.zip",
+  "sha256": "20dff91705ffbb60ab579f5c1f907537015ec2f52be001d5dfd24ea8978ae3f5",
+  "scope": "frozen_test_and_H1_train",
+  "rows": {
+    "forecast_audit": 2976,
+    "portfolio_risk": 248,
+    "drift_error_timeline": 729,
+    "H1_scatter_data": 2256
+  }
+}
