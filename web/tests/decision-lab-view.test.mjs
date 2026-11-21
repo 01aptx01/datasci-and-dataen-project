@@ -90,3 +90,29 @@ test("Scenario Lab pairs numeric weight fields with adjustable sliders", () => {
   assert.match(html, /type="number"[^>]*data-field="scenario-weight"/);
   assert.match(html, /type="range"[^>]*data-field="scenario-weight-slider"/);
 });
+
+test("Scenario Lab keeps editors, selected-day comparison, timeline, and budget together", () => {
+  const decision = {
+    ...createDefaultFinancialScenarioState(),
+    activeTab: "scenarios",
+    scenarioB: [0.6, 0.2, 0.2],
+    budgetAnnualizedDecimal: 0.09,
+  };
+  const html = render(decision);
+  assert.match(html, /class="scenario-workbench"/);
+  assert.match(html, /class="scenario-editors"/);
+  assert.match(html, /class="scenario-analysis"/);
+  assert.match(html, /class="scenario-selected-day"/);
+  assert.match(html, /Difference · B − A/);
+  assert.match(html, /id="scenario-risk-budget-input"/);
+  assert.match(html, /data-scenario-budget-summary/);
+  assert.match(html, /Historical risk · fixed Scenario A\/B weights/);
+  assert.match(html, /น้ำหนัก SPY/);
+});
+
+test("Scenario Lab makes an unset budget explicit without inventing a count", () => {
+  const html = render({ ...createDefaultFinancialScenarioState(), activeTab: "scenarios" });
+  assert.match(html, /ยังไม่ได้ตั้ง/);
+  assert.match(html, /ตั้ง budget เพื่อดูจำนวนวันที่สูงกว่าขีด/);
+  assert.doesNotMatch(html, /0\/1 usable dates สูงกว่าขีด/);
+});

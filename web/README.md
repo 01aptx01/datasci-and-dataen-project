@@ -1,6 +1,6 @@
 # DEDS Adaptive Portfolio Risk Lab — frozen snapshot dashboard
 
-This folder contains the D1–D7 read-only dashboard and its build-time adapter for one pinned Stage 06 review snapshot. It does not import or run the Python ML pipeline.
+This folder contains the D1–D9, eight-route read-only dashboard and its build-time adapter for one pinned Stage 06 review snapshot. It includes saved-session Replay, B0–B3 evidence views, Drift review, and a covariance-based Financial Decision Lab. It does not import or run the Python ML pipeline.
 
 ## Run locally
 
@@ -67,4 +67,4 @@ Build `web/dist` and publish its contents beneath a directory with an `index.htm
 
 ## Verification
 
-`npm test` covers pinned checksum and identity failures, missing inputs, source schemas, Pending rows, portfolio parity and invalid weights, forecast filtering, and CSV/metadata construction. Browser and responsive checks are recorded in [D3–D7 verification](docs/D3_D7_VERIFICATION.md). D1–D2 handoff evidence remains in `docs/D1_D2_VERIFICATION.md`.
+`npm test` covers pinned checksum and identity failures, missing inputs, source schemas, Pending rows, portfolio parity and invalid weights, forecast filtering, and CSV/metadata construction. Browser and responsive checks for the earlier dashboard phases are recorded in [D3–D7 verification](docs/D3_D7_VERIFICATION.md), with handoff evidence in `docs/D1_D2_VERIFICATION.md`. The current acceptance branch records its browser findings and remaining coverage in [the final UX acceptance report](../docs/dashboard/FINAL_UX_ACCEPTANCE_REPORT.md).
