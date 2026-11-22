@@ -144,3 +144,14 @@
 .st-replay-advanced .st-fd-top-features > li { min-width: 0; padding: 14px; border: 1px solid var(--st-border); border-radius: 8px; background: #f8fafd; }
 .st-replay-advanced .st-fd-detail-link { display: inline-flex; margin-top: 12px; }
 @media (max-width: 760px) { .st-replay-advanced .st-fd-top-features, .st-replay-advanced .st-fd-selected-metrics { grid-template-columns: 1fr; } }
+.st-model-details { display: grid; gap: 12px; }
+.st-model-details > details { min-width: 0; }
+.st-model-details summary { cursor: pointer; font-weight: 700; }
+.st-model-details p { color: var(--st-ink-soft); line-height: 1.6; }
+.st-model-metrics .st-model-group th { padding: 10px 14px; background: #e9effb; color: #173c8d; text-align: left; }
+.st-model-metrics .st-model-macro { background: #f7f9fc; font-weight: 700; }
+.st-model-metrics tbody + tbody { border-top: 8px solid white; }
+.st-winner-label { display: block; color: #006d30; font-size: 12px; font-weight: 700; margin-bottom: 5px; }
+.st-compare-best .st-compare-track i { background: #07845a; }
+.st-compare-best > div:first-child strong { color: #08734f; }
+.st-compare-row > div:first-child { flex-wrap: wrap; }
