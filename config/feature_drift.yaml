@@ -1,0 +1,55 @@
+schema_version: "1.0.0"
+market: XNYS
+evaluation_id: "82572c8417041976e1ce540d921e29a5f28c1d5d2a2d953a74c03582e7ca9be2"
+replay_id: "3cbf81eb9242d8894d2f67f39065a17ff1ef55a2e098773aead915949ab11b12"
+strict_cutoff: "2026-09-25"
+feature_set_version: "2.0.0"
+
+tickers: [SPY, IEF, GLD]
+core_features:
+  - ret_1d_t
+  - ret_lag_1d
+  - ret_lag_2d
+  - ret_trailing_5d
+  - ret_trailing_20d
+  - rv_5d
+  - rv_20d
+  - rv_60d
+
+splits:
+  train: ["2021-09-27", "2024-09-30"]
+  validation: ["2024-10-01", "2025-09-30"]
+  test: ["2025-10-01", "2026-09-25"]
+
+windows:
+  sizes: [60, 120]
+  primary: 60
+
+metrics:
+  quantile_bins: 10
+  psi_smoothing: 0.5
+  threshold_percentile: 95.0
+  threshold_quantile_method: linear
+  minimum_calibration_windows: 100
+  calibration_split: validation
+
+sources:
+  snapshot_policy: web/snapshot.policy.json
+  snapshot_handoff_zip: docs/ml-results/downloads/ml-results-handoff-82572c84.zip
+  features: data/curated/asset_volatility_features.parquet
+  labels: data/curated/asset_volatility_labels.parquet
+  feature_manifest: data/audit/features/run_id=feat_readiness_20261115_01/manifest.json
+  feature_transaction: data/audit/features/run_id=feat_readiness_20261115_01/publish-transaction.json
+  target_manifest: data/audit/targets/run_id=target_integration_20261118_04/manifest.json
+  target_transaction: data/audit/targets/run_id=target_integration_20261118_04/publish-transaction.json
+  stage03_report: data/audit/ml_dataset/run_id=stage03_h1_20261120_01/ML_dataset_preparation_report.json
+  stage03_directory: data/audit/ml_dataset/run_id=stage03_h1_20261120_01
+  stage04_directory: data/processed/ml_training/run_id=stage04_20261121_03
+  stage04_manifest: data/processed/ml_training/run_id=stage04_20261121_03/training_manifest.json
+  stage06_directory: data/processed/ml_evaluation/experiments/82572c8417041976e1ce540d921e29a5f28c1d5d2a2d953a74c03582e7ca9be2
+  stage06_manifest: data/processed/ml_evaluation/experiments/82572c8417041976e1ce540d921e29a5f28c1d5d2a2d953a74c03582e7ca9be2/execution_manifest.json
+  correlation_parquet: data/curated/asset_rolling_correlations.parquet
+
+outputs:
+  root: data/processed/feature_drift
+  active_pointer: data/processed/feature_drift/ACTIVE.json
