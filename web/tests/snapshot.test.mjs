@@ -64,7 +64,11 @@ test("the real frozen snapshot loads into typed Test sessions with Pending label
   assert.equal(loaded.coverage.length, policy.expectedCounts.coverageRows);
   assert.equal(loaded.portfolioRisk.length, policy.expectedCounts.portfolioRiskRows);
   assert.equal(loaded.rollingMae20.length, policy.expectedCounts.rollingMae20Rows);
-  assert.equal(loaded.driftTimeline.length, policy.expectedCounts.driftErrorTimelineRows);
+  if (policy.schemaVersion === "1.2.0") {
+    assert.deepEqual(loaded.driftTimeline, []);
+  } else {
+    assert.equal(loaded.driftTimeline.length, policy.expectedCounts.driftErrorTimelineRows);
+  }
   assert.equal(loaded.h1Scatter.length, policy.expectedCounts.h1ScatterDataRows);
   assert.equal(loaded.hypothesisResults.length, policy.expectedCounts.hypothesisResultsRows);
   assert.equal(loaded.highVolatilityMetrics.length, policy.expectedCounts.highVolatilityMetricsRows);
@@ -106,25 +110,14 @@ test("an Evaluation ID or Replay ID mismatch is rejected", () => {
 
 test("baseline schema 1.2.0 omits the retired B3 timeline while archived schemas require it", async () => {
   const currentPolicyInput = JSON.parse(JSON.stringify(policyInput));
-  currentPolicyInput.schemaVersion = "1.2.0";
-  delete currentPolicyInput.members.driftErrorTimeline;
-  delete currentPolicyInput.expectedHeaders.driftErrorTimeline;
-  delete currentPolicyInput.expectedCounts.driftErrorTimelineRows;
-  delete currentPolicyInput.expectedCounts.driftAlertRows;
-  delete currentPolicyInput.publicOutputs.driftErrorTimeline;
-  for (const member of Object.keys(currentPolicyInput.memberSha256)) {
-    if (member.toLowerCase().includes("drift_error_timeline.csv")) delete currentPolicyInput.memberSha256[member];
-  }
   const currentPolicy = parsePolicy(currentPolicyInput);
   assert.equal(currentPolicy.schemaVersion, "1.2.0");
   assert.equal(currentPolicy.members.driftErrorTimeline, undefined);
   assert.equal(currentPolicy.expectedCounts.driftErrorTimelineRows, undefined);
 
   const currentManifestInput = JSON.parse(JSON.stringify(manifestJson));
-  currentManifestInput.schemaVersion = "1.2.0";
-  delete currentManifestInput.expectedCounts.driftErrorTimelineRows;
-  delete currentManifestInput.expectedCounts.driftAlertRows;
-  delete currentManifestInput.files.driftErrorTimeline;
+  assert.equal(currentManifestInput.schemaVersion, currentPolicy.schemaVersion);
+  assert.equal(currentManifestInput.files.driftErrorTimeline, undefined);
   assert.doesNotThrow(() => parseSnapshotManifest(currentManifestInput, currentPolicy));
 
   const currentFiles = new Map([
@@ -147,15 +140,42 @@ test("baseline schema 1.2.0 omits the retired B3 timeline while archived schemas
   if (loaded.status === "ready") assert.deepEqual(loaded.driftTimeline, []);
   assert.ok(!requestedFiles.some((path) => path.endsWith("drift_error_timeline.csv")));
 
+  const archivedPolicyInput = JSON.parse(JSON.stringify(policyInput));
+  archivedPolicyInput.schemaVersion = "1.1.0";
+  const timelineMember = "approved_results/drift_error_timeline.csv";
+  const timelinePath = "drift_error_timeline.csv";
+  const timelineSha256 = "a".repeat(64);
+  const timelineHeaders = [
+    "prediction_id", "prediction_date", "ticker", "absolute_error_evaluation", "absolute_error_adwin",
+    "drift_detected", "adwin_delta", "adwin_width", "adwin_estimation", "alert_record_present",
+  ];
+  archivedPolicyInput.members.driftErrorTimeline = timelineMember;
+  archivedPolicyInput.memberSha256[timelineMember] = timelineSha256;
+  archivedPolicyInput.expectedHeaders.driftErrorTimeline = timelineHeaders;
+  archivedPolicyInput.expectedCounts.driftErrorTimelineRows = 0;
+  archivedPolicyInput.publicOutputs.driftErrorTimeline = timelinePath;
+  const archivedPolicy = parsePolicy(archivedPolicyInput);
+  const archivedManifestInput = JSON.parse(JSON.stringify(manifestJson));
+  archivedManifestInput.schemaVersion = "1.1.0";
+  archivedManifestInput.expectedCounts.driftErrorTimelineRows = 0;
+  archivedManifestInput.files.driftErrorTimeline = {
+    path: timelinePath,
+    sha256: timelineSha256,
+    bytes: 0,
+    rowCount: 0,
+    headers: timelineHeaders,
+  };
+  assert.doesNotThrow(() => parseSnapshotManifest(archivedManifestInput, archivedPolicy));
+
   for (const section of ["members", "expectedHeaders", "expectedCounts", "publicOutputs"]) {
-    const incompleteArchivedPolicy = JSON.parse(JSON.stringify(policyInput));
+    const incompleteArchivedPolicy = JSON.parse(JSON.stringify(archivedPolicyInput));
     delete incompleteArchivedPolicy[section][section === "expectedCounts" ? "driftErrorTimelineRows" : "driftErrorTimeline"];
     assert.throws(() => parsePolicy(incompleteArchivedPolicy), /requires the archived B3 drift error timeline fields/);
   }
 
-  const incompleteArchivedManifest = JSON.parse(JSON.stringify(manifestJson));
+  const incompleteArchivedManifest = JSON.parse(JSON.stringify(archivedManifestInput));
   delete incompleteArchivedManifest.expectedCounts.driftErrorTimelineRows;
-  assert.throws(() => parseSnapshotManifest(incompleteArchivedManifest, policy), /driftErrorTimelineRows is required/);
+  assert.throws(() => parseSnapshotManifest(incompleteArchivedManifest, archivedPolicy), /driftErrorTimelineRows is required/);
 });
 
 test("Pending rows preserve blank actual/error values and reject scored Pending values", () => {
@@ -240,7 +260,9 @@ test("D4–D5 sources keep frozen counts, splits, and source covariance parity",
   const sourceText = (key) => new TextDecoder().decode(sourceBytes[manifest.files[key].path]);
   const portfolio = parsePortfolioRisk(sourceText("portfolioRisk"), policy);
   const rolling = parseRollingMae20(sourceText("rollingMae20"), policy);
-  const drift = parseDriftTimeline(sourceText("driftErrorTimeline"), policy);
+  const drift = policy.publicOutputs.driftErrorTimeline
+    ? parseDriftTimeline(sourceText("driftErrorTimeline"), policy)
+    : [];
   const scatter = parseH1Scatter(sourceText("h1ScatterData"), policy);
   const h1 = parseH1Results(sourceText("h1Results"), policy);
   const sensitivity = parseH1Sensitivity(sourceText("h1Sensitivity"), policy);
@@ -253,7 +275,8 @@ test("D4–D5 sources keep frozen counts, splits, and source covariance parity",
   assert.equal(selected?.portfolioVol, 0.08127700892439489);
   assert.ok(Math.abs(computePortfolioVolatility(selected.covariance, selected.sourceWeights) - selected.portfolioVol) < 1e-10);
   assert.ok(rolling.every((row) => row.windowSessionCount === 20));
-  assert.ok(drift.every((row) => !row.driftDetected && !row.alertRecordPresent));
+  if (policy.schemaVersion === "1.2.0") assert.deepEqual(drift, []);
+  else assert.ok(drift.every((row) => !row.driftDetected && !row.alertRecordPresent));
   assert.ok(scatter.every((row) => row.split === "train"));
   assert.deepEqual(h1.map((row) => row.hacLag), [5, 5, 5]);
   assert.ok(sensitivity.some((row) => row.hacMaxlags === 10));
@@ -274,7 +297,7 @@ test("portfolio rows preserve the stored 20-session correlation fields and readi
     iefGld: 0.50740599971083689,
   });
   assert.equal(selected.correlationReady, true);
-  assert.equal(selected.correlationRunId, "feat_20261122T143142_ad87117a");
+  assert.equal(selected.correlationRunId, source.correlation_run_id);
 });
 
 test("an OK portfolio row rejects unready, out-of-range, or non-PSD correlations", () => {

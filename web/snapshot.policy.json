@@ -1,17 +1,17 @@
 {
-  "schemaVersion": "1.1.0",
+  "schemaVersion": "1.2.0",
   "source": {
     "repository": "01aptx01/datasci-and-dataen-project",
-    "handoffCommit": "175db30",
+    "handoffCommit": "8dab4b8",
     "mainCommitAtStart": "8a842bf373acf9b367e50280834c8ecb084d37b1",
-    "zipDir": "docs/ml-results/downloads/b4",
-    "zipName": "ml-results-handoff-b4-ae5cc8cc.zip",
-    "zipSha256": "4a471c360aeb28d7cc6b817600e32c2ee877a557c44043d75bc2bf1fde07c43c"
+    "zipDir": "docs/ml-results/downloads/no-b3-adwin",
+    "zipName": "ml-results-handoff-no-b3-adwin-12b9f92c.zip",
+    "zipSha256": "a9bc4b5e2de0e93faf475c3810eea49e720cb56e9bb10fa41e8cd3f96c5063ad"
   },
   "identity": {
-    "evaluationId": "ae5cc8cc1cc6a1245ed7a0c789037c9545614868023e67f9b0bfbf84ee594e1b",
-    "replayId": "23616e7bab42de22ca0bb3153dfec8b695ea1d51ff9ad816bd02e14f849acfe6",
-    "baselineGitCommit": "175db305f39a9fa19fb4ba3cdb47bed037d26abb",
+    "evaluationId": "12b9f92cbdcbb7816a767f8565bb004f3243b114480e5f3f316c497af4014e76",
+    "replayId": "0f6dad49e04b684df6d32d7abca7738fa8c06774c5e848476b62e8fa46a2c99a",
+    "baselineGitCommit": "8dab4b8b2b8589054669294ddf1848ffaed7c8f3",
     "strictCutoff": "2026-09-25",
     "reportApproval": "PENDING"
   },
@@ -26,7 +26,6 @@
     "coverage": "approved_results/coverage.csv",
     "portfolioRisk": "approved_results/portfolio_risk.csv",
     "rollingMae20": "approved_results/rolling_mae20.csv",
-    "driftErrorTimeline": "approved_results/drift_error_timeline.csv",
     "h1ScatterData": "approved_results/H1_scatter_data.csv",
     "h1Results": "approved_results/H1_results.csv",
     "h1Sensitivity": "approved_results/H1_sensitivity.csv",
@@ -37,21 +36,20 @@
     "referenceB0B3Metrics": "approved_results/reference_b0_b3_metrics.csv"
   },
   "memberSha256": {
-    "source_identity.json": "d547e8bcf68669f4781abb426914708716f67aa0311e09f931e836ea2fc190d6",
-    "approved_results/execution_manifest.json": "37fdcf3d2e0b494e97986c72f5358299bc2112a693a6a3a25392d561367baa1a",
-    "approved_results/stage05_experiment_manifest.json": "5d769c3d6b001908e3b50d304b07e7dd9452ad5c822e34823ef0467f5398c545",
-    "approved_results/forecast_audit.csv": "94f9af8169c7dd6546e26c258e30e677e4368ee4df8a99991b9f038348aeb8f5",
-    "approved_results/evaluation.csv": "b46463b794cf988c6d52d7e649a09772501ee50bae28b6a9b93084023cc657c1",
+    "source_identity.json": "65be5a44fd1ddc331608d84f951d06965024e1d57914008ef7b1073874ce544c",
+    "approved_results/execution_manifest.json": "7641f274e8aeb2b1424fe046a21b7f620e9224e7a130ad04762c9baed8424855",
+    "approved_results/stage05_experiment_manifest.json": "63033387bbb766e20697b0a6084facf07e9af5aa34cc959156596dceb9cdd9ae",
+    "approved_results/forecast_audit.csv": "39f6e9e6951116b7fc65cc0bf242fad52dd370caeef56805fc72aa4a4c0b8a68",
+    "approved_results/evaluation.csv": "a29932e9377bd6b9f3da0efd998f6a07dc871b96ac7d7dd77bb94f975f101237",
     "approved_results/model_metrics.csv": "cfdc539a6927f70ff7b71228f883db8c9b0605a90eeacdf9366a9d143fd062eb",
     "approved_results/pair_comparisons.csv": "577ec7afc12d3d44bef6a8b1bae50caae044ec89280079d553578fa9b2c5c5dc",
     "approved_results/coverage.csv": "b0f5e08e0c9cac40dc111462508570283e2f7f369f97839fd5cbf04515b68e7d",
-    "approved_results/portfolio_risk.csv": "8c46f4da9d9ef019e9b64a00388d541aef4245d219cd17cb8a0756b5c17e0ae0",
+    "approved_results/portfolio_risk.csv": "0063dea1286dd0118ae5d23fbcf9d5e25f949180a92a639ee6ff302eed6a2d85",
     "approved_results/rolling_mae20.csv": "7eced8dcda5cca5442d15ac7a3dc659e40a49cfa160f31d3748a45e019df6109",
-    "approved_results/drift_error_timeline.csv": "6bb5081904c67849271031caad57595a2466d2f2c3126de0a22285f9b0650f62",
     "approved_results/H1_scatter_data.csv": "cff924768fe656f6248ef57861d9b4e25a2abd3e59c585cb78d274c4ffbe1754",
     "approved_results/H1_results.csv": "7f2777f1707b61cb292fb4818afc4952206de9ed5f15e9e08acd7bc93f7865e9",
     "approved_results/H1_sensitivity.csv": "ab68e60762e48a628b7bb22351d0eb37c306d4c26ce6f7da9beab8fdfa5fbe81",
-    "approved_results/hypothesis_results.csv": "bb1c312366e71cf871426661cab71a3c5b29b94deeb77b651bf53ee1ab1e4c37",
+    "approved_results/hypothesis_results.csv": "3f5f7662acbb3dbb62d952584c42ada0a0db1a18d0db7631c31c2cd9d3c4f48d",
     "approved_results/bootstrap_diagnostics.csv": "32c346799ecedf4d9dbb8b5bd93b05d371445fb98818c1582de84bdfe6540b3d",
     "approved_results/high_volatility_metrics.csv": "aff0b55bafb281f31f9dafe3d260837944885a63465d85087037e0b8a12d3ab4",
     "approved_results/b4_comparisons.csv": "35df980f5f1c170cd0c8fa6a48b11599187a60231f41be59c67677119bbad0ef",
@@ -206,18 +204,6 @@
       "mae",
       "rmse"
     ],
-    "driftErrorTimeline": [
-      "prediction_id",
-      "prediction_date",
-      "ticker",
-      "absolute_error_evaluation",
-      "absolute_error_adwin",
-      "drift_detected",
-      "adwin_delta",
-      "adwin_width",
-      "adwin_estimation",
-      "alert_record_present"
-    ],
     "h1ScatterData": [
       "date",
       "ticker",
@@ -356,7 +342,6 @@
     "coverageRows": 30,
     "portfolioRiskRows": 2490,
     "rollingMae20Rows": 6900,
-    "driftErrorTimelineRows": 729,
     "h1ScatterDataRows": 2256,
     "h1ResultsRows": 3,
     "h1SensitivityRows": 9,
@@ -377,7 +362,6 @@
     "coverage": "coverage.csv",
     "portfolioRisk": "portfolio_risk.csv",
     "rollingMae20": "rolling_mae20.csv",
-    "driftErrorTimeline": "drift_error_timeline.csv",
     "h1ScatterData": "H1_scatter_data.csv",
     "h1Results": "H1_results.csv",
     "h1Sensitivity": "H1_sensitivity.csv",
@@ -390,10 +374,10 @@
   "policySidecar": {
     "schemaVersion": "1.2.0",
     "policyVersion": "1.0.0",
-    "policyEvaluationId": "f6dd8cb131d7d7bebaefa0ca70f47e068956e5c2f4f99e448b1511711ddde844",
-    "policyReplayExperimentId": "5003376f7637a3b04f63719dd499f67946aa3b0f30bafd27772e1d20d4ec9779",
+    "policyEvaluationId": "b2dfc853a4c9c2eba4d99c91360abd39d9226c157b26bc5509d7977cd43e9d9e",
+    "policyReplayExperimentId": "77e80d8ec871dddcdc50fc617662eb60269b6b2333e913238d58a18b6da91b35",
     "zipDir": "docs/ml-results/downloads/policy",
-    "zipName": "ml-results-policy-f6dd8cb1.zip",
-    "zipSha256": "86747b0378e0478b1fb819e5e755c39e4fecfc3b43d12793a43f55c74fdbc5ec"
+    "zipName": "ml-results-policy-b2dfc853.zip",
+    "zipSha256": "43ae02ffc90c18575b51af5eef0b5e652aa8e02b54fdbd980f07caeba7203bbe"
   }
 }
