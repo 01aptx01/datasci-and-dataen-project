@@ -162,6 +162,7 @@ def _synthetic_prepared() -> tuple[PreparedDataset, pd.DataFrame]:
 def test_training_config_locks_grid_and_deterministic_selection_rules() -> None:
     config = TrainingConfig.from_yaml()
 
+    assert config.training_config_version == "1.1.0"
     assert len(config.grid) == 27
     assert {item.eta0 for item in config.grid} == {0.0001, 0.001, 0.01}
     assert {item.alpha for item in config.grid} == {1e-5, 1e-4, 1e-3}
@@ -169,6 +170,23 @@ def test_training_config_locks_grid_and_deterministic_selection_rules() -> None:
     assert config.coverage_policy == "all_expected_paired_anchors_required"
     assert config.tie_break_policy == "grid_order_with_absolute_tolerance"
     assert config.tie_tolerance == 1e-12
+
+
+def test_training_config_accepts_legacy_version_but_requires_current_version_for_b4(
+    tmp_path: Path,
+) -> None:
+    config_text = Path("config/ml_training.yaml").read_text(encoding="utf-8")
+    legacy_path = tmp_path / "legacy_ml_training.yaml"
+    legacy_path.write_text(
+        config_text.replace('training_config_version: "1.1.0"', 'training_config_version: "1.0.0"', 1),
+        encoding="utf-8",
+    )
+    legacy_config = TrainingConfig.from_yaml(legacy_path)
+
+    assert legacy_config.training_config_version == "1.0.0"
+    prepared, labels = _synthetic_prepared_b4()
+    with pytest.raises(TrainingError, match="1.0.0 predates B4"):
+        run_training_selection(prepared, labels, config=legacy_config, include_b4=True)
 
 
 def test_b0_uses_frozen_train_mean_and_b1_reads_same_day_rv20() -> None:

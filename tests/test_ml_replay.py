@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 from copy import deepcopy
 from datetime import date, timedelta
+import json
 from pathlib import Path
 import shutil
 
@@ -16,6 +18,7 @@ from sklearn.linear_model import LinearRegression
 from src.features.pipeline import CORE_FEATURE_COLUMNS, FEATURE_COLUMNS, SUPPORTED_TICKERS
 from src.ml_dataset.dataset import prepare_ml_dataset
 from src.ml_training import run_training_selection
+from src.ml_training.pipeline import B4_MODEL_VERSION
 from src.targets.pipeline import LABEL_COLUMNS
 
 
@@ -264,6 +267,86 @@ def test_replay_refuses_a_modified_stage04_model_artifact(
             output_root=tmp_path / "integrity-check",
             replay_end_date=date(2024, 10, 1),
         )
+
+
+def test_replay_rejects_unsupported_b4_model_version_in_bundle(
+    synthetic_stage04: tuple[object, pd.DataFrame, Path], tmp_path: Path
+) -> None:
+    from src.ml_replay import ReplayError, run_final_replay
+
+    prepared, labels, artifact_dir = synthetic_stage04
+    altered_artifact = tmp_path / "unsupported-b4-version"
+    shutil.copytree(artifact_dir, altered_artifact)
+    bundle_path = altered_artifact / "initial_models.joblib"
+    bundle = joblib.load(bundle_path)
+    bundle["b4_models"]["SPY"]["model_version"] = f"{B4_MODEL_VERSION}-unsupported"
+    joblib.dump(bundle, bundle_path, compress=3)
+
+    manifest_path = altered_artifact / "training_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifact_sha256"]["initial_models.joblib"] = hashlib.sha256(
+        bundle_path.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ReplayError, match="B4 Stage 04 identity is invalid"):
+        run_final_replay(
+            prepared,
+            labels,
+            initial_model_artifact_dir=altered_artifact,
+            output_root=tmp_path / "version-check",
+            replay_end_date=date(2024, 10, 1),
+        )
+
+
+def test_replay_rejects_b4_model_version_mismatch_in_training_manifest(
+    synthetic_stage04: tuple[object, pd.DataFrame, Path], tmp_path: Path
+) -> None:
+    from src.ml_replay import ReplayError, run_final_replay
+
+    prepared, labels, artifact_dir = synthetic_stage04
+    altered_artifact = tmp_path / "unsupported-b4-manifest-version"
+    shutil.copytree(artifact_dir, altered_artifact)
+    manifest_path = altered_artifact / "training_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["b4_models"]["SPY"]["model_version"] = f"{B4_MODEL_VERSION}-unsupported"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ReplayError, match="B4 training manifest identity is invalid"):
+        run_final_replay(
+            prepared,
+            labels,
+            initial_model_artifact_dir=altered_artifact,
+            output_root=tmp_path / "manifest-version-check",
+            replay_end_date=date(2024, 10, 1),
+        )
+
+
+def test_replay_accepts_legacy_b4_training_config_artifact(
+    synthetic_stage04: tuple[object, pd.DataFrame, Path], tmp_path: Path
+) -> None:
+    from src.ml_replay.pipeline import _load_initial_artifact, sha256_file
+
+    prepared, _, artifact_dir = synthetic_stage04
+    legacy_artifact = tmp_path / "legacy-b4-training-config"
+    shutil.copytree(artifact_dir, legacy_artifact)
+
+    training_config_path = legacy_artifact / "training_config.json"
+    training_config = json.loads(training_config_path.read_text(encoding="utf-8"))
+    training_config["training_config_version"] = "1.0.0"
+    training_config_path.write_text(json.dumps(training_config), encoding="utf-8")
+
+    manifest_path = legacy_artifact / "training_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["training_config_version"] = "1.0.0"
+    manifest["artifact_sha256"]["training_config.json"] = sha256_file(training_config_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    bundle, loaded_manifest, tickers, _, _ = _load_initial_artifact(legacy_artifact, prepared)
+
+    assert loaded_manifest["training_config_version"] == "1.0.0"
+    assert bundle["b4_models"]["SPY"]["model_version"] == B4_MODEL_VERSION
+    assert set(tickers) == set(SUPPORTED_TICKERS)
 
 
 def test_resume_refuses_an_experiment_with_different_replay_identity(

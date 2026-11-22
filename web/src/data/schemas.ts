@@ -179,6 +179,7 @@ export interface B4ComparisonRow {
   comparisonId: "B4_VS_B2" | "B4_VS_B3" | "B4_VS_B1";
   b4Model: "HAR_X_OLS";
   comparatorModel: ModelName;
+  split: "test";
   ticker: Ticker | "MACRO";
   pairedN: number;
   expectedEligibleAnchorCount: number;
@@ -1013,11 +1014,21 @@ export function parseB4ComparisonRow(record: Record<string, string>): B4Comparis
   const comparisonId = oneOf(record.comparison_id, ["B4_VS_B2", "B4_VS_B3", "B4_VS_B1"], "comparison_id");
   const b4Model = oneOf(record.b4_model, ["HAR_X_OLS"], "b4_model");
   const comparatorModel = parseModelName(record.comparator_model, "comparator_model");
+  const expectedComparator: Record<B4ComparisonRow["comparisonId"], ModelName> = {
+    B4_VS_B2: "STATIC_SGD",
+    B4_VS_B3: "ONLINE_SGD",
+    B4_VS_B1: "ROLLING_20D_BASELINE",
+  };
+  if (comparatorModel !== expectedComparator[comparisonId]) throw new Error("B4 comparison identity does not match comparator model");
+  if (record.split !== "test") throw new Error("B4 comparisons are Test-only");
+  if (record.direction_definition !== "comparator_mae_minus_b4_mae (positive means HAR_X_OLS lower error)") throw new Error("B4 comparison direction is inconsistent");
+  if (record.evaluation_scope !== "retrospective_test_non_hypothesis") throw new Error("B4 comparison scope is inconsistent");
   const ticker = parseTickerOrMacro(record.ticker, "ticker");
-  return {
+  const row: B4ComparisonRow = {
     comparisonId,
     b4Model,
     comparatorModel,
+    split: "test",
     ticker,
     pairedN: parseCount(record.paired_n, "paired_n"),
     expectedEligibleAnchorCount: parseCount(record.expected_eligible_anchor_count, "expected_eligible_anchor_count"),
@@ -1030,6 +1041,17 @@ export function parseB4ComparisonRow(record: Record<string, string>): B4Comparis
     comparatorRmse: ticker === "MACRO" ? null : parseFinite(record.comparator_rmse, "comparator_rmse"),
     commonAllFiveN: parseCount(record.common_all_five_n, "common_all_five_n"),
     commonB0B3N: parseCount(record.common_b0_b3_n, "common_b0_b3_n"),
-    evaluationScope: stringField(record, "evaluation_scope"),
+    evaluationScope: record.evaluation_scope,
   };
+  if (row.pairedN === 0 || row.expectedEligibleAnchorCount === 0 || row.pairedN > row.expectedEligibleAnchorCount) throw new Error("B4 comparison counts are inconsistent");
+  if (Math.abs(row.pairedCoverage - row.pairedN / row.expectedEligibleAnchorCount) > 1e-12) throw new Error("B4 comparison coverage does not match paired counts");
+  if (Math.abs(row.deltaMaeComparatorMinusB4 - (row.comparatorMae - row.b4Mae)) > 1e-12) throw new Error("B4 comparison DeltaMAE does not match model MAEs");
+  const expectedRelativeImprovement = (row.deltaMaeComparatorMinusB4 / row.comparatorMae) * 100;
+  if (Math.abs(row.relativeImprovementPct - expectedRelativeImprovement) > 1e-9) throw new Error("B4 comparison relative improvement does not match model MAEs");
+  if ((ticker === "MACRO") !== (row.b4Rmse === null && row.comparatorRmse === null)) throw new Error("Macro B4 RMSE must remain blank while ETF RMSE must be present");
+  const expectedPairingPolicy = ticker === "MACRO"
+    ? "equal ETF weight over per-ETF paired anchors"
+    : "same prediction_date/ticker/split with mature target and both forecasts valid";
+  if (record.pairing_policy !== expectedPairingPolicy) throw new Error("B4 comparison pairing policy is inconsistent");
+  return row;
 }

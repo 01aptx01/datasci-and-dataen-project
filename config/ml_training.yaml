@@ -1,4 +1,4 @@
-training_config_version: "1.0.0"
+training_config_version: "1.1.0"
 
 core_features:
   - ret_1d_t

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import date
 from types import SimpleNamespace
 
@@ -18,7 +20,7 @@ from src.ml_evaluation.metrics import (
     rolling_session_metrics,
 )
 from src.ml_evaluation.portfolio import calculate_portfolio_risk
-from src.ml_evaluation.config import EvaluationConfig
+from src.ml_evaluation.config import EvaluationConfig, EvaluationError
 from src.ml_evaluation.pipeline import (
     _build_b4_comparisons,
     _build_coverage_summary,
@@ -29,10 +31,72 @@ from src.ml_evaluation.pipeline import (
     _build_reference_b0_b3_metrics,
     _mark_common_panel,
     _train_high_vol_thresholds,
+    _verify_training_artifacts,
 )
 
 
 TICKERS = ("SPY", "IEF", "GLD")
+
+
+def _training_artifact_lineage(tmp_path, *, include_b4_hash: bool, b4_suite: bool = True):
+    artifact_names = [
+        "initial_models.joblib",
+        "selected_configs.json",
+        "training_config.json",
+        "validation_candidate_evaluations.csv",
+        "b4_validation_evaluations.csv",
+    ]
+    artifact_hashes = {}
+    for name in artifact_names:
+        path = tmp_path / name
+        path.write_text(f"artifact:{name}", encoding="utf-8")
+        artifact_hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    training_manifest = {
+        "selection_split": "validation",
+        "test_used_for_training_or_selection": False,
+        "selection_status": "selected",
+        "selected_configs": [],
+    }
+    manifest_path = tmp_path / "training_manifest.json"
+    manifest_path.write_text(json.dumps(training_manifest), encoding="utf-8")
+    if not include_b4_hash:
+        artifact_hashes.pop("b4_validation_evaluations.csv")
+    replay_manifest = {
+        "stage04_artifact_sha256": artifact_hashes,
+        "stage04_training_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "selected_configs": [],
+    }
+    if b4_suite:
+        replay_manifest["model_suite_version"] = "1.1.0"
+        replay_manifest["b4_initial_state_sha256_by_ticker"] = {}
+    return replay_manifest, artifact_hashes
+
+
+def test_training_artifact_verification_requires_b4_validation_hash_for_b4_suite(tmp_path) -> None:
+    replay_manifest, _ = _training_artifact_lineage(tmp_path, include_b4_hash=False)
+
+    with pytest.raises(EvaluationError, match="b4_validation_evaluations.csv"):
+        _verify_training_artifacts(tmp_path, replay_manifest)
+
+
+def test_training_artifact_verification_includes_b4_validation_hash_for_b4_suite(tmp_path) -> None:
+    replay_manifest, artifact_hashes = _training_artifact_lineage(tmp_path, include_b4_hash=True)
+
+    verified = _verify_training_artifacts(tmp_path, replay_manifest)
+
+    assert verified["b4_validation_evaluations.csv"] == artifact_hashes["b4_validation_evaluations.csv"]
+
+
+def test_training_artifact_verification_preserves_legacy_b0_b3_lineage(tmp_path) -> None:
+    replay_manifest, _ = _training_artifact_lineage(
+        tmp_path,
+        include_b4_hash=False,
+        b4_suite=False,
+    )
+
+    verified = _verify_training_artifacts(tmp_path, replay_manifest)
+
+    assert "b4_validation_evaluations.csv" not in verified
 
 
 def test_forecast_audit_separates_pending_targets_from_invalid_forecasts() -> None:

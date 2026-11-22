@@ -36,8 +36,17 @@ from src.ml_replay.storage import (
     stage_table,
     write_json_atomic,
 )
-from src.ml_training.config import CandidateConfig, TrainingConfig
-from src.ml_training.pipeline import b4_state_sha256, model_state_sha256, scaler_state_sha256
+from src.ml_training.config import (
+    SUPPORTED_TRAINING_CONFIG_VERSIONS,
+    CandidateConfig,
+    TrainingConfig,
+)
+from src.ml_training.pipeline import (
+    B4_MODEL_VERSION,
+    b4_state_sha256,
+    model_state_sha256,
+    scaler_state_sha256,
+)
 
 
 PREDICTION_COLUMNS = [
@@ -429,6 +438,11 @@ def _load_initial_artifact(
     tickers = bundle.get("tickers", {})
     baselines = bundle.get("baselines", {})
     b4_models = bundle.get("b4_models", {})
+    if (
+        b4_models
+        and manifest.get("training_config_version") not in SUPPORTED_TRAINING_CONFIG_VERSIONS
+    ):
+        raise ReplayError("B4 Stage 04 artifact has an incompatible training config version")
     if set(tickers) != set(SUPPORTED_TICKERS) or set(baselines) != set(SUPPORTED_TICKERS):
         raise ReplayError("Stage 04 artifacts must contain B0-B3 states for SPY, IEF, and GLD")
     if not isinstance(b4_models, dict) or set(b4_models) != set(SUPPORTED_TICKERS):
@@ -475,9 +489,16 @@ def _load_initial_artifact(
         if (
             b4_entry.get("model_id") != "B4"
             or b4_entry.get("model_name") != "HAR_X_OLS"
-            or not b4_entry.get("model_version")
+            or b4_entry.get("model_version") != B4_MODEL_VERSION
         ):
             raise ReplayError(f"{ticker} B4 Stage 04 identity is invalid")
+        manifest_b4_entry = manifest.get("b4_models", {}).get(ticker, {})
+        if (
+            manifest_b4_entry.get("model_id") != b4_entry["model_id"]
+            or manifest_b4_entry.get("model_name") != b4_entry["model_name"]
+            or manifest_b4_entry.get("model_version") != B4_MODEL_VERSION
+        ):
+            raise ReplayError(f"{ticker} B4 training manifest identity is invalid")
         if tuple(b4_entry.get("feature_order", ())) != expected_order:
             raise ReplayError(f"{ticker} B4 Stage 04 feature order is incompatible")
         actual_b4 = b4_state_sha256(b4_entry["model"], b4_entry["scaler"])

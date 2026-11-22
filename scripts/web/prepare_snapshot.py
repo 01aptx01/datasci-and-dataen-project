@@ -450,6 +450,128 @@ def verify_archive(repo_root: Path, policy: dict[str, Any]) -> tuple[dict[str, b
     return payloads, identity, stage06, stage05
 
 
+def validate_b4_comparisons(
+    audit_rows: list[dict[str, str]],
+    evaluation_rows: list[dict[str, str]],
+    comparison_rows: list[dict[str, str]],
+) -> None:
+    tickers = ("SPY", "IEF", "GLD")
+    models = ("CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS")
+    comparator_by_id = {
+        "B4_VS_B2": "STATIC_SGD",
+        "B4_VS_B3": "ONLINE_SGD",
+        "B4_VS_B1": "ROLLING_20D_BASELINE",
+    }
+    expected_scopes = {(comparison_id, ticker) for comparison_id in comparator_by_id for ticker in (*tickers, "MACRO")}
+    row_by_scope: dict[tuple[str, str], dict[str, str]] = {}
+    for row_number, row in enumerate(comparison_rows, start=2):
+        scope = (row["comparison_id"], row["ticker"])
+        if scope not in expected_scopes or scope in row_by_scope:
+            raise SnapshotError(f"Unsupported or duplicate B4 comparison scope on row {row_number}")
+        comparator = comparator_by_id[scope[0]]
+        expected_pairing = "equal ETF weight over per-ETF paired anchors" if scope[1] == "MACRO" else "same prediction_date/ticker/split with mature target and both forecasts valid"
+        if (
+            row["split"] != "test"
+            or row["b4_model"] != "HAR_X_OLS"
+            or row["comparator_model"] != comparator
+            or row["direction_definition"] != "comparator_mae_minus_b4_mae (positive means HAR_X_OLS lower error)"
+            or row["evaluation_scope"] != "retrospective_test_non_hypothesis"
+            or row["pairing_policy"] != expected_pairing
+        ):
+            raise SnapshotError(f"B4 comparison identity or semantics are inconsistent on row {row_number}")
+        row_by_scope[scope] = row
+    if set(row_by_scope) != expected_scopes:
+        raise SnapshotError("b4_comparisons.csv does not contain the complete comparison scope")
+
+    evaluation_by_scope: dict[tuple[str, str, str], dict[str, str]] = {}
+    for row_number, row in enumerate(evaluation_rows, start=2):
+        key = (row["prediction_date"], row["ticker"], row["model_name"])
+        if key in evaluation_by_scope:
+            raise SnapshotError(f"Duplicate evaluation model/date/ticker scope on row {row_number}")
+        evaluation_by_scope[key] = row
+    expected_dates = {
+        ticker: {row["prediction_date"] for row in audit_rows if row["split"] == "test" and row["ticker"] == ticker}
+        for ticker in tickers
+    }
+    all_five_n = {
+        ticker: sum(all((date, ticker, model) in evaluation_by_scope for model in models) for date in expected_dates[ticker])
+        for ticker in tickers
+    }
+    base_four_n = {
+        ticker: sum(all((date, ticker, model) in evaluation_by_scope for model in models[:4]) for date in expected_dates[ticker])
+        for ticker in tickers
+    }
+
+    def close(actual: float, expected: float, field: str, row_number: int) -> None:
+        if not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-9):
+            raise SnapshotError(f"B4 comparison {field} does not reconcile with evaluation.csv on row {row_number}")
+
+    for comparison_id, comparator in comparator_by_id.items():
+        summaries: dict[str, dict[str, float | int]] = {}
+        for ticker in tickers:
+            pairs = [
+                (evaluation_by_scope[(date, ticker, "HAR_X_OLS")], evaluation_by_scope[(date, ticker, comparator)])
+                for date in expected_dates[ticker]
+                if (date, ticker, "HAR_X_OLS") in evaluation_by_scope and (date, ticker, comparator) in evaluation_by_scope
+            ]
+            if not pairs:
+                raise SnapshotError(f"B4 comparison {comparison_id}/{ticker} has no paired evaluations")
+            for b4, baseline in pairs:
+                if b4["target_realized_vol_5d"] != baseline["target_realized_vol_5d"] or b4["target_end_date"] != baseline["target_end_date"]:
+                    raise SnapshotError(f"B4 comparison {comparison_id}/{ticker} has mismatched paired target windows")
+            b4_errors = [float(b4["absolute_error"]) for b4, _ in pairs]
+            baseline_errors = [float(baseline["absolute_error"]) for _, baseline in pairs]
+            summaries[ticker] = {
+                "paired_n": len(pairs),
+                "expected_n": len(expected_dates[ticker]),
+                "b4_mae": sum(b4_errors) / len(pairs),
+                "comparator_mae": sum(baseline_errors) / len(pairs),
+                "b4_rmse": math.sqrt(sum(error * error for error in b4_errors) / len(pairs)),
+                "comparator_rmse": math.sqrt(sum(error * error for error in baseline_errors) / len(pairs)),
+            }
+        macro = {
+            "paired_n": sum(int(summaries[ticker]["paired_n"]) for ticker in tickers),
+            "expected_n": sum(int(summaries[ticker]["expected_n"]) for ticker in tickers),
+            "b4_mae": sum(float(summaries[ticker]["b4_mae"]) for ticker in tickers) / len(tickers),
+            "comparator_mae": sum(float(summaries[ticker]["comparator_mae"]) for ticker in tickers) / len(tickers),
+        }
+        summaries["MACRO"] = macro
+        for ticker, summary in summaries.items():
+            row_number = 2 + next(index for index, row in enumerate(comparison_rows) if row is row_by_scope[(comparison_id, ticker)])
+            row = row_by_scope[(comparison_id, ticker)]
+            paired_n = int(row["paired_n"])
+            expected_n = int(row["expected_eligible_anchor_count"])
+            if paired_n != int(summary["paired_n"]) or expected_n != int(summary["expected_n"]):
+                raise SnapshotError(f"B4 comparison counts do not match paired evaluations on row {row_number}")
+            b4_mae = number_or_none(row["b4_mae"], "b4_mae", row_number)
+            comparator_mae = number_or_none(row["comparator_mae"], "comparator_mae", row_number)
+            delta = signed_finite(row["delta_mae_comparator_minus_b4"], "delta_mae_comparator_minus_b4", row_number)
+            relative = signed_finite(row["relative_improvement_pct"], "relative_improvement_pct", row_number)
+            coverage = number_or_none(row["paired_coverage"], "paired_coverage", row_number)
+            if None in (b4_mae, comparator_mae, coverage):
+                raise SnapshotError(f"B4 comparison summary is incomplete on row {row_number}")
+            close(float(b4_mae), float(summary["b4_mae"]), "b4_mae", row_number)
+            close(float(comparator_mae), float(summary["comparator_mae"]), "comparator_mae", row_number)
+            expected_delta = float(summary["comparator_mae"]) - float(summary["b4_mae"])
+            close(delta, expected_delta, "delta_mae_comparator_minus_b4", row_number)
+            close(float(coverage), paired_n / expected_n, "paired_coverage", row_number)
+            if float(comparator_mae) == 0:
+                raise SnapshotError(f"B4 comparison relative improvement is undefined on row {row_number}")
+            close(relative, expected_delta / float(summary["comparator_mae"]) * 100.0, "relative_improvement_pct", row_number)
+            common_all = sum(all_five_n.values()) if ticker == "MACRO" else all_five_n[ticker]
+            common_base = sum(base_four_n.values()) if ticker == "MACRO" else base_four_n[ticker]
+            if int(row["common_all_five_n"]) != common_all or int(row["common_b0_b3_n"]) != common_base:
+                raise SnapshotError(f"B4 comparison reference panel counts do not match evaluation.csv on row {row_number}")
+            if ticker == "MACRO":
+                if row["b4_rmse"] or row["comparator_rmse"]:
+                    raise SnapshotError(f"Macro B4 comparison RMSE fields must be blank on row {row_number}")
+            else:
+                b4_rmse = number_or_none(row["b4_rmse"], "b4_rmse", row_number)
+                comparator_rmse = number_or_none(row["comparator_rmse"], "comparator_rmse", row_number)
+                close(float(b4_rmse or 0.0), float(summary["b4_rmse"]), "b4_rmse", row_number)
+                close(float(comparator_rmse or 0.0), float(summary["comparator_rmse"]), "comparator_rmse", row_number)
+
+
 def validate_handoff_csvs(payloads: dict[str, bytes], policy: dict[str, Any]) -> tuple[list[str], list[dict[str, str]], list[dict[str, str]], dict[str, Any]]:
     members = policy["members"]
     headers = policy["expectedHeaders"]
@@ -481,6 +603,8 @@ def validate_handoff_csvs(payloads: dict[str, bytes], policy: dict[str, Any]) ->
             raise SnapshotError(f"{members[key]} row count does not match the pinned review snapshot")
 
     validate_d4_d5_sources(audit_rows, evaluation_rows, additional_rows, policy)
+    if "b4Comparisons" in additional_rows:
+        validate_b4_comparisons(audit_rows, evaluation_rows, additional_rows["b4Comparisons"])
 
     models = {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS"}
     tickers = {"SPY", "IEF", "GLD"}

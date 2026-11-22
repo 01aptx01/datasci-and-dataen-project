@@ -321,7 +321,14 @@ def _verify_training_artifacts(training_dir: Path, replay_manifest: Mapping[str,
         "training_config.json",
         "validation_candidate_evaluations.csv",
     ]
-    if "b4_validation_evaluations.csv" in expected:
+    # Stage 04 always writes this audit for the B0-B4 suite. Require its
+    # checksum from the Final Replay lineage instead of silently treating a
+    # missing entry as evidence that this is a legacy B0-B3 artifact.
+    has_b4_suite = (
+        replay_manifest.get("model_suite_version") == "1.1.0"
+        or "b4_initial_state_sha256_by_ticker" in replay_manifest
+    )
+    if has_b4_suite:
         names.append("b4_validation_evaluations.csv")
     hashes: dict[str, str] = {}
     for name in names:

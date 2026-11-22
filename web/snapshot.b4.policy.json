@@ -4,7 +4,7 @@
     "repository": "01aptx01/datasci-and-dataen-project",
     "handoffCommit": "175db30",
     "mainCommitAtStart": "8a842bf373acf9b367e50280834c8ecb084d37b1",
-    "zipDir": "data/processed/handoff_b4_s6",
+    "zipDir": "docs/ml-results/downloads/b4",
     "zipName": "ml-results-handoff-b4-ae5cc8cc.zip",
     "zipSha256": "4a471c360aeb28d7cc6b817600e32c2ee877a557c44043d75bc2bf1fde07c43c"
   },

@@ -15,6 +15,14 @@ class TrainingError(ValueError):
     """Raised when Stage 04 inputs or configuration violate the training contract."""
 
 
+TRAINING_CONFIG_VERSION = "1.1.0"
+LEGACY_TRAINING_CONFIG_VERSION = "1.0.0"
+SUPPORTED_TRAINING_CONFIG_VERSIONS = {
+    LEGACY_TRAINING_CONFIG_VERSION,
+    TRAINING_CONFIG_VERSION,
+}
+
+
 @dataclass(frozen=True)
 class CandidateConfig:
     eta0: float
@@ -36,7 +44,7 @@ class CandidateConfig:
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    training_config_version: str = "1.0.0"
+    training_config_version: str = TRAINING_CONFIG_VERSION
     core_features: tuple[str, ...] = CORE_FEATURE_COLUMNS
     eta0_values: tuple[float, ...] = (0.0001, 0.001, 0.01)
     alpha_values: tuple[float, ...] = (1e-5, 1e-4, 1e-3)
@@ -61,7 +69,7 @@ class TrainingConfig:
     dataset: DatasetConfig = DatasetConfig()
 
     def __post_init__(self) -> None:
-        if self.training_config_version != "1.0.0":
+        if self.training_config_version not in SUPPORTED_TRAINING_CONFIG_VERSIONS:
             raise TrainingError("unsupported training_config_version")
         if tuple(self.core_features) != tuple(CORE_FEATURE_COLUMNS):
             raise TrainingError("core_features must match the locked eight-feature order")

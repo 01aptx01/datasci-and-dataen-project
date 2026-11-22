@@ -30,25 +30,48 @@ test("parseB4ComparisonRow validates retrospective B4 comparison schema", () => 
     paired_n: "729",
     expected_eligible_anchor_count: "744",
     paired_coverage: "0.9798387096774194",
-    b4_mae: "0.051065",
-    comparator_mae: "0.052479",
-    delta_mae_comparator_minus_b4: "0.001415",
-    relative_improvement_pct: "2.695463",
+    b4_mae: "0.05106473680481121",
+    comparator_mae: "0.052479297060196384",
+    delta_mae_comparator_minus_b4: "0.0014145602553851788",
+    relative_improvement_pct: "2.6954634201037551",
     b4_rmse: "",
     comparator_rmse: "",
     common_all_five_n: "729",
     common_b0_b3_n: "729",
+    split: "test",
+    direction_definition: "comparator_mae_minus_b4_mae (positive means HAR_X_OLS lower error)",
     evaluation_scope: "retrospective_test_non_hypothesis",
+    pairing_policy: "equal ETF weight over per-ETF paired anchors",
   });
   assert.equal(row.comparisonId, "B4_VS_B2");
   assert.equal(row.b4Rmse, null);
   assert.equal(row.pairedN, 729);
+  assert.throws(() => parseB4ComparisonRow({
+    comparison_id: "B4_VS_B2", b4_model: "HAR_X_OLS", comparator_model: "ONLINE_SGD", split: "test",
+    ticker: "MACRO", paired_n: "729", expected_eligible_anchor_count: "744", paired_coverage: "0.9798387096774194",
+    b4_mae: "0.05106473680481121", comparator_mae: "0.052479297060196384", delta_mae_comparator_minus_b4: "0.0014145602553851788",
+    relative_improvement_pct: "2.6954634201037551", b4_rmse: "", comparator_rmse: "", common_all_five_n: "729", common_b0_b3_n: "729",
+    direction_definition: "comparator_mae_minus_b4_mae (positive means HAR_X_OLS lower error)",
+    evaluation_scope: "retrospective_test_non_hypothesis", pairing_policy: "equal ETF weight over per-ETF paired anchors",
+  }), /identity does not match/);
+  assert.throws(() => parseB4ComparisonRow({
+    comparison_id: "B4_VS_B2", b4_model: "HAR_X_OLS", comparator_model: "STATIC_SGD", split: "test",
+    ticker: "MACRO", paired_n: "729", expected_eligible_anchor_count: "744", paired_coverage: "0.9798387096774194",
+    b4_mae: "0.05106473680481121", comparator_mae: "0.052479297060196384", delta_mae_comparator_minus_b4: "0.01",
+    relative_improvement_pct: "2.6954634201037551", b4_rmse: "", comparator_rmse: "", common_all_five_n: "729", common_b0_b3_n: "729",
+    direction_definition: "comparator_mae_minus_b4_mae (positive means HAR_X_OLS lower error)",
+    evaluation_scope: "retrospective_test_non_hypothesis", pairing_policy: "equal ETF weight over per-ETF paired anchors",
+  }), /DeltaMAE does not match/);
 });
 
 test("B4 1.1.0 snapshot loads all 5 models, pending rows, and B4 comparisons", async () => {
-  const policyText = await readFile(path.join(webDir, "snapshot.b4.policy.json"), "utf8");
+  const policyText = await readFile(path.join(webDir, "snapshot.policy.json"), "utf8");
   const evalId = JSON.parse(policyText).identity.evaluationId;
+  assert.equal(JSON.parse(policyText).schemaVersion, "1.1.0");
+  assert.ok(JSON.parse(policyText).expectedHeaders.b4Comparisons);
+  assert.equal(await readFile(path.join(webDir, "dist", "snapshot.policy.json"), "utf8"), policyText);
   const snapDir = path.join(webDir, "public", "snapshots", evalId);
+  await readFile(path.join(webDir, "dist", "snapshots", evalId, "b4_comparisons.csv"));
   const manifestText = await readFile(path.join(snapDir, "dashboard_snapshot_manifest.json"), "utf8");
   const manifest = JSON.parse(manifestText);
   const files = {

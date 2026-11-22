@@ -28,7 +28,12 @@ B4_MODEL_NAME = "HAR_X_OLS"
 B4_MODEL_VERSION = "b4_ols_v1.0.0"
 B4_ILL_CONDITIONED_THRESHOLD = 1e8
 from src.ml_dataset.dataset import PreparedDataset
-from src.ml_training.config import CandidateConfig, TrainingConfig, TrainingError
+from src.ml_training.config import (
+    LEGACY_TRAINING_CONFIG_VERSION,
+    CandidateConfig,
+    TrainingConfig,
+    TrainingError,
+)
 
 
 @dataclass
@@ -1058,6 +1063,13 @@ def run_training_selection(
 ) -> TrainingSelectionResult:
     """Run the locked 81-candidate Validation search and save clean initial model pairs."""
     effective_config = config or TrainingConfig.from_yaml()
+    if (
+        include_b4
+        and effective_config.training_config_version == LEGACY_TRAINING_CONFIG_VERSION
+    ):
+        raise TrainingError(
+            "training_config_version 1.0.0 predates B4; use version 1.1.0 to train B4"
+        )
     if len(effective_config.grid) != 27:
         raise TrainingError("Stage 04 must evaluate exactly 27 candidates per ETF")
     runs: list[CandidateRun] = []

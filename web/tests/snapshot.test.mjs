@@ -56,7 +56,7 @@ test("the real frozen snapshot loads into typed Test sessions with Pending label
   assert.equal(loaded.status, "ready");
   if (loaded.status !== "ready") return;
   assert.equal(loaded.sessions.length, policy.expectedCounts.testForecastRows);
-  assert.equal(loaded.manifest.expectedCounts.testPendingRows, 60);
+  assert.equal(loaded.manifest.expectedCounts.testPendingRows, 75);
   assert.equal(loaded.evaluations.size, policy.expectedCounts.testEvaluableRows);
   assert.equal(loaded.modelMetrics.length, policy.expectedCounts.modelMetricsRows);
   assert.equal(loaded.pairComparisons.length, policy.expectedCounts.pairComparisonsRows);
@@ -67,9 +67,9 @@ test("the real frozen snapshot loads into typed Test sessions with Pending label
   assert.equal(loaded.h1Scatter.length, policy.expectedCounts.h1ScatterDataRows);
   assert.equal(loaded.hypothesisResults.length, policy.expectedCounts.hypothesisResultsRows);
   assert.equal(loaded.highVolatilityMetrics.length, policy.expectedCounts.highVolatilityMetricsRows);
-  assert.equal(loaded.modelMetrics.find((row) => row.ticker === "MACRO" && row.modelName === "ONLINE_SGD")?.mae, 0.04889242199324919);
+  assert.equal(loaded.modelMetrics.find((row) => row.ticker === "MACRO" && row.modelName === "ONLINE_SGD")?.mae, 0.04889243721963827);
   assert.equal(loaded.coverage.find((row) => row.split === "test" && row.ticker === "SPY" && row.modelName === "ONLINE_SGD")?.pendingLabelCount, 5);
-  assert.equal(loaded.forecasts.length, 5976);
+  assert.equal(loaded.forecasts.length, 7470);
   assert.ok(loaded.sessions.some((row) => row.evaluationStatus === "PENDING_LABEL" && row.targetRealizedVol5d === null && row.absoluteError === null));
 });
 
@@ -195,7 +195,7 @@ test("D4–D5 sources keep frozen counts, splits, and source covariance parity",
 
   const selected = portfolio.find((row) => row.split === "test" && row.predictionDate === policy.identity.strictCutoff && row.modelName === "ONLINE_SGD");
   assert.ok(selected?.covariance);
-  assert.equal(selected?.portfolioVol, 0.08127699795391094);
+  assert.equal(selected?.portfolioVol, 0.08127700892439489);
   assert.ok(Math.abs(computePortfolioVolatility(selected.covariance, selected.sourceWeights) - selected.portfolioVol) < 1e-10);
   assert.ok(rolling.every((row) => row.windowSessionCount === 20));
   assert.ok(drift.every((row) => !row.driftDetected && !row.alertRecordPresent));
@@ -214,12 +214,12 @@ test("portfolio rows preserve the stored 20-session correlation fields and readi
   assert.ok(source);
   const selected = schemas.parsePortfolioRiskRow(source);
   assert.deepEqual(selected.correlations, {
-    spyIef: 0.67513842411091929,
+    spyIef: 0.6751344396447172,
     spyGld: 0.59199919040056614,
-    iefGld: 0.50741111540470785,
+    iefGld: 0.50740599971083689,
   });
   assert.equal(selected.correlationReady, true);
-  assert.equal(selected.correlationRunId, "feat_readiness_20261115_01");
+  assert.equal(selected.correlationRunId, "feat_20261122T143142_ad87117a");
 });
 
 test("an OK portfolio row rejects unready, out-of-range, or non-PSD correlations", () => {
@@ -240,7 +240,7 @@ test("all eligible Test rows match default risk and their stored correlation-der
   const records = parseCsv(new TextDecoder().decode(sourceBytes[manifest.files.portfolioRisk.path])).records;
   const rows = parsePortfolioRisk(new TextDecoder().decode(sourceBytes[manifest.files.portfolioRisk.path]), policy)
     .filter((row) => row.split === "test" && row.status === "OK");
-  assert.equal(rows.length, 992);
+  assert.equal(rows.length, 1240);
   assert.equal(rows.filter((row) => row.modelName === "ONLINE_SGD").length, 248);
   for (const row of rows) {
     assert.ok(row.covariance);
@@ -255,7 +255,7 @@ test("all eligible Test rows match default risk and their stored correlation-der
       }
     }
   }
-  assert.equal(records.length, 1992);
+  assert.equal(records.length, 2490);
 });
 
 test("D4–D5 row parsers reject malformed nested JSON, Test H1 points, and scored zero-sample rows", () => {
