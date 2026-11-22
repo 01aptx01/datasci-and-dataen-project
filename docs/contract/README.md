@@ -2,6 +2,8 @@
 
 > **ขอบเขตที่ตกลงร่วมกัน:** 5 ตารางข้อมูลหลัก (Logical Tables) + 2 ไฟล์ตรวจสอบระบบ (Quarantine CSV และ Ingestion Audit JSONL)  
 
+> **สถานะ implementation (23 พฤศจิกายน 2026):** เอกสารชุดนี้กำหนด Logical Schema และข้อกำหนดเชิงพฤติกรรม ส่วน path ในภาพและตัวอย่าง `outputs/` เดิมเป็นแบบจำลอง ไม่ใช่ path จริงที่ root ของ repository ปัจจุบันใช้ ปัจจุบันตารางราคา/Feature/Target จัดเก็บเป็น Parquet; Stage 05 เขียน prediction/evaluation CSV ใน replay run และ Stage 06 เขียน evaluation bundle แบบ immutable ใต้ `data/processed/ml_evaluation/experiments/<evaluation_id>/`. ดู [Replay guide](../../src/ml_replay/README.md) และ [Evaluation guide](../../src/ml_evaluation/README.md). Implementation ไม่ได้เปลี่ยนข้อกำหนดของ Logical Tables
+
 ## 1. โครงงานทำอะไร?
 
 **Adaptive Portfolio Risk Lab** เป็นระบบเพื่อการเรียนรู้และเปรียบเทียบวิธีพยากรณ์ความผันผวนของ ETF 3 สินทรัพย์ ได้แก่ **SPY, IEF, GLD** จากข้อมูลราคาปิดรายวัน โดย:
@@ -35,7 +37,7 @@
 
 ## 4. ขอบเขตข้อมูลที่เลือกใช้: 5 ตารางหลัก
 
-คำว่า **ตาราง (Logical Table)** ในที่นี้หมายถึง *ชุดข้อมูลที่มี Schema และ Key ชัดเจน* ยังไม่บังคับว่าต้องเป็นตารางใน Database Server; สามารถจัดเก็บทางกายภาพในรูปแบบที่เหมาะสมได้เมื่อพัฒนาแต่ละขั้นตอน
+คำว่า **ตาราง (Logical Table)** ในที่นี้หมายถึง *ชุดข้อมูลที่มี Schema และ Key ชัดเจน* ไม่ได้บังคับว่าต้องเป็นตารางใน Database Server; implementation ปัจจุบันใช้ Parquet สำหรับตารางราคา/Feature/Target และใช้ CSV/JSON สำหรับ prediction/evaluation artifacts กับ manifests ตามแต่ละ Stage
 
 | # | Logical Table | Grain (1 แถวหมายถึง) | Key | บทบาท |
 |---|---|---|---|---|
@@ -71,7 +73,7 @@ flowchart TD
 
     H --> K["Evaluation เมื่อรู้ผลจริงครบ 5 วัน"]
     E --> K
-    K --> L["outputs/evaluation.csv"]
+    K --> L["Stage 05/06 run outputs/evaluation.csv"]
     L --> J
 ```
 
@@ -84,7 +86,7 @@ flowchart TD
 | `data/raw/` | เก็บ Raw Snapshots ของข้อมูลต้นทาง | ตรวจสอบและสร้างข้อมูลใหม่จากต้นฉบับ; ไม่เขียนทับ Snapshot เดิมโดยไม่มีประวัติ |
 | `logs/quarantine.csv` | **CSV** | รายการข้อมูล/เหตุการณ์ที่ไม่ผ่าน Data Quality Gate พร้อมเหตุผล |
 | `logs/ingestion_runs.jsonl` | **JSON Lines** | หนึ่ง JSON Record ต่อหนึ่ง Ingestion Run; เก็บสถานะและจำนวนแถว |
-| `outputs/evaluation.csv` | **CSV** | บันทึกผลจริง/ผลทำนายและ Error สำหรับสรุป MAE/RMSE; ไม่ใช่ตาราง Database |
+| `Stage 05/06 run outputs/evaluation.csv` | **CSV** | ผลจริง/ผลทำนายและ Error สำหรับสรุป MAE/RMSE; เป็นไฟล์ประกอบ ไม่ใช่ตาราง Database หรือไฟล์ที่ root `outputs/` — ดูคู่มือ Stage สำหรับ run directory จริง |
 
 ### 6.1 ข้อมูลขั้นต่ำใน `logs/quarantine.csv`
 
@@ -144,12 +146,11 @@ project/
 │   └── prediction_contract.md
 ├── data/
 │   ├── raw/
-│   └── processed/               # ชุดข้อมูลหลัก 5 ชุด; รูปแบบเก็บจริงเลือกตอน Implement
+│   ├── curated/                 # Parquet หลัก
+│   └── processed/               # run-scoped ML artifacts; ดูคู่มือ Stage
 ├── logs/
 │   ├── quarantine.csv
 │   └── ingestion_runs.jsonl
-├── outputs/
-│   └── evaluation.csv
 └── src/
 ```
 
@@ -168,10 +169,8 @@ project/
 
 ### การปรับเอกสารย่อยให้ตรงกับขอบเขตนี้
 
-README นี้บันทึก **ข้อสรุปที่ทีมตกลงแล้ว** เรื่อง 5 Logical Tables และ 2 ไฟล์ตรวจสอบระบบ ทั้งนี้เอกสารย่อยบางฉบับเดิมยังอ้างถึง `market_prices_quarantine` / `ingestion_run_audit_log` ในฐานะตาราง และ `prediction_evaluations` ในฐานะตารางเสริม: **ให้ยึดขอบเขตใน README นี้** แล้วปรับชื่อปลายทางเป็น `logs/quarantine.csv`, `logs/ingestion_runs.jsonl` และ `outputs/evaluation.csv` ตามลำดับเมื่อไล่ตรวจแต่ละไฟล์
-
-การแก้ README เพียงไฟล์เดียว **ยังไม่ได้แก้เนื้อหาของ Contract ย่อยหรือยืนยันว่า Implementation เสร็จแล้ว**
+README นี้บันทึก **ข้อสรุปที่ทีมตกลงแล้ว** เรื่อง 5 Logical Tables และ 2 ไฟล์ตรวจสอบระบบ เอกสารย่อยภายใต้ `docs/contract/` อธิบายรายละเอียดของแต่ละส่วน; ชื่อ `outputs/evaluation.csv` ที่ปรากฏในสเปกเดิมให้เข้าใจเป็นชื่อเชิงตรรกะ โดย physical output อยู่ใน run-scoped Stage 05/06 directories ตามคู่มือ implementation
 
 ---
 
-**ขอบเขตสุดท้าย:** 5 ตารางหลัก + Raw Snapshot + `quarantine.csv` + `ingestion_runs.jsonl` + `evaluation.csv` — เน้นให้ Data Pipeline ถูกต้อง ตรวจสอบได้ และทำซ้ำได้ โดยไม่เพิ่มตารางหรือเครื่องมือเกินความจำเป็น
+**ขอบเขตสุดท้าย:** 5 ตารางหลัก + Raw Snapshot + `quarantine.csv` + `ingestion_runs.jsonl` + run-scoped `evaluation.csv` — เน้นให้ Data Pipeline ถูกต้อง ตรวจสอบได้ และทำซ้ำได้ โดยไม่เพิ่มตารางหรือเครื่องมือเกินความจำเป็น

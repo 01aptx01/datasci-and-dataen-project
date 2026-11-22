@@ -2,10 +2,12 @@
 
 **โครงงาน:** Adaptive Portfolio Risk Lab · SPY / IEF / GLD  
 **ฉบับ:** 1.0 · ข้อตกลงอ้างอิง ณ 20 พฤศจิกายน 2026  
-**สถานะ:** Shared reference / Design locked / Implementation & empirical results pending  
+**สถานะเอกสาร:** Shared reference / Design locked ณ 20 พฤศจิกายน 2026
 **กลุ่มผู้อ่าน:** เพื่อนร่วมทีมที่เตรียม Data Science, EDA, Statistical Research, Literature Review, Visualizations และเนื้อหารายงาน
 
-> **ย้ำขอบเขตทีม:** ผู้ประสานงาน/เจ้าของงานพัฒนาระบบรับผิดชอบ **Implementation ทั้ง 6 Stages ด้วยตนเอง** (Contracts, Target, Dataset, Models, Replay, Evaluation/Portfolio) ชุดเอกสารนี้ **ไม่ได้แบ่งงานเขียนโค้ดหรือมอบหมายให้เพื่อนแก้ Repository** แต่ให้เพื่อนอ้างอิงข้อกำหนดเดียวกันเพื่อทำงานด้านวิเคราะห์และงานวิจัย/รายงานที่เตรียมล่วงหน้าได้
+> **อัปเดตสถานะโครงการ 23 พฤศจิกายน 2026:** ข้อความที่ระบุว่า Implementation หรือผลทดลอง “pending” ด้านล่างบันทึกสถานะและแผน ณ วันที่จัดทำ ไม่ใช่สถานะปัจจุบันทั้งหมด ปัจจุบันมี Target, Dataset/H1, Training B0–B4, Replay, Evaluation/H1–H3 และ Feature Drift implementation พร้อมผลทดลองแบบ frozen snapshot แล้ว ดู [คู่มือ Pipeline](../../README.md), [ผล ML และ lineage แต่ละรุ่น](../ml-results/README.md) และ [ผล Champion ADWIN ล่าสุด](../ml-results/06_champion_adwin_only.md) ผลชุดที่มีอยู่เป็น historical simulated replay; ยังไม่ยืนยัน historical source availability หรือ prospective performance และการอนุมัติรายงานยังแยกจากการสร้างผล
+
+> **ขอบเขตทีมตามฉบับดั้งเดิม:** ผู้ประสานงาน/เจ้าของงานรับผิดชอบ **Implementation ทั้ง 6 Stages ด้วยตนเอง** (Contracts, Target, Dataset, Models, Replay, Evaluation/Portfolio) ชุดเอกสารนี้ **ไม่ได้แบ่งงานเขียนโค้ดหรือมอบหมายให้เพื่อนแก้ Repository** แต่ให้เพื่อนอ้างอิงข้อกำหนดเดียวกันเพื่อทำงานด้านวิเคราะห์และงานวิจัย/รายงานที่เตรียมล่วงหน้าได้
 
 ## เปิดไฟล์ไหนก่อน?
 

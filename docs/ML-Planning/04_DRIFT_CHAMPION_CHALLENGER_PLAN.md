@@ -1,5 +1,7 @@
 # แผนใหม่: Drift-triggered Champion–Challenger
 
+> **สถานะ ณ 23 พฤศจิกายน 2026:** ไฟล์นี้เป็นบันทึกแผนและ acceptance checklist ดั้งเดิม ไม่ใช่รายการงานปัจจุบัน; ช่องที่ยังไม่ติ๊กไม่ได้แปลว่างานยังไม่ทำ ปัจจุบันมี policy replay/evaluation และ dashboard sidecar แล้ว ดู [ผล Champion ADWIN](../ml-results/06_champion_adwin_only.md), [handoff policy ล่าสุด](../ml-results/README.md) และ implementation ใน `src/ml_replay/` กับ `src/ml_evaluation/`. ผลบน Test เป็น retrospective exploratory study หลังมีการตรวจ Test เดิม; ไม่มี alert หรือ promotion ในผลจริงชุดที่รายงาน และไม่ยืนยันผลเชิง prospective
+
 ## เป้าหมายและขอบเขต
 สร้าง policy จำลองราย ETF สำหรับเลือก B0/B1/B2 จาก Validation แล้วใช้ Champion จน ADWIN แจ้งเตือน จากนั้นเปรียบเทียบกับ B3 ที่อัปเดตแบบ shadow ด้วยข้อมูลที่ label mature แล้ว แสดงเหตุการณ์และโมเดลที่ใช้ในเว็บซึ่งปัจจุบันเป็น historical replay แบบ static snapshot ไม่ใช่ inference สด แผนนี้ไม่เปลี่ยนผลวิจัย B0–B4/H1–H3 เดิม และ B4 ไม่อยู่ในชุดเลือกของ policy นี้
 

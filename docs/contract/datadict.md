@@ -3,6 +3,8 @@
 **Document:** `contracts/datadict.md`  
 **Scope:** 5 Logical Tables ของ SPY, IEF, GLD
 
+> **สถานะ implementation (23 พฤศจิกายน 2026):** Schema ในเอกสารนี้ยังเป็นข้อกำหนดเชิงตรรกะ ส่วนราคา/Features/Labels ที่สร้างแล้วจัดเก็บเป็น Parquet พร้อม manifests/transactions สำหรับ lineage; Prediction และ Evaluation เป็น artifacts ภายใน Stage 05/06 run ไม่ใช่ไฟล์ที่ root `outputs/`. ดู [Feature guide](../../src/features/README.md), [Target guide](../../src/targets/README.md), [Replay guide](../../src/ml_replay/README.md) และ [Evaluation guide](../../src/ml_evaluation/README.md) เพื่อดู path และรูปแบบปัจจุบัน
+
 **Data Dictionary** คือแหล่งอ้างอิงกลาง (Single Source of Truth) ของชื่อคอลัมน์ ชนิดข้อมูล หน่วย ความหมาย หน้าที่ (`Role`) กติกา `NULL` และคีย์ข้อมูล ส่วนรายละเอียดการคำนวณและการตรวจสอบให้ดู Contract ของขั้นตอนที่รับผิดชอบ
 
 > **ขอบเขตที่เคาะแล้ว:** มี **5 ตารางหลักเท่านั้น** ส่วน `logs/quarantine.csv`, `logs/ingestion_runs.jsonl`, Raw Snapshots และ `outputs/evaluation.csv` เป็น **ไฟล์ประกอบ** ไม่ใช่ตารางหลักของระบบ และไม่เพิ่มตาราง `prediction_evaluations`
@@ -167,7 +169,7 @@
 - **Primary Key:** `prediction_id` (รหัสไม่ซ้ำและคงที่สำหรับการทำนายที่มีชุด Input/Model เดิม)
 - **Logical Deduplication Key:** `(prediction_date, ticker, model_name, prediction_mode, model_version, feature_set_version, input_snapshot_id)`; รันคำขอเดิมซ้ำต้องไม่เพิ่ม Record เชิงธุรกิจซ้ำ
 - **โมเดลเริ่มต้น:** `CONSTANT_BASELINE` (B0), `ROLLING_20D_BASELINE` (B1), `STATIC_SGD` (B2), `ONLINE_SGD` (B3) และ `HAR_X_OLS` (B4); B0 ใช้ Train Mean แยก ETF, B1 ใช้ `rv_20d` โดยตรง, B2/B3 ใช้ SGD กับ Core Features 8 ตัว และ B4 ใช้ OLS พร้อม intercept กับ Core Features 8 ตัว
-- **Storage:** เป็นตารางหลักลำดับที่ 5 เท่านั้น; ไม่มีตาราง Evaluation เพิ่ม โดยเก็บผลประเมินใน `outputs/evaluation.csv`
+- **Storage:** เป็น Logical Table ลำดับที่ 5; ไม่มีตาราง Evaluation เพิ่ม. ผล Evaluation เป็น run-scoped artifact (`evaluation.csv`) ตาม Stage ที่สร้างผล ไม่ใช่ root-level `outputs/evaluation.csv`
 
 | Table | Column | Type | Unit / Format | Meaning | Role | Nullable |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -195,7 +197,7 @@
 3. Forecast ต้องสร้าง/บันทึกก่อนนำผลจริงใน 5 วันข้างหน้าไปประเมิน; ห้ามแก้คำทำนายเดิมย้อนหลังเพื่อทำให้ MAE ดูดี
 4. สำหรับ Portfolio Risk ต้องเลือก `prediction_date`/`model_name`/`prediction_mode` และชุด Prediction Run/เวอร์ชันที่ตรงกัน **ครบ SPY, IEF, GLD** พร้อม Correlation ของวันเดียวกัน; ข้อมูลไม่ครบ → `INCOMPLETE_INPUTS` (ไม่คำนวณพอร์ตบางส่วน)
 5. `prediction_id` ต้องคงเดิมเมื่อ Input/Model/Config เดิมถูกรันซ้ำ; หากชุดข้อมูลหรือ Model Version เปลี่ยน ต้องบันทึก Record ใหม่อย่างตรวจสอบได้ ไม่แก้ Record เก่าโดยเงียบ ๆ; **ไม่สร้างระบบ Revision/Publication เพิ่มใน MVP**
-6. `outputs/evaluation.csv` เก็บผลเมื่อ `is_label_mature=True` เท่านั้น โดย Join `prediction_date` ↔ `asset_volatility_labels.date` และ `ticker`, ตรวจ Target Window ตรงกัน แล้วคำนวณ Absolute/Squared Error เพื่อรวม MAE/RMSE
+6. Stage 05/06 `evaluation.csv` artifacts เก็บผลเมื่อ `is_label_mature=True` เท่านั้น โดย Join `prediction_date` ↔ `asset_volatility_labels.date` และ `ticker`, ตรวจ Target Window ตรงกัน แล้วคำนวณ Absolute/Squared Error เพื่อรวม MAE/RMSE
 
 ---
 
@@ -225,14 +227,14 @@
 | `data/raw/<source_batch_id>/raw_prices.csv` + `manifest.json` | Raw Snapshot และที่มาของข้อมูล | [data_contract.md](./data_contract.md) |
 | `logs/quarantine.csv` | รายการที่ไม่ผ่าน Hard Validation | `run_id, source_batch_id, date, ticker, raw_value, reason, detected_at_utc` |
 | `logs/ingestion_runs.jsonl` | บันทึก 1 JSON Object ต่อ Ingestion Run | `run_id`, เวลา, สถานะ, Counts, Ticker Details |
-| `outputs/evaluation.csv` | ผลประเมินคำทำนายเมื่อ Target Mature | `prediction_id`, `prediction_date`, `ticker`, `model_name`, `target_realized_vol_5d`, `absolute_error`, `squared_error` และข้อมูลเวอร์ชัน/รันที่จำเป็น |
+| `Stage 05/06 run outputs/evaluation.csv` | ผลประเมินคำทำนายเมื่อ Target Mature; Stage 05 และ Stage 06 เก็บภายใต้ run directory ของตน | `prediction_id`, `prediction_date`, `ticker`, `model_name`, `target_realized_vol_5d`, `absolute_error`, `squared_error` และข้อมูลเวอร์ชัน/รันที่จำเป็น |
 
-> **ไม่มีตาราง Quarantine, Audit, Evaluation แยกเพิ่ม** และเอกสารนี้ยังไม่กำหนดว่าจะเก็บ 5 ตารางหลักเป็น CSV, Parquet หรือ Database Table — เป็นการตัดสินใจในขั้น Implementation โดยไม่เปลี่ยน Logical Schema
+> **ไม่มีตาราง Quarantine, Audit, Evaluation แยกเพิ่ม** ตารางราคา/Feature/Target ที่ implement แล้วเก็บเป็น Parquet; Prediction/Evaluation และหลักฐาน run เก็บเป็น artifacts แบบมี lineage ภายใน Stage 05/06 output directories โดยไม่เปลี่ยน Logical Schema
 
 ## 8. หมายเหตุการปรับเอกสารตามลำดับงาน
 
 - `data_contract.md` สอดคล้องกับ `market_prices_daily` 13 คอลัมน์ รวม `open`, `high`, `low`, `is_warmup_buffer` แล้ว
 - `feature_contract.md` ระบุแล้วว่า B1 ใช้ `rv_20d` โดยตรง, B2/B3 ใช้ Core Features 8 ตัว และการติดตามหลาย Source Batches ทำผ่าน Input Manifest ของ run
-- `target_contract.md` ใช้ `record_created_at_utc` + `label_matured_at_utc` แยกเวลาสร้าง Pending Label กับเวลาที่ Label Mature แล้ว และกำหนด Replay ให้สอดคล้องกับนโยบาย B2/B3 และ ADWIN Monitor-only
-- `prediction_contract.md` กำหนด Model IDs B0–B3, Schema Prediction 16 คอลัมน์ และเก็บผลประเมินใน `outputs/evaluation.csv` โดยไม่เพิ่ม Logical Table; การ Implement Pipeline และ Acceptance Tests ยังเป็นงานของ Stages ถัดไป
+- `target_contract.md` ใช้ `record_created_at_utc` + `label_matured_at_utc` แยกเวลาสร้าง Pending Label กับเวลาที่ Label Mature แล้ว; baseline replay ใช้ B2/B3 ตามกติกาเดิม ส่วน Champion ADWIN เป็น policy replay แยกต่างหากตามผลและ contract policy
+- `prediction_contract.md` กำหนด Logical Prediction Schema 16 คอลัมน์; implementation ปัจจุบันรองรับ B0–B4 และ Stage 05/06 outputs พร้อม automated tests ดูคู่มือของแต่ละ Stage เพื่อยืนยัน run และ output เฉพาะชุด
 - การแก้ Metadata/Schema จริงต้องแก้เอกสารที่เกี่ยวข้องและ Tests ให้ตรงกัน; **Final ในที่นี้หมายถึงสเปกที่ตกลงใช้ ไม่ใช่หลักฐานว่ารัน Pipeline ผ่านแล้ว**

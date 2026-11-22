@@ -5,6 +5,8 @@
 **Output หลัก:** `asset_volatility_predictions` เพียง **1 ตาราง** (16 คอลัมน์)  
 **Evaluation Output:** `outputs/evaluation.csv` เป็นไฟล์ประกอบ ไม่เพิ่มตารางใหม่
 
+> **สถานะ implementation (23 พฤศจิกายน 2026):** Contract นี้เป็นข้อกำหนด Logical Schema/พฤติกรรม ส่วน `outputs/evaluation.csv` คือชื่อปลายทางเชิงตรรกะจากแบบเดิม; physical outputs ปัจจุบันอยู่ใน Stage 05 replay run และ Stage 06 content-addressed evaluation run ใต้ `data/processed/`. Implementation รองรับ B0–B4 และมี automated tests; ดู [Training](../../src/ml_training/README.md), [Replay](../../src/ml_replay/README.md), [Evaluation](../../src/ml_evaluation/README.md) สำหรับขอบเขตและ path จริง
+
 > **Prediction Contract คืออะไร?**  
 > เป็นข้อตกลงระหว่างขั้นตอน Forecasting กับส่วนที่นำผลไปใช้ โดยกำหนดว่าระบบต้องรับ Features และ Model State ที่ถูกต้อง ณ เวลาทำนาย ส่งออก Forecast รูปแบบใด ตรวจความถูกต้องอย่างไร เก็บเวอร์ชันและข้อมูลอ้างอิงอะไร และเมื่อไรจึงนำ Forecast ไปประเมินกับผลจริงได้
 
@@ -22,7 +24,7 @@
 
 ```mermaid
 flowchart TD
-    F[(asset_volatility_features)] --> M["B0 / B1 / B2 / B3 Forecasting"]
+    F[(asset_volatility_features)] --> M["B0 / B1 / B2 / B3 / B4 Forecasting"]
     M --> V{"Prediction Validation"}
     V -- "PASS" --> P[(asset_volatility_predictions)]
     V -- "FAIL" --> X["Record error in Run Metadata; no publication"]
@@ -32,7 +34,7 @@ flowchart TD
     R --> D["Dashboard"]
     P --> E["Evaluation after label matures"]
     L[(asset_volatility_labels)] --> E
-    E --> O["outputs/evaluation.csv"]
+    E --> O["Stage 05/06 run outputs/evaluation.csv"]
     O --> D
 ```
 
@@ -167,7 +169,7 @@ $$
 
 ## 5. Storage, Idempotency & Lineage (แบบไม่เพิ่มระบบเกินจำเป็น)
 
-1. **Storage:** ใช้ `asset_volatility_predictions` เป็น Logical Table ลำดับ 5; ยังไม่กำหนดว่าต้องใช้ CSV, Parquet หรือ SQL และไม่เพิ่ม Prediction Revision/Publication Table
+1. **Storage:** ใช้ `asset_volatility_predictions` เป็น Logical Table ลำดับ 5; implementation ปัจจุบันเก็บ Prediction CSV ภายใน Stage 05 replay artifact โดยไม่เพิ่ม Prediction Revision/Publication Table
 2. **Stable Prediction ID:** สร้าง `prediction_id` แบบคงที่จาก Canonical Logical Deduplication Key (เช่น Hash ของ Tuple ที่เรียงฟิลด์ตามข้อ 2); อย่าใช้ `run_id` หรือเวลารันเป็นส่วนหนึ่งของ ID ที่ต้องคงที่เมื่อรันซ้ำ
 3. **Idempotency:** เมื่อ Input Snapshot, Model Version, Feature Spec, Mode และ Business Key เดิมถูกประมวลผลซ้ำ ให้ **ไม่เพิ่ม Record ซ้ำ** และไม่เปลี่ยน Timestamp/Run ID ของ Record ต้นฉบับ; บันทึกการรันซ้ำใน Prediction Run Metadata
 4. **Conflict:** หากพบ Logical Key เดิมแต่ Forecast Value ไม่ตรงเดิม ให้ไม่เขียนทับโดยอัตโนมัติ; ถือเป็นความขัดแย้งที่ต้องตรวจ Model State/Config/Input Manifest ก่อน
@@ -179,7 +181,7 @@ $$
 
 ---
 
-## 6. Evaluation Contract — `outputs/evaluation.csv`
+## 6. Evaluation Contract — run-scoped `evaluation.csv`
 
 **มีเพียงไฟล์ CSV สำหรับผลประเมิน** ไม่สร้างตาราง `prediction_evaluations` หรือคอลัมน์ Evaluation เพิ่มใน Prediction Table
 
@@ -208,7 +210,7 @@ $$
 | `evaluated_at_utc` | เวลา UTC ที่คำนวณผลประเมินจริง |
 
 - MAE = ค่าเฉลี่ยของ `absolute_error`; RMSE = รากที่สองของค่าเฉลี่ย `squared_error`
-- เปรียบเทียบ B0–B3 บน **ชุดวัน/Ticker/Split เดียวกัน** พร้อม Paired Test Anchors สำหรับ H2 (B3 vs B2) และ H3 (B3 vs B1); ไม่เอาคนละช่วงมาเทียบและรายงานจำนวนตัวอย่าง/coverage เสมอ
+- เปรียบเทียบ B0–B3 บน **ชุดวัน/Ticker/Split เดียวกัน** พร้อม Paired Test Anchors สำหรับ H2 (B3 vs B2) และ H3 (B3 vs B1); ไม่เอาคนละช่วงมาเทียบและรายงานจำนวนตัวอย่าง/coverage เสมอ ปัจจุบัน Stage 06 ยังรายงาน B4 และคู่เปรียบเทียบย้อนหลังแยกด้วย
 - Split ของการทดลอง (Train/Validation/Test) อ่านจาก Split Config/Run Manifest ที่ตรึงไว้; ไม่ใช้ผล Test เพื่อเลือก Hyperparameters แล้วรายงานเหมือนไม่เคยเห็น Test
 - **Idempotency ของไฟล์ Evaluation:** หากสร้างผลประเมินชุด Input/Target/Config เดิมซ้ำ ให้ได้แถวเชิงธุรกิจเดิม (ตาม `prediction_id` + `target_version`) ไม่ Append Record ซ้ำ; ถ้าเปลี่ยนชุด Label/Version ให้บันทึกเหตุผลและสำรอง/สร้างไฟล์ผลประเมินใหม่อย่างตรวจสอบได้
 
@@ -266,7 +268,9 @@ $$
 
 ---
 
-## 9. Acceptance Criteria & Automated Tests (ยังต้อง Implement)
+## 9. Acceptance Criteria & Automated Tests
+
+รายการด้านล่างเป็นเกณฑ์เชิงพฤติกรรมของ Contract ไม่ใช่สถานะ checklist ของ run ปัจจุบัน; มีการทดสอบอัตโนมัติใน Stages 03–06 (`tests/` และ `src/*/test_*.py`). ดูคู่มือแต่ละ Stage เพื่อทราบ scope ของ test และ artifact ที่ตรวจแล้ว
 
 - [ ] สร้าง `asset_volatility_predictions` **16 คอลัมน์ตรงตาม `datadict.md`**; ไม่เพิ่ม Evaluation Table
 - [ ] สร้าง B0/B1/B2/B3 ตาม Model IDs ที่กำหนด โดยแยก ETF; B1 ใช้ `rv_20d`, B2 เป็น Static SGD และ B3 เป็น Online SGD ที่เริ่มจาก Initial State เดียวกับ B2
@@ -276,7 +280,7 @@ $$
 - [ ] รันซ้ำจาก Input/Model Version เดิมแล้วไม่เกิด Logical Key ซ้ำและไม่เขียนค่าเก่าทับ
 - [ ] เลือก Prediction 1 รายการแล้วย้อนกลับไปยัง Model Version, Feature Run, Input Manifest, Source Snapshot ได้
 - [ ] Historical Replay: Predict และ Save ก่อน Evaluate/Update; Online Update ไม่ซ้ำ Label เดิม
-- [ ] `outputs/evaluation.csv` มีเฉพาะ Prediction ที่ Label Mature และสูตร Absolute/Squared Error ถูกต้อง; เทียบ B0–B3 บน Test Dates เดียวกัน พร้อม H2 (B3 vs B2) และ H3 (B3 vs B1)
+- [ ] run-scoped `evaluation.csv` มีเฉพาะ Prediction ที่ Label Mature และสูตร Absolute/Squared Error ถูกต้อง; เทียบ B0–B3 บน Test Dates เดียวกัน พร้อม H2 (B3 vs B2) และ H3 (B3 vs B1)
 - [ ] Forecast ไม่ครบทั้ง 3 ETF หรือ Correlation ไม่พร้อม → `INCOMPLETE_INPUTS`, ไม่คำนวณพอร์ตบางส่วน
 - [ ] เปลี่ยนน้ำหนักแล้ว Portfolio Risk เปลี่ยนตามสูตรโดย **ไม่ Retrain**
 

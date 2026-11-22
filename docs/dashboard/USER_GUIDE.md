@@ -4,20 +4,22 @@
 
 > Dashboard นี้เป็น frozen historical snapshot ไม่ใช่ข้อมูลตลาดสด ไม่มีการ train, inference หรือสร้าง forecast ใหม่ และไม่ใช่คำแนะนำการลงทุน
 
+**Snapshot ปัจจุบัน:** Evaluation `12b9f92cbdcbb7816a767f8565bb004f3243b114480e5f3f316c497af4014e76`, Replay `0f6dad49e04b684df6d32d7abca7738fa8c06774c5e848476b62e8fa46a2c99a`, cutoff `2026-09-25`. Dashboard Guide ระบุ ZIP/checksum และ policy sidecar ที่ใช้อยู่
+
 ## เริ่มจาก Overview
 
 1. เปิดหน้า Overview
 2. เลือกคำถามที่ต้องการ: **01 · FORECAST** สำหรับดู prediction, **02 · PORTFOLIO RISK** สำหรับลองน้ำหนักพอร์ต หรือ **03 · EVIDENCE** สำหรับอ่านหลักฐานผลทดลอง
 3. ตรวจ Evaluation ID, Replay ID และสถานะของ snapshot ที่ pin ไว้ก่อนนำตัวเลขไปอ้างอิง
 
-วันที่, model, ticker และ view จะตามไปในหน้า Forecasts, Portfolio, Drift, Research และ Provenance เมื่อ route รองรับ selection นั้น
+วันที่, model, ticker และ view จะตามไปในหน้า Forecasts, Portfolio, Monitoring, Research และ Provenance เมื่อ route รองรับ selection นั้น
 
 ## อ่าน forecast ใน Replay
 
 1. เปิด Forecasts จาก Overview หรือเมนูหลัก
 2. ใช้ปุ่ม **วันก่อนหน้า** / **วันถัดไป**, ตัวเลือกวันที่ หรือ slider เพื่อเลือก XNYS session ที่บันทึกไว้
 3. อ่าน Forecast RV5, สถานะ source, ช่วง target และวันที่เลือกจากกราฟ/ตาราง
-4. ใช้ตาราง **เทียบ forecast ทั้ง 4 โมเดล** เพื่อเทียบ B0–B3 สำหรับวันและสินทรัพย์เดียวกัน
+4. ใช้ตาราง **เทียบ forecast ทั้ง 5 โมเดล** เพื่อเทียบ B0–B4 สำหรับวันและสินทรัพย์เดียวกัน เมื่อมีแถวที่บันทึกไว้ครบตามตัวเลือก
 5. เปิด source record เพื่อดู Prediction ID, target end และค่าจากแถวที่เลือก
 
 Replay อ่าน saved predictions เท่านั้น ปุ่มเปลี่ยนวันไม่ได้เรียกโมเดลมาทำนายอีกครั้ง
@@ -44,9 +46,9 @@ Risk budget ไม่มีค่าเริ่มต้นที่ dashboard 
 
 หากผลรวม Scenario ไม่ครบ 100% ให้แก้ค่าน้ำหนักตามข้อความเตือน ระบบไม่ปรับสัดส่วนแทนผู้ใช้
 
-## ตรวจ Drift, Research และ Provenance
+## ตรวจ Monitoring, Research และ Provenance
 
-- **Drift:** เลือก model, ticker และวันที่เพื่อดูแถวที่บันทึกไว้ inspector แสดง error และ ADWIN fields จาก source; zero recorded alerts หมายถึงไม่มี alert ใน timeline ที่ pin ไว้เท่านั้น
+- **Monitoring:** แยกแท็บ **Feature Drift** กับ **Champion–Challenger Policy**. Feature Drift แสดง W1/PSI ของการกระจาย feature; Policy แสดง ADWIN บน error ของ Champion ที่เสิร์ฟจริง, event การตัดสินใจ และ timeline รุ่นโมเดลจาก policy sidecar. Policy replay ที่ pin อยู่บันทึก mature errors 243 ครั้งต่อ ETF, 0 alerts และ 0 switches; นี่เป็นผลของ replay ชุดนี้เท่านั้น ไม่ได้ยืนยันว่าไม่มี drift หรือว่าข้อมูลพร้อมใช้จริง ณ วันจำลอง. ดู ID และ checksum ใน [Dashboard Guide](../../web/DASHBOARD_GUIDE.md)
 - **Research:** อ่าน H1–H3 พร้อม effect, sample size, p-value, confidence interval และ scope แยกผล official ออกจาก descriptive metrics ตามป้ายกำกับ
 - **Provenance:** เปิด disclosure เพื่ออ่าน source files, SHA-256, commit และข้อจำกัด; ปุ่ม copy ใช้คัดลอก ID หรือ hash ที่อยู่ข้างกัน
 - **Guide:** เปิดอภิธานศัพท์เมื่อพบคำอย่าง Forward RV5, As-of, Evaluable, Pending หรือ percentage points

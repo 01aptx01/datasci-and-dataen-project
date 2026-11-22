@@ -3,6 +3,8 @@
 **Document:** `contracts/target_contract.md`  
 **Scope:** Target / Label ของ ETF **SPY, IEF, GLD** และกติกา **Downstream Portfolio Risk Calculation**
 
+> **สถานะ implementation (23 พฤศจิกายน 2026):** Target generation, replay, final evaluation และ portfolio risk มี implementation แล้วตามคู่มือ [Target](../../src/targets/README.md), [Replay](../../src/ml_replay/README.md) และ [Evaluation](../../src/ml_evaluation/README.md). `outputs/evaluation.csv` ใน Contract เป็นชื่อไฟล์เชิงตรรกะจากแบบเดิม; physical Stage 05 output คือ `data/processed/ml_replay/experiments/<replay_id>/outputs/evaluation.csv`, ส่วน Stage 06 report อยู่ใน `data/processed/ml_evaluation/experiments/<evaluation_id>/evaluation.csv` พร้อม artifacts อื่น
+
 > **Target Contract** กำหนดว่า “คำตอบจริง” ที่โมเดลต้องทำนายคืออะไร คำนวณอย่างไร รู้ผลจริงเมื่อใด และต้องผ่านกฎใดจึงนำไปฝึก/ประเมินโมเดลได้ พร้อมกำหนดวิธีนำค่าพยากรณ์รายสินทรัพย์ไปคำนวณความเสี่ยงพอร์ตโดย **ไม่ฝึกโมเดลใหม่เมื่อผู้ใช้เปลี่ยนน้ำหนัก**
 
 ## 0. เอกสารที่ต้องอ่านร่วมกัน
@@ -11,7 +13,7 @@
 - [data_contract.md](./data_contract.md) — Canonical Price (`adjusted_close`), Returns, วันซื้อขาย และ Data Quality
 - [datadict.md](./datadict.md) — **Single Source of Truth ของ Schema**, Type, Nullable และ Primary Key
 - [feature_contract.md](./feature_contract.md) — Historical Features, Rolling Correlation และ Point-in-Time Rules
-- [prediction_contract.md](./prediction_contract.md) — การบันทึก/ใช้คำทำนายและผล Evaluation (จะต้องปรับ Final ให้ตรงกับ 5 ตาราง)
+- [prediction_contract.md](./prediction_contract.md) — การบันทึก/ใช้คำทำนายและผล Evaluation ภายใต้ขอบเขต 5 Logical Tables
 
 ---
 
@@ -38,7 +40,7 @@ flowchart TD
     E --> F[(asset_volatility_predictions)]
     C -. Matured Labels .-> G[Evaluation / Online Update]
     F --> G
-    G --> H[outputs/evaluation.csv]
+    G --> H["Stage 05/06 run outputs/evaluation.csv"]
     F --> I[Portfolio Risk Engine]
     J[(asset_rolling_correlations)] --> I
     K[User Weights] --> I --> L[Dashboard]
@@ -134,7 +136,7 @@ $$
 4. **Purge ที่จุดแบ่งเวลา:** ตัดตัวอย่างจากช่วงก่อนหน้าที่มี `target_end_date >= next_split_start_date` เพื่อไม่ให้ Forward Target ทับช่วงของชุดถัดไป; โดยทั่วไปสอดคล้องกับช่องว่างประมาณ 5 วันซื้อขาย
 5. **Historical Replay / B2 Static + B3 Online SGD:** ณ Replay Date $s$ ใช้ลำดับ **Predict → Save Forecast → Evaluate Mature Labels → Update B3 → Checkpoint**; พิจารณาเฉพาะ Labels ที่ครบ 5 วันและผ่าน Data Cut-off (`target_end_date <= s` และข้อมูลราคาวันสิ้นสุดผ่าน Ingestion/Validation); B2 คง Frozen, B3 Update ได้เฉพาะ Mature Labels และห้าม Update Label เดิมซ้ำ แม้ไฟล์ Backfill จะแสดง Mature ในปัจจุบันก็ห้ามใช้ Label ก่อนถึง Replay Date
 6. **Timestamp จริงกับ Simulated Time:** `record_created_at_utc` และ `label_matured_at_utc` เป็นเวลาประมวลผลจริงของ Run ไม่ใช่เวลาที่ข้อมูลนั้น **เคย** พร้อมใช้ในโลกจริง; Replay ต้องอิง `target_end_date` + กฎ Data Availability และ Snapshot/Manifest ของ Run โดยเฉพาะ
-7. **Evaluation:** หลังครบ 5 วัน จับคู่ `asset_volatility_predictions.prediction_date` กับ `asset_volatility_labels.date` และ `ticker`; ตรวจ `target_start_date`/`target_end_date` ให้ตรงกัน จากนั้นคำนวณ Absolute/Squared Error แล้วสรุป MAE/RMSE; **ผลเก็บ `outputs/evaluation.csv` เท่านั้น** ไม่สร้าง `prediction_evaluations` เป็นตาราง
+7. **Evaluation:** หลังครบ 5 วัน จับคู่ `asset_volatility_predictions.prediction_date` กับ `asset_volatility_labels.date` และ `ticker`; ตรวจ `target_start_date`/`target_end_date` ให้ตรงกัน จากนั้นคำนวณ Absolute/Squared Error แล้วสรุป MAE/RMSE; **ผลเป็น run-scoped `evaluation.csv` artifact** ไม่สร้าง `prediction_evaluations` เป็นตาราง. Stage 05 เก็บไฟล์ใน `data/processed/ml_replay/experiments/<replay_id>/outputs/`; Stage 06 เก็บ evaluation bundle ใน `data/processed/ml_evaluation/experiments/<evaluation_id>/`
 8. **หน่วย:** Forecast, Target และ Baseline `rv_20d` เป็น Annualized Decimal เหมือนกันทั้งหมด; หาก Model ให้ผลติดลบ/ไม่เป็น Finite ให้ใช้กฎใน Prediction Contract เพื่อป้องกันการเผยแพร่ผลผิด ไม่แก้ Target จริงเพื่อให้เข้าเกณฑ์
 
 ---
@@ -228,12 +230,14 @@ $$
 
 ## 8. Acceptance Criteria — Target & Portfolio Risk
 
+รายการด้านล่างเป็นเกณฑ์ของ Contract ไม่ใช่สถานะ run ล่าสุด; ใช้คู่มือ Stage และ artifacts ที่ระบุ run identity เพื่อตรวจผลการทำงานจริง
+
 - [ ] สร้าง `asset_volatility_labels` ตาม **12 คอลัมน์ของ `datadict.md`** โดยไม่เพิ่มตาราง
 - [ ] สร้างแถว Label เฉพาะ Reference Date ในช่วง `start_date ≤ t ≤ end_date`; ใช้ Warm-up และข้อมูลหลัง `end_date` เพื่อคำนวณ/ทำให้ Label Mature ได้โดยไม่สร้าง Label นอกช่วง
 - [ ] คำนวณ Target จาก **5 Validated Future Trading Returns** ครบ และให้หน่วย Annualized Decimal ตรงกับ Historical RV
 - [ ] รองรับ Pending → Mature โดยไม่มีค่า Target แบบไม่ครบ 5 วัน, ไม่สร้างแถวซ้ำ และมี Timestamp สองความหมายชัดเจน
 - [ ] Historical Replay สามารถทำนายก่อนรู้ Label และอัปเดต Online Model เมื่อ Label ครบจริงตาม Replay Date
-- [ ] Evaluation แยกเก็บใน **`outputs/evaluation.csv`**, ไม่เพิ่ม Evaluation Table
+- [ ] Evaluation แยกเก็บเป็น run-scoped `evaluation.csv` artifact, ไม่เพิ่ม Evaluation Table
 - [ ] Portfolio Risk ใช้ Forecast 3 ETF และ Historical Correlation วันที่เดียวกันพร้อม Weight Validation; หากข้อมูลไม่ครบต้องไม่คำนวณพอร์ต
 - [ ] ทดสอบ Unit/Window, Missing Data, Null, Leakage, PSD Matrix, Incomplete Inputs และ Idempotency ด้วยชุดข้อมูลควบคุม
 - [ ] สามารถไล่ `run_id` / Input Manifest กลับไปยัง Raw Snapshot ที่ใช้สร้าง Target ได้

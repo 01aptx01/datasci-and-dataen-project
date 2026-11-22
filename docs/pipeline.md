@@ -17,14 +17,18 @@
 ## 2. สถานะปัจจุบันและพัฒนาการของการออกแบบ (Current Status & Key Decisions)
 
 ### 2.1 สถานะปัจจุบันของโปรเจกต์
-- **ทำแล้ว**:
-  1. กำหนด Contract และ Data Dictionary สำหรับข้อมูลราคา, Features, Targets และ Predictions ใน `docs/contract/` โดย `datadict.md` เป็นแหล่งอ้างอิงกลางของ schema
-  2. พัฒนา Data Ingestion Pipeline (`src/ingestion/`) ตั้งแต่การอ่าน `config/ingestion.yaml`, คำนวณ XNYS sessions และ warm-up, ดึงข้อมูลจาก `yfinance`, เก็บ Raw Snapshot, แปลง/ตรวจ Schema, Quarantine, Atomic Upsert, Audit Report และ Scheduler
-  3. พัฒนา Feature Pipeline (`src/features/`) สำหรับ `asset_volatility_features` และ `asset_rolling_correlations` ตาม Feature Contract พร้อม warm-up, readiness, lineage manifest, quality checks, idempotent publish และกู้คืนรันที่หยุดกลางการเผยแพร่
-- **ยังเป็นงานถัดไป**:
-  1. Target/Label Pipeline (`asset_volatility_labels`) ตาม Target Contract
-  2. การฝึกและประเมิน Baseline/Online Model ตาม Prediction Contract
-  3. การสร้าง Predictions และ Portfolio Risk calculation/dashboard ซึ่งเป็น downstream ของ Features, Labels และ Correlations
+- **สถานะที่ตรวจสอบ ณ 23 พฤศจิกายน 2026**:
+  1. กำหนด Contract และ Data Dictionary สำหรับราคา, Features, Targets และ Predictions ไว้ใน `docs/contract/`; `datadict.md` เป็นแหล่งอ้างอิง schema กลาง
+  2. พัฒนา Ingestion (`src/ingestion/`) ที่อ่าน `config/ingestion.yaml`, คำนวณ XNYS sessions และ warm-up, ดึงข้อมูลจาก `yfinance`, บันทึก Raw Snapshot, ตรวจ Schema, แยก Quarantine, ทำ Atomic Upsert, สร้าง Audit Report และรองรับ Scheduler
+  3. พัฒนา Feature Pipeline (`src/features/`) สำหรับ `asset_volatility_features` และ `asset_rolling_correlations` พร้อม warm-up, readiness, lineage, quality checks, idempotent publish และการกู้คืนการเผยแพร่
+  4. พัฒนา Target Pipeline (`src/targets/`) สำหรับ Label ความผันผวนล่วงหน้า 5 วัน โดยรองรับ Pending/Mature, lineage, upsert และ recovery
+  5. พัฒนา Stage 03 Dataset Preparation และ H1 analysis (`src/ml_dataset/`), Stage 04 B0–B4 Training/Validation (`src/ml_training/`) และ Stage 05 chronological Replay (`src/ml_replay/`) พร้อม checkpoint/resume และ Champion ADWIN policy แบบแยกการทดลอง
+  6. พัฒนา Stage 06 Evaluation, H1–H3 และ Portfolio Risk (`src/ml_evaluation/`) รวมถึง Feature Drift diagnostic ที่ตรวจ lineage/checksum (`src/ml_diagnostics/`)
+  7. พัฒนา Dashboard แบบ static และ read-only ใน `web/` ซึ่งอ่าน handoff snapshot ที่ตรึงไว้; ไม่มีการฝึกหรือรัน Replay จากหน้าเว็บ
+
+ดูขั้นตอนและวิธีเรียกแต่ละ Stage ที่ [คู่มือรันครบลำดับ](RUN_GUIDE.md) ส่วนคู่มือของแต่ละโมดูลและ contract เชื่อมไว้ในหัวข้อที่เกี่ยวข้องด้านล่าง
+
+**ขอบเขตที่ยังไม่รองรับ:** Historical Replay จำลองการมี Label จาก maturity และ target dates แต่ Source Snapshot ที่ดาวน์โหลดภายหลังไม่ยืนยันว่าแหล่งข้อมูลนั้นมีอยู่จริง ณ วันจำลอง ระบบจึงยังไม่มี live inference/serving API และ Dashboard ไม่ใช่หน้าติดตามข้อมูลสด สถานะและข้อจำกัดของผลทดลองแต่ละชุดอยู่ใน [สารบัญผล ML](ml-results/README.md)
 
 ### 2.2 จุดสำคัญที่ได้ปรับปรุงและล็อกสเปกจากช่วงออกแบบ Contract
 1. **ปรับระดับหน่วยข้อมูล (Grain) เป็น `(date, ticker)` ทั้งระบบ**: เปลี่ยนจากการผูก Feature/Target เข้ากับพอร์ตน้ำหนักคงที่ (Equal Weight) มาเป็นระดับรายสินทรัพย์ เพื่อให้เปลี่ยนน้ำหนักพอร์ตได้อิสระ
@@ -42,11 +46,14 @@ flowchart LR
     MPD --> AVF["2. asset_volatility_features<br>PK: (date, ticker)"]
     MPD --> ARC["3. asset_rolling_correlations<br>PK: (date)"]
     MPD --> AVL["4. asset_volatility_labels<br>PK: (date, ticker)"]
-    
-    AVF & AVL --> TRAIN["ฝึกและประเมินโมเดลรายสินทรัพย์"]
-    AVF --> PRED["พยากรณ์ความผันผวน 5 วัน<br>(SPY, IEF, GLD)"]
-    TRAIN -.-> PRED
-    PRED & ARC --> PORT["คำนวณความเสี่ยงพอร์ตโฟลิโอ<br>(รวมกับน้ำหนัก w เช่น 50/30/20)"]
+
+    AVF & AVL --> DATASET["Stage 03<br>Dataset + H1"]
+    DATASET --> TRAIN["Stage 04<br>B0–B4 Training/Validation"]
+    TRAIN --> REPLAY["Stage 05<br>Chronological Replay"]
+    REPLAY --> EVAL["Stage 06<br>Evaluation + Portfolio Risk"]
+    ARC --> EVAL
+    EVAL --> DASH["Static Dashboard<br>pinned snapshot"]
+    AVF --> DRIFT["Feature Drift Diagnostic"]
 ```
 
 | ตาราง / ขั้นตอน | รับข้อมูลจาก | Grain & Primary Key | ข้อมูลสำคัญในตาราง | ส่งต่อไปที่ |

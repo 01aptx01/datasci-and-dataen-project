@@ -4,7 +4,13 @@
 
 **SOURCE VERIFIED · REVIEW READY · REPORT APPROVAL PENDING**
 
-One Stage 06 evaluation was frozen for this review pack. The output folder named `approved_results` follows the implementation plan's directory name; it does not mean the report has been approved by the project owner. The pack is ready for review, but has not been published to a team share.
+This folder contains several immutable result generations. The reports and handoff listed below are the original Stage 06 review pack (Evaluation `82572c84…`, Replay `3cbf81eb…`); their IDs, numbers, and claims describe that frozen run only. The newer baseline and Champion ADWIN policy results are documented in [06_champion_adwin_only.md](06_champion_adwin_only.md): baseline Evaluation `12b9f92c…` / Replay `0f6dad49…`, and policy Evaluation `b2dfc853…` / Replay `77e80d8e…`. The dashboard uses the newer baseline with a separate policy sidecar, as pinned in [`web/snapshot.policy.json`](../../web/snapshot.policy.json).
+
+The output folder named `approved_results` follows the implementation plan's directory name; it does not mean the report has been approved by the project owner. The original pack is ready for review, but has not been published to a team share.
+
+The earlier [05_champion_challenger_policy.md](05_champion_challenger_policy.md) is another historical policy generation (policy Evaluation `f6dd8cb1…` against baseline `ae5cc8cc…`); it is distinct from the later policy Evaluation `b2dfc853…` now paired with the `12b9f92c…` dashboard baseline.
+
+The project now includes an implemented read-only static dashboard in [`web/`](../../web/). [dashboard_data_requirements.md](dashboard_data_requirements.md) remains a design reference for data needs; it is not evidence that an API exists. The dashboard reads verified frozen snapshots and does not run the Python ML pipeline.
 
 ## Start here
 
@@ -18,6 +24,8 @@ One Stage 06 evaluation was frozen for this review pack. The output folder named
 The direct download URLs point to this branch and will work after the reviewed files are committed and pushed. GitHub can display the Markdown reports and figures directly from this folder. The original generated `dist/` directory remains local and ignored by Git.
 
 ## Frozen identity
+
+The identity below belongs to the **original review pack**, not the newer dashboard snapshot.
 
 | Item | Value |
 |---|---|
@@ -36,10 +44,10 @@ All model, hypothesis, and drift outputs in this handoff refer to this same Eval
 - [01_experiment_overview.md](01_experiment_overview.md) — research question, scope, periods, target, and limitations.
 - [02_model_performance.md](02_model_performance.md) — Test metrics, paired comparisons, coverage, and high-volatility subset.
 - [03_hypotheses_h1_h3.md](03_hypotheses_h1_h3.md) — Stage 06 H1–H3 results and sensitivity outputs.
-- [04_portfolio_and_drift.md](04_portfolio_and_drift.md) — ADWIN monitor and forecast-based portfolio risk.
+- [04_portfolio_and_drift.md](04_portfolio_and_drift.md) — the original pack's B3 ADWIN monitor and forecast-based portfolio risk; see `06_champion_adwin_only.md` for the later monitor design and run.
 - [05_data_dictionary.md](05_data_dictionary.md) — key columns, units, statuses, and file groups.
 - [verification_report.md](verification_report.md) — source, notebook, statistical, security, and packaging gates.
-- [dashboard_data_requirements.md](dashboard_data_requirements.md) — future UI data requirements only; no API or dashboard is implemented.
+- [dashboard_data_requirements.md](dashboard_data_requirements.md) — dashboard data requirements retained as a design reference; the current static dashboard is documented in [`web/DASHBOARD_GUIDE.md`](../../web/DASHBOARD_GUIDE.md).
 - [figures/](figures/) — eight figures generated from the frozen result files.
 - [downloads/](downloads/) — shareable ZIP, standalone HTML report, and SHA-256 checksum files.
 
