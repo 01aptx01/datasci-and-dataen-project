@@ -847,11 +847,11 @@ a { color: inherit; text-decoration: none; }
   .decision-kpi-grid article { min-height: 92px; padding: 9px; }
   .decision-context-line { align-items: flex-start; }
   .decision-context-line .button { margin-left: 0; }
-  .portfolio-date-controls { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
-  .portfolio-date-field { grid-column: 1 / -1; grid-row: 1; }
-  .portfolio-date-step[data-direction="previous"] { grid-column: 1; grid-row: 2; }
-  .portfolio-date-step[data-direction="next"] { grid-column: 2; grid-row: 2; }
-  .portfolio-model-field { grid-column: 1 / -1; grid-row: 3; }
+  .portfolio-date-controls { grid-template-columns: auto minmax(0,1fr) auto; gap: 6px; }
+  .portfolio-date-field { grid-column: 2; grid-row: 1; }
+  .portfolio-date-step[data-direction="previous"] { grid-column: 1; grid-row: 1; }
+  .portfolio-date-step[data-direction="next"] { grid-column: 3; grid-row: 1; }
+  .portfolio-model-field { grid-column: 1 / -1; grid-row: 2; }
   .portfolio-date-status { grid-template-columns: minmax(0,1fr) auto; }
   .portfolio-date-status span:last-child { grid-column: 1 / -1; }
   .portfolio-playback-row { align-items: stretch; }
