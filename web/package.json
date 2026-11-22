@@ -4,12 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "prepare:snapshot": "python scripts/prepare_snapshot.py --repo-root .. --output public/snapshots",
-    "clean": "python scripts/clean_dist.py",
+    "prepare:snapshot": "python ../scripts/web/prepare_snapshot.py --repo-root .. --output public/snapshots",
+    "clean": "python ../scripts/web/clean_dist.py",
     "compile": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "build": "npm run prepare:snapshot && npm run clean && npm run compile && python scripts/copy_static.py",
-    "test": "npm run prepare:snapshot && npm run typecheck && npm run clean && npm run compile && python scripts/copy_static.py && node --test --test-isolation=none tests/*.test.mjs",
+    "build": "npm run prepare:snapshot && npm run clean && npm run compile && python ../scripts/web/copy_static.py",
+    "test": "npm run prepare:snapshot && npm run typecheck && npm run clean && npm run compile && python ../scripts/web/copy_static.py && node --test --test-isolation=none tests/*.test.mjs",
     "dev": "npm run build && python -m http.server 4173 --directory dist",
     "preview": "python -m http.server 4173 --directory dist"
   },

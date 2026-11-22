@@ -8,7 +8,7 @@ import json
 import hashlib
 from pathlib import Path
 
-WEB_ROOT = Path(__file__).resolve().parents[1]
+WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
 DIST = (WEB_ROOT / "dist").resolve()
 
 if DIST.parent != WEB_ROOT.resolve():

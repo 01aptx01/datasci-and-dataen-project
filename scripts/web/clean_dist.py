@@ -4,7 +4,7 @@
 import shutil
 from pathlib import Path
 
-web_root = Path(__file__).resolve().parents[1]
+web_root = Path(__file__).resolve().parents[2] / "web"
 dist = web_root / "dist"
 if dist.is_symlink() or dist.resolve().parent != web_root:
     raise SystemExit("Refusing to clean outside web/dist")

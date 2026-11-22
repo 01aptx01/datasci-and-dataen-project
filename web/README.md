@@ -18,7 +18,7 @@ Open `http://localhost:4173` to use the dashboard. `npm run dev` builds the veri
 
 ## Snapshot boundary
 
-`scripts/prepare_snapshot.py` checks the pinned outer ZIP digest, verifies the internal and sidecar checksums, checks archived member hashes and Evaluation/Replay IDs, validates source headers and row rules, and copies only the allowlisted files below. The browser checks the snapshot hashes again before parsing.
+`../scripts/web/prepare_snapshot.py` checks the pinned outer ZIP digest, verifies the internal and sidecar checksums, checks archived member hashes and Evaluation/Replay IDs, validates source headers and row rules, and copies only the allowlisted files below. The browser checks the snapshot hashes again before parsing.
 
 - `forecast_audit.csv`
 - `evaluation.csv`
@@ -59,7 +59,7 @@ The Canva Presentation button is disabled until a URL is set. To enable it, set 
 
 ## Static hosting
 
-Build `web/dist` and publish its contents beneath a directory with an `index.html` entry point. Relative asset and snapshot URLs support nested paths. See [the static deployment guide](docs/STATIC_DEPLOYMENT.md); no deployment is performed by these scripts.
+Build `web/dist` and publish its contents beneath a directory with an `index.html` entry point. Relative asset and snapshot URLs support nested paths; no deployment is performed by these scripts.
 
 ## Verification
 
