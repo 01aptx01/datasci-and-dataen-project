@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const { parseB4ComparisonRow, modelId, modelLabel } = await import("../dist/assets/data/schemas.js");
+const { parseB4ComparisonRow, parsePortfolioRiskRow, modelId, modelLabel } = await import("../dist/assets/data/schemas.js");
 const { selectSameDateForecasts } = await import("../dist/assets/data/replay.js");
 const { loadSnapshot, filterForecastRows } = await import("../dist/assets/data/loadSnapshot.js");
 
@@ -73,3 +73,41 @@ test("B4 1.1.0 snapshot loads all 5 models, pending rows, and B4 comparisons", a
   assert.equal(b4Pending.length, 5);
   assert.equal(b4Pending[0]?.targetRealizedVol5d, null);
 });
+
+test("B4 incomplete-ETF portfolio row stays INCOMPLETE_INPUTS without fabricating volatility", () => {
+  const { parsePortfolioRiskRow } = stateHelpers();
+  const row = parsePortfolioRiskRow({
+    split: "test",
+    prediction_date: "2026-09-25",
+    model_name: "HAR_X_OLS",
+    prediction_mode: "HISTORICAL_REPLAY",
+    feature_run_id: "feat-1",
+    replay_run_id: "replay-1",
+    input_snapshot_id: "a".repeat(64),
+    spy_forecast_vol_annualized: "0.18",
+    ief_forecast_vol_annualized: "",
+    gld_forecast_vol_annualized: "0.21",
+    spy_forecast_status: "VALID",
+    ief_forecast_status: "INVALID",
+    gld_forecast_status: "VALID",
+    corr_spy_ief_20d: "0.1",
+    corr_spy_gld_20d: "0.2",
+    corr_ief_gld_20d: "0.3",
+    is_corr_ready: "true",
+    correlation_run_id: "corr-1",
+    weight_spy: "0.5",
+    weight_ief: "0.3",
+    weight_gld: "0.2",
+    portfolio_vol_annualized: "",
+    portfolio_status: "INCOMPLETE_INPUTS",
+    missing_inputs: "[\"IEF_INVALID_FORECAST\"]",
+    covariance_matrix: "",
+  });
+  assert.equal(row.status, "INCOMPLETE_INPUTS");
+  assert.equal(row.portfolioVol, null);
+  assert.deepEqual(row.missingInputs, ["IEF_INVALID_FORECAST"]);
+});
+
+function stateHelpers() {
+  return { parsePortfolioRiskRow };
+}

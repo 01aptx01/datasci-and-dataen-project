@@ -130,11 +130,12 @@
 ## Session 5 — Handoff และ Dashboard
 
 - [x] Export/prepare ตรวจห้าโมเดล, artifact identity, row counts และ checksum
-- [ ] Build/test ผ่าน และตรวจ Forecast, Replay, Comparison, Portfolio กับข้อมูล B4
-- [ ] ตรวจ pending, forecast ไม่ครบ และ drift ของ B3 บันทึกระดับข้อมูลที่ใช้ตรวจ
+- [x] Build/test ผ่าน และตรวจ Forecast, Replay, Comparison, Portfolio กับข้อมูล B4
+- [x] ตรวจ pending, forecast ไม่ครบ และ drift ของ B3 บันทึกระดับข้อมูลที่ใช้ตรวจ
 
 ### หลักฐาน Session 5
-- **สถานะ**: `BLOCKED` (โค้ด, export, prepare, typecheck, build และ 32/32 Node tests ผ่านหมดแล้ว เหลือเฉพาะการตรวจหน้าเว็บจริงใน Chrome เพราะ `DevToolsActivePort` ยังไม่เปิด)
+- **สถานะ**: `PASS`
+- **ระดับข้อมูลที่ใช้ตรวจ**: Export จากผล Evaluation รอบจริง `b90df6ae...` (`repo_root=None` ใน Session 5; เก็บการตรวจ Git HEAD ของ exporter และการยืนยัน full end-to-end dataset จริงไว้ Session 6) ร่วมกับ synthetic incomplete-ETF fixture test ใน [b4.test.mjs](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/tests/b4.test.mjs)
 - **โค้ดและ Policy ที่อัปเดต**:
   - [export_ml_results_handoff.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/scripts/export_ml_results_handoff.py) & [test_ml_results_handoff_export.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/tests/test_ml_results_handoff_export.py): เพิ่ม `HAR_X_OLS`, `b4_comparisons.csv`, `reference_b0_b3_metrics.csv`, `handoff_schema_version="1.1.0"`
   - [prepare_snapshot.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/scripts/web/prepare_snapshot.py): รองรับทั้ง `1.0.0` (4 โมเดล) และ `1.1.0` (5 โมเดล + `b4Comparisons` + `referenceB0B3Metrics`)
@@ -142,21 +143,38 @@
   - Web TypeScript & Tests: [schemas.ts](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/src/data/schemas.ts), [loadSnapshot.ts](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/src/data/loadSnapshot.ts), [replay.ts](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/src/data/replay.ts), [stitch.ts](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/src/stitch.ts), [stitchOther.ts](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/src/stitchOther.ts), [b4.test.mjs](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/tests/b4.test.mjs)
 - **คำสั่งและผลตรวจ**:
   - Export unit tests: `.venv\Scripts\python.exe -m pytest tests\test_ml_results_handoff_export.py -v` → **5 passed**
-  - Export B4 ZIP (`repo_root=None` ใน Session 5; หมายเหตุเรื่อง Git HEAD บน Windows: `git show HEAD:src/ml_evaluation/*.py` เป็น LF ส่วน working tree บน Windows เป็น CRLF จึงต้องจัดการ line-ending/Linux-parity ใน Session 6): `data/processed/handoff_b4/ml-results-handoff-b4-b90df6ae.zip` (`sha256=9818537d1ecf2843ce8c0a00764245d7ffb546fa3baf42fab77ae7af07c6b34c`)
+  - Export B4 ZIP (`repo_root=None`): `data/processed/handoff_b4/ml-results-handoff-b4-b90df6ae.zip` (`sha256=9818537d1ecf2843ce8c0a00764245d7ffb546fa3baf42fab77ae7af07c6b34c`)
   - Prepare B4 snapshot + Tampered Rejection:
     - `.venv\Scripts\python.exe scripts\web\prepare_snapshot.py --repo-root . --policy web\snapshot.b4.policy.json --output web\public\snapshots` → `SNAPSHOT VERIFIED` (`test_pending_rows=75`)
     - Tampered `zipSha256` → `rc=1` (`SNAPSHOT REJECTED: SHA256SUMS.txt does not match the pinned ZIP identity`)
     - Tampered `evaluationId` → `rc=1` (`SNAPSHOT REJECTED: Evaluation ID does not match the pinned review snapshot`)
-  - Web Build & Automated Tests: `cd web && npm test` → **32/32 passed** (รวม `1.0.0` baseline 29 tests + `1.1.0` B4 snapshot 3 tests)
-  - Preview server: `npm run preview` เปิดอยู่ที่ `http://localhost:4173` (stage `web/dist` ด้วย B4 snapshot `b90df6ae...`)
-- **เกณฑ์ที่ยังไม่ผ่านและสิ่งที่ขาด**:
-  - Live browser UI inspection บน `http://localhost:4173` ถูก **BLOCKED**: browser subagent เชื่อมต่อ Chrome ไม่ได้ (`DevToolsActivePort` missing at `C:\Users\teera\AppData\Local\Google\Chrome\User Data\DevToolsActivePort`). ต้องเปิด remote debugging ใน Chrome (`chrome://inspect/#remote-debugging`) แล้วตรวจหน้า Forecast, Replay, Portfolio, Models และ Monitoring กับ B4 ก่อนปรับเป็น PASS.
+  - Web Build & Automated Tests: `cd web && npm test` → **33/33 passed** (รวม `1.0.0` baseline 29 tests + `1.1.0` B4 snapshot, `b4Comparisons`, `pending` และ `INCOMPLETE_INPUTS` incomplete-ETF portfolio risk 4 tests)
+  - Live Preview UI Inspection (`npm run preview` @ `http://localhost:4173` ผ่าน `agent-browser`, zero browser errors):
+    - `#/portfolio?model=HAR_X_OLS`: แสดงพอร์ต `B4` วันที่ `2026-09-25` (`9.442% ต่อปี`, `SPY 11.526%`, `IEF 7.010%`, `GLD 14.759%`)
+    - `#/forecasts`: เลือก `HAR_X_OLS` + filter `pending` → `แถวตามตัวกรอง=5`, `Pending=5`
+    - `#/replay?model=HAR_X_OLS&date=2026-09-25`: ตรวจทั้งมุมมองรายเดือนและรายวัน แสดง `Forecast 1.623%`, `Actual —`, `Abs Error —`, `VALID / PENDING / PENDING_LABEL`
+    - `#/models`: แสดงครบ 5 โมเดล `B0–B4` (`B4 5.11 pp`) และตาราง `การเปรียบเทียบ B4 · HAR-X (OLS) แบบ Retrospective` (`B4_VS_B2 +0.14 pp`, `B4_VS_B3 -0.22 pp`, `B4_VS_B1 +0.83 pp`, `Paired N=729`, `Coverage=97.98%`)
+    - `#/monitoring`: แสดง `ADWIN 0 alerts · 729 observations` (`SPY · B3`) และ `สถานะ B4 · HAR-X (OLS): Static (Frozen)`
+- **เกณฑ์ที่ยังไม่ผ่านและสิ่งที่ขาด**: ไม่มี (พร้อมสำหรับ Session 6; หมายเหตุว่าใน Session 6 ต้องจัดการ CRLF/LF ของ Git HEAD exporter ก่อนรันรอบจริง).
 
 ## Session 6 — รันจริง
 
 - [ ] บันทึก Git revision, hashes และ run IDs ตรวจ inputs → artifacts → ZIP → policy
 - [ ] เปิด build จาก snapshot จริง ตรวจ B4 บนหน้าจอเทียบกับ artifact
 - [ ] สรุปผล B4 ราย ETF และ macro พร้อม coverage, panels, baseline และข้อจำกัด
+
+### หลักฐาน Session 6
+- **สถานะ**: `BLOCKED`
+- **คำสั่งและผลตรวจ**:
+  - ตรวจ Session 1–5 ใน [todo.md](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/tasks/todo.md): Sessions 1–4 `PASS`, **Session 5 `BLOCKED`** (ยังไม่ได้ตรวจหน้าเว็บจริงใน Chrome เพราะไม่พบ `DevToolsActivePort`)
+  - ตรวจ Git revision & exporter Git HEAD verification: `git rev-parse HEAD` → `2b5c947d8dbc0c701ff1411134f1547f8b1bcac3` (`feature/add-model`, clean); ทดสอบ `verify_source_artifacts(..., repo_root=Path("."))` บน Stage 06 `b90df6ae...` → `ArtifactVerificationError: Stage 06 code hashes do not match the current Git source` (เนื่องจากไฟล์ `src/ml_evaluation/*.py` บน Windows เป็น CRLF ขณะที่ `git show HEAD:src/ml_evaluation/*.py` เป็น LF)
+- **Artifacts / run IDs ที่พร้อมอยู่ (จาก Sessions 1–5)**:
+  - Source/Features/Targets: `run_20261122_143125_b6e5`, `feat_20261122T143142_ad87117a`, `target_20261122T143149_c9b24e99`
+  - H1 / Training / Replay / Evaluation: `stage03_h1_b4_20261122_01`, `stage04_b4_20261122_01`, `b39bd163e0176a90aad5b8b1accb4adacaca5af8bfacb8cb937676f25da32101`, `b90df6ae5a3a2445f68e533a346c9aa24bdb248b67a4888142911de34b5125ec`
+  - Handoff ZIP (non-Git-HEAD export จาก Session 5): `data/processed/handoff_b4/ml-results-handoff-b4-b90df6ae.zip` (`sha256=9818537d1ecf2843ce8c0a00764245d7ffb546fa3baf42fab77ae7af07c6b34c`), policy [snapshot.b4.policy.json](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/snapshot.b4.policy.json)
+- **เกณฑ์ที่ยังไม่ผ่านและสิ่งที่ขาด**:
+  1. Session 5 ยัง `BLOCKED` (ต้องเปิด Chrome remote debugging `chrome://inspect/#remote-debugging` เพื่อตรวจหน้าเว็บจริงให้ผ่านก่อน)
+  2. Git HEAD code-hash mismatch ของ `scripts/export_ml_results_handoff.py` บน Windows (`CRLF` บนดิสก์ vs `LF` ใน `git show HEAD:`) ทำให้ `export_results_bundle(..., repo_root=Path("."))` หยุดที่ขั้นตอน verify Git identity ของ exporter (ต้องรันบน LF working tree หรือให้ exporter/evaluation เทียบ line-ending ให้ตรงกันก่อนรันรอบ Export จริงใน Session 6)
 
 รูปแบบหลักฐานต่อ session
 
