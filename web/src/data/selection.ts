@@ -129,28 +129,28 @@ export function validateExperimentSelection(
   source: SelectionSource,
   requirePortfolioRow = false,
 ): SelectionValidationResult {
-  if (selection.evaluationId !== source.evaluationId) return { status: "invalid", message: "Evaluation ID ไม่ตรงกับ snapshot ที่ตรวจแล้ว" };
-  if (selection.replayId !== source.replayId) return { status: "invalid", message: "Replay ID ไม่ตรงกับ snapshot ที่ตรวจแล้ว" };
-  if (selection.split !== "test" && selection.split !== "validation") return { status: "invalid", message: "split ในลิงก์ไม่รองรับ" };
-  if (!isIsoCalendarDate(selection.predictionDate)) return { status: "invalid", message: "วันที่ prediction ในลิงก์ไม่ใช่วันที่ YYYY-MM-DD ที่ถูกต้อง" };
-  if (!models.includes(selection.modelName) || !tickers.includes(selection.ticker)) return { status: "invalid", message: "model หรือตัวสินทรัพย์ในลิงก์ไม่รองรับ" };
-  if (selection.view !== "as-of" && selection.view !== "retrospective") return { status: "invalid", message: "รูปแบบการดูผลในลิงก์ไม่รองรับ" };
+  if (selection.evaluationId !== source.evaluationId) return { status: "invalid", message: "Evaluation ID ในลิงก์ไม่ตรงกับชุดข้อมูลนี้" };
+  if (selection.replayId !== source.replayId) return { status: "invalid", message: "Replay ID ในลิงก์ไม่ตรงกับชุดข้อมูลนี้" };
+  if (selection.split !== "test" && selection.split !== "validation") return { status: "invalid", message: "split หรือชุดข้อมูลในลิงก์ไม่รองรับ" };
+  if (!isIsoCalendarDate(selection.predictionDate)) return { status: "invalid", message: "วันที่ทำนายในลิงก์ไม่ถูกต้อง" };
+  if (!models.includes(selection.modelName) || !tickers.includes(selection.ticker)) return { status: "invalid", message: "ชื่อโมเดลหรือตัวสินทรัพย์ในลิงก์ไม่รองรับ" };
+  if (selection.view !== "as-of" && selection.view !== "retrospective") return { status: "invalid", message: "รูปแบบการแสดงผลในลิงก์ไม่รองรับ" };
   if (selection.asOfDate && (!isIsoCalendarDate(selection.asOfDate) || selection.asOfDate < selection.predictionDate)) {
-    return { status: "invalid", message: "As-of date ต้องเป็นวันที่ถูกต้องและไม่ก่อน prediction date" };
+    return { status: "invalid", message: "วันที่ตัดข้อมูลต้องไม่อยู่ก่อนวันที่ทำนาย" };
   }
-  if (selection.rangeStart && !isIsoCalendarDate(selection.rangeStart)) return { status: "invalid", message: "rangeStart ไม่ใช่วันที่ YYYY-MM-DD ที่ถูกต้อง" };
-  if (selection.rangeEnd && !isIsoCalendarDate(selection.rangeEnd)) return { status: "invalid", message: "rangeEnd ไม่ใช่วันที่ YYYY-MM-DD ที่ถูกต้อง" };
+  if (selection.rangeStart && !isIsoCalendarDate(selection.rangeStart)) return { status: "invalid", message: "วันเริ่มช่วงในลิงก์ไม่ถูกต้อง" };
+  if (selection.rangeEnd && !isIsoCalendarDate(selection.rangeEnd)) return { status: "invalid", message: "วันสิ้นสุดช่วงในลิงก์ไม่ถูกต้อง" };
   if (selection.rangeStart && selection.rangeEnd && selection.rangeStart > selection.rangeEnd) {
-    return { status: "invalid", message: "rangeStart ต้องไม่อยู่หลัง rangeEnd" };
+    return { status: "invalid", message: "วันเริ่มช่วงต้องไม่อยู่หลังวันสิ้นสุด" };
   }
   if (selection.rangePreset === "all-test" && (selection.rangeStart || selection.rangeEnd)) {
-    return { status: "invalid", message: "All Test ไม่ควรมีขอบเขตวันที่กำหนดเอง" };
+    return { status: "invalid", message: "Test ทั้งหมดไม่ควรกำหนดวันเริ่มหรือวันสิ้นสุดเอง" };
   }
   if (selection.rangePreset === "last20" && (!selection.rangeStart || !selection.rangeEnd)) {
-    return { status: "invalid", message: "Last 20 ต้องมีวันเริ่มและวันสิ้นสุดในลิงก์" };
+    return { status: "invalid", message: "ช่วง 20 วันล่าสุดต้องมีวันเริ่มและวันสิ้นสุด" };
   }
   if (selection.rangePreset === "custom" && !selection.rangeStart && !selection.rangeEnd) {
-    return { status: "invalid", message: "Custom range ต้องมีวันเริ่มหรือวันสิ้นสุดอย่างน้อยหนึ่งค่า" };
+    return { status: "invalid", message: "ช่วงวันที่กำหนดเองต้องมีวันเริ่มหรือวันสิ้นสุดอย่างน้อยหนึ่งวัน" };
   }
 
   const forecast = source.forecasts.find((row) =>
@@ -163,13 +163,13 @@ export function validateExperimentSelection(
   if (requirePortfolioRow && !portfolio) {
     return {
       status: "invalid",
-      message: `ไม่มี recorded portfolio row สำหรับ ${selection.predictionDate} · ${selection.modelName}`,
+      message: `ไม่พบแถวความเสี่ยงพอร์ตสำหรับวันที่ ${selection.predictionDate} และโมเดล ${selection.modelName}`,
     };
   }
   if (!forecast && !portfolio) {
     return {
       status: "invalid",
-      message: `ไม่มี recorded forecast สำหรับ ${selection.ticker} · ${selection.modelName} · ${selection.split} · ${selection.predictionDate}`,
+      message: `ไม่พบ Forecast ของ ${selection.ticker}, โมเดล ${selection.modelName}, ชุด ${selection.split}, วันที่ ${selection.predictionDate}`,
     };
   }
   if (selection.asOfDate) {
@@ -177,7 +177,7 @@ export function validateExperimentSelection(
       ? source.portfolioRisk.some((row) => row.split === selection.split && row.modelName === selection.modelName && row.predictionDate === selection.asOfDate)
       : source.forecasts.some((row) => row.split === selection.split && row.ticker === selection.ticker && row.predictionDate === selection.asOfDate);
     if (!hasAsOfSourceDate) {
-      return { status: "invalid", message: `ไม่มี XNYS session ${selection.asOfDate} ใน source ที่เลือก` };
+      return { status: "invalid", message: `ไม่พบวันตัดข้อมูล ${selection.asOfDate} ในชุดข้อมูลที่เลือก` };
     }
   }
   return { status: "valid", selection, ...(forecast ? { forecast } : {}) };

@@ -40,7 +40,7 @@ export function hypothesisDecisionThai(decision: string): string {
 export function hypothesisMethodThai(hypothesisId: "H1" | "H2" | "H3", method: string): string {
   if (hypothesisId === "H1") {
     const lag = /maxlags\s*=\s*(\d+)/i.exec(method)?.[1] ?? "5";
-    return `ใช้ OLS (ถดถอยเชิงเส้น) และ Newey–West/HAC เพื่อรองรับความคลาดเคลื่อนที่สัมพันธ์กันตามเวลา โดยพิจารณาย้อนหลัง ${lag} วันซื้อขาย ทดสอบความสัมพันธ์เชิงบวก และปรับค่า p ด้วย Holm สำหรับ SPY, IEF และ GLD`;
+    return `ใช้ OLS (ถดถอยเชิงเส้น) และปรับช่วงความเชื่อมั่นแบบ HAC เพื่อรองรับข้อมูลรายวันที่สัมพันธ์กัน โดยใช้ช่วงย้อนหลัง ${lag} วันซื้อขาย ทดสอบความสัมพันธ์เชิงบวก และปรับค่า p ด้วย Holm สำหรับ SPY, IEF และ GLD`;
   }
   const blockLength = /(\d+)\s+XNYS sessions/i.exec(method)?.[1] ?? "10";
   const replicates = Number((/[\d,]+(?=\s+replicates)/i.exec(method)?.[0] ?? "2,000").replaceAll(",", "")).toLocaleString("en-US");
@@ -65,7 +65,7 @@ export function summarizeH1EvidenceThai(row: H1ResultRow): string {
   const conclusion = /^reject h0\b/.test(normalizedDecision) && row.beta > 0
     ? "ผลทดสอบสนับสนุนความสัมพันธ์เชิงบวกในชุด Train"
     : "ผลทดสอบยังไม่ให้หลักฐานเพียงพอสำหรับความสัมพันธ์เชิงบวกในชุด Train";
-  return `ชุด Train ของ ${row.ticker}: เมื่อ RV5 ย้อนหลัง 5 วันเพิ่มขึ้น 1 จุดเปอร์เซ็นต์ Forward RV5 มีแนวโน้ม${direction}ประมาณ ${estimate} (β = ${row.beta.toFixed(3)}, N = ${row.n.toLocaleString()}) ${conclusion} แต่ผลนี้ไม่ยืนยันเหตุและผลหรือผลใน Test`;
+  return `ชุด Train ของ ${row.ticker}: เมื่อ RV5 ย้อนหลัง 5 วันเพิ่มขึ้น 1 จุดเปอร์เซ็นต์ Forward RV5 มีแนวโน้ม${direction}ประมาณ ${estimate} (β = ${row.beta.toFixed(3)}, จำนวนจุด ${row.n.toLocaleString()}) ${conclusion} แต่ผลนี้ไม่ยืนยันเหตุและผลหรือผลใน Test`;
 }
 
 export function summarizeComparativeEvidenceThai(row: HypothesisResultRow): string {
@@ -83,5 +83,5 @@ export function renderHypothesisResultCard(row: HypothesisResultRow, unit: Resea
   if (row.hypothesisId !== "H2" && row.hypothesisId !== "H3") return "";
   const pairCounts = Object.entries(row.pairedNByTicker).map(([ticker, count]) => `${ticker} ${count.toLocaleString()}`).join(", ");
   const interval = row.confidenceInterval95.map((value) => formatAnnualized(value, unit)).join(", ");
-  return `<article class="research-hypothesis-card"><div class="section-card-heading"><div><span class="section-overline">${row.hypothesisId} · Test รวม ETF</span><h4>${escapeHtml(hypothesisQuestionThai(row.hypothesisId))}</h4></div><span class="pill pill-neutral">${escapeHtml(hypothesisDecisionThai(row.decision))}</span></div><dl class="research-result-grid"><div><dt>ผลต่าง MAE (ΔMAE)</dt><dd>${formatDelta(row.effectSize, unit)}</dd></div><div><dt>ช่วงความเชื่อมั่น 95%</dt><dd>[${interval}]</dd></div><div><dt>คู่ข้อมูลที่ใช้ / คาดไว้</dt><dd>${row.nPaired.toLocaleString()} / ${row.nExpected.toLocaleString()}</dd></div><div><dt>คู่ข้อมูลแยกตาม ETF</dt><dd>${escapeHtml(pairCounts)}</dd></div><div><dt>ค่า p หลังปรับ Holm</dt><dd>${row.adjustedPValue.toExponential(3)}</dd></div><div><dt>วิธีทดสอบ</dt><dd>${escapeHtml(hypothesisMethodThai(row.hypothesisId, row.method))}</dd></div><div><dt>สถานะการคำนวณ</dt><dd>${escapeHtml(hypothesisStatusThai(row.statisticalStatus))}</dd></div><div><dt>เกณฑ์ตัดสินผล</dt><dd>${(row.alpha * 100).toFixed(0)}% (α = ${row.alpha.toFixed(2)})</dd></div></dl><p class="research-interpretation"><strong>อ่านผล:</strong> ${escapeHtml(summarizeComparativeEvidenceThai(row))}</p></article>`;
+  return `<article class="research-hypothesis-card"><div class="section-card-heading"><div><h4>${escapeHtml(hypothesisQuestionThai(row.hypothesisId))}</h4></div><span class="pill pill-neutral">${escapeHtml(hypothesisDecisionThai(row.decision))}</span></div><dl class="research-result-grid"><div><dt>ผลต่าง MAE (ΔMAE)</dt><dd>${formatDelta(row.effectSize, unit)}</dd></div><div><dt>ช่วงความเชื่อมั่น 95%</dt><dd>[${interval}]</dd></div><div><dt>คู่ข้อมูลที่ใช้ / คาดไว้</dt><dd>${row.nPaired.toLocaleString()} / ${row.nExpected.toLocaleString()}</dd></div><div><dt>คู่ข้อมูลแยกตาม ETF</dt><dd>${escapeHtml(pairCounts)}</dd></div><div><dt>ค่า p หลังปรับ Holm</dt><dd>${row.adjustedPValue.toExponential(3)}</dd></div><div><dt>วิธีทดสอบ</dt><dd>${escapeHtml(hypothesisMethodThai(row.hypothesisId, row.method))}</dd></div><div><dt>สถานะการคำนวณ</dt><dd>${escapeHtml(hypothesisStatusThai(row.statisticalStatus))}</dd></div><div><dt>เกณฑ์ตัดสินผล</dt><dd>${(row.alpha * 100).toFixed(0)}% (α = ${row.alpha.toFixed(2)})</dd></div></dl><p class="research-interpretation"><strong>อ่านผล:</strong> ${escapeHtml(summarizeComparativeEvidenceThai(row))}</p></article>`;
 }
