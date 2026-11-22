@@ -13,9 +13,9 @@ type ForecastStatusFilter = "all" | "mature" | "pending" | "invalid";
 const pages: Page[] = ["overview", "forecasts", "replay", "portfolio", "models", "monitoring", "evidence"];
 const tickers: Ticker[] = ["SPY", "IEF", "GLD"];
 const driftFeatures = ["ret_1d_t", "ret_lag_1d", "ret_lag_2d", "ret_trailing_5d", "ret_trailing_20d", "rv_5d", "rv_20d", "rv_60d"];
-const models: ModelName[] = ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"];
+const models: ModelName[] = ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS"];
 const tickerLabel: Record<Ticker, string> = { SPY: "SPY · หุ้นสหรัฐ", IEF: "IEF · Treasury", GLD: "GLD · ทองคำ" };
-const modelLabel: Record<ModelName, string> = { CONSTANT_BASELINE: "B0 · Constant baseline", ROLLING_20D_BASELINE: "B1 · Rolling 20D", STATIC_SGD: "B2 · Static SGD", ONLINE_SGD: "B3 · Online SGD" };
+const modelLabel: Record<ModelName, string> = { CONSTANT_BASELINE: "B0 · Constant baseline", ROLLING_20D_BASELINE: "B1 · Rolling 20D", STATIC_SGD: "B2 · Static SGD", ONLINE_SGD: "B3 · Online SGD", HAR_X_OLS: "B4 · HAR-X (OLS)" };
 const pageLabel: Record<Page, string> = {
   overview: "ภาพรวม", forecasts: "พยากรณ์", replay: "เล่นย้อนหลัง", portfolio: "ทดลองพอร์ต",
   models: "โมเดล", monitoring: "ติดตาม", evidence: "หลักฐาน",
@@ -247,7 +247,7 @@ function replayPage(snapshot: ReadySnapshot, state: State): string {
     + "<div class=\"st-replay-metrics\"><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Forecast</span><strong class=\"st-replay-metric-value\">" + replayRisk(visibleForecast, state.replay.scale) + "</strong></div><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Actual</span><strong class=\"st-replay-metric-value\">" + replayRisk(reveal.actual, state.replay.scale) + "</strong></div><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Abs Error</span><strong class=\"st-replay-metric-value\">" + replayRisk(reveal.error, state.replay.scale) + "</strong></div></div>"
     + "<div class=\"st-source-meta\"><span>Forecast ที่บันทึก: <strong>" + esc(modelId(state.replay.model)) + " " + esc(state.replay.model.replaceAll("_", " ")) + "</strong></span><span>สถานะ source: " + esc(row.forecastStatus) + " / " + esc(row.labelStatus) + " / " + esc(row.evaluationStatus) + "</span><span>Prediction ID <code>" + esc(row.predictionId) + "</code></span></div><p class=\"st-source-note\">" + (row.evaluationStatus === "PENDING_LABEL" ? "แถวนี้ยัง Pending จากต้นทาง จึงไม่มี Actual หรือ error ให้เปิดเผย" : "Actual แสดงจาก evaluation row ที่ตรงกับ prediction ID เมื่อ target ครบและกดเปิดเผย") + "</p></section></aside></div>"
     + "<div class=\"st-replay-lower-grid\">" + featureDriftCard + "<section class=\"st-card\"><div class=\"st-section-heading\"><h2>Error Drift · ADWIN</h2><span>" + driftAlerts + " เหตุการณ์</span></div><p>พบ " + driftAlerts + " alerts ในช่วง " + esc(monthLabel(activeMonth)) + " · " + drift.length.toLocaleString() + " observations จาก snapshot</p></section><section class=\"st-card\"><div class=\"st-section-heading\"><h2>Online Update · " + modelId(state.replay.model) + "</h2><span>ไม่มีข้อมูลใน snapshot</span></div><p>ไม่มีบันทึก Online Update รายวันในชุดข้อมูลนี้</p></section></div>"
-    + "<details class=\"st-source-details\"><summary>เปรียบเทียบทั้งสี่โมเดลในวันเดียวกัน</summary><div class=\"st-table-wrap\"><table class=\"st-table\"><thead><tr><th>โมเดล</th><th>Forecast</th><th>Actual</th><th>Abs Error</th><th>สถานะ</th></tr></thead><tbody>" + comparisons + "</tbody></table></div></details>"
+    + "<details class=\"st-source-details\"><summary>เปรียบเทียบทุกโมเดลในวันเดียวกัน</summary><div class=\"st-table-wrap\"><table class=\"st-table\"><thead><tr><th>โมเดล</th><th>Forecast</th><th>Actual</th><th>Abs Error</th><th>สถานะ</th></tr></thead><tbody>" + comparisons + "</tbody></table></div></details>"
     + "<p class=\"st-source-note\">Replay เป็นการจำลองย้อนหลังจากข้อมูลที่บันทึกไว้ · Actual จะแสดงเมื่อถึง target end และกดเปิดเผย · แถว Pending จะคงซ่อน Actual เสมอ</p>";
 }
 function portfolioPage(snapshot: ReadySnapshot, state: State): string {

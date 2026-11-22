@@ -100,7 +100,7 @@ def validate_status_row(row: dict[str, str], row_number: int) -> None:
         raise SnapshotError(f"Unexpected split on forecast audit row {row_number}: {split}")
     if row["ticker"] not in {"SPY", "IEF", "GLD"}:
         raise SnapshotError(f"Unexpected ticker on forecast audit row {row_number}")
-    if row["model_name"] not in {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"}:
+    if row["model_name"] not in {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS"}:
         raise SnapshotError(f"Unexpected model on forecast audit row {row_number}")
     actual = number_or_none(row["target_realized_vol_5d"], "target_realized_vol_5d", row_number)
     error = number_or_none(row["absolute_error"], "absolute_error", row_number)
@@ -179,7 +179,7 @@ def validate_d4_d5_sources(
     audit_rows: list[dict[str, str]], evaluation_rows: list[dict[str, str]],
     sources: dict[str, list[dict[str, str]]], policy: dict[str, Any],
 ) -> None:
-    models = {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"}
+    models = {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS"}
     tickers = {"SPY", "IEF", "GLD"}
     audit_by_scope = {(row["split"], row["prediction_date"], row["ticker"], row["model_name"]): row for row in audit_rows}
     portfolio_keys: set[tuple[str, str, str]] = set()
@@ -399,7 +399,7 @@ def validate_json_identity(
 
 def verify_archive(repo_root: Path, policy: dict[str, Any]) -> tuple[dict[str, bytes], dict[str, Any], dict[str, Any], dict[str, Any]]:
     source = policy["source"]
-    downloads = repo_root / "docs" / "ml-results" / "downloads"
+    downloads = repo_root / source.get("zipDir", "docs/ml-results/downloads")
     zip_path = downloads / source["zipName"]
     if not zip_path.is_file():
         raise SnapshotError(f"Handoff ZIP is missing: {zip_path}")
@@ -435,7 +435,7 @@ def verify_archive(repo_root: Path, policy: dict[str, Any]) -> tuple[dict[str, b
             "sourceIdentity", "executionManifest", "stage05Manifest", "forecastAudit", "evaluation",
             "modelMetrics", "pairComparisons", "coverage", "portfolioRisk", "rollingMae20", "driftErrorTimeline",
             "h1ScatterData", "h1Results", "h1Sensitivity", "hypothesisResults", "bootstrapDiagnostics", "highVolatilityMetrics",
-        )]
+        )] + [member_names[k] for k in ("b4Comparisons", "referenceB0B3Metrics") if k in member_names]
         for name in required:
             if name not in internal_member_checksums:
                 raise SnapshotError(f"Required handoff member is missing: {name}")
@@ -448,6 +448,127 @@ def verify_archive(repo_root: Path, policy: dict[str, Any]) -> tuple[dict[str, b
         raise SnapshotError("Handoff identity documents must be JSON objects")
     validate_json_identity(identity, stage06, stage05, policy)
     return payloads, identity, stage06, stage05
+
+
+def validate_b4_comparisons(
+    audit_rows: list[dict[str, str]],
+    evaluation_rows: list[dict[str, str]],
+    comparison_rows: list[dict[str, str]],
+) -> None:
+    tickers = ("SPY", "IEF", "GLD")
+    models = ("CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS")
+    comparator_by_id = {
+        "B4_VS_B2": "STATIC_SGD",
+        "B4_VS_B3": "ONLINE_SGD",
+        "B4_VS_B1": "ROLLING_20D_BASELINE",
+    }
+    expected_scopes = {(comparison_id, ticker) for comparison_id in comparator_by_id for ticker in (*tickers, "MACRO")}
+    row_by_scope: dict[tuple[str, str], tuple[int, dict[str, str]]] = {}
+    for row_number, row in enumerate(comparison_rows, start=2):
+        scope = (row["comparison_id"], row["ticker"])
+        if scope not in expected_scopes or scope in row_by_scope:
+            raise SnapshotError(f"Unsupported or duplicate B4 comparison scope on row {row_number}")
+        comparator = comparator_by_id[scope[0]]
+        expected_pairing = "equal ETF weight over per-ETF paired anchors" if scope[1] == "MACRO" else "same prediction_date/ticker/split with mature target and both forecasts valid"
+        if (
+            row["split"] != "test"
+            or row["b4_model"] != "HAR_X_OLS"
+            or row["comparator_model"] != comparator
+            or row["direction_definition"] != "comparator_mae_minus_b4_mae (positive means HAR_X_OLS lower error)"
+            or row["evaluation_scope"] != "retrospective_test_non_hypothesis"
+            or row["pairing_policy"] != expected_pairing
+        ):
+            raise SnapshotError(f"B4 comparison identity or semantics are inconsistent on row {row_number}")
+        row_by_scope[scope] = (row_number, row)
+    if set(row_by_scope) != expected_scopes:
+        raise SnapshotError("b4_comparisons.csv does not contain the complete comparison scope")
+
+    evaluation_by_scope: dict[tuple[str, str, str], dict[str, str]] = {}
+    for row_number, row in enumerate(evaluation_rows, start=2):
+        key = (row["prediction_date"], row["ticker"], row["model_name"])
+        if key in evaluation_by_scope:
+            raise SnapshotError(f"Duplicate evaluation model/date/ticker scope on row {row_number}")
+        evaluation_by_scope[key] = row
+    expected_dates = {
+        ticker: {row["prediction_date"] for row in audit_rows if row["split"] == "test" and row["ticker"] == ticker}
+        for ticker in tickers
+    }
+    all_five_n = {
+        ticker: sum(all((date, ticker, model) in evaluation_by_scope for model in models) for date in expected_dates[ticker])
+        for ticker in tickers
+    }
+    base_four_n = {
+        ticker: sum(all((date, ticker, model) in evaluation_by_scope for model in models[:4]) for date in expected_dates[ticker])
+        for ticker in tickers
+    }
+
+    def close(actual: float, expected: float, field: str, row_number: int) -> None:
+        if not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-9):
+            raise SnapshotError(f"B4 comparison {field} does not reconcile with evaluation.csv on row {row_number}")
+
+    for comparison_id, comparator in comparator_by_id.items():
+        summaries: dict[str, dict[str, float | int]] = {}
+        for ticker in tickers:
+            pairs = [
+                (evaluation_by_scope[(date, ticker, "HAR_X_OLS")], evaluation_by_scope[(date, ticker, comparator)])
+                for date in expected_dates[ticker]
+                if (date, ticker, "HAR_X_OLS") in evaluation_by_scope and (date, ticker, comparator) in evaluation_by_scope
+            ]
+            if not pairs:
+                raise SnapshotError(f"B4 comparison {comparison_id}/{ticker} has no paired evaluations")
+            for b4, baseline in pairs:
+                if b4["target_realized_vol_5d"] != baseline["target_realized_vol_5d"] or b4["target_end_date"] != baseline["target_end_date"]:
+                    raise SnapshotError(f"B4 comparison {comparison_id}/{ticker} has mismatched paired target windows")
+            b4_errors = [float(b4["absolute_error"]) for b4, _ in pairs]
+            baseline_errors = [float(baseline["absolute_error"]) for _, baseline in pairs]
+            summaries[ticker] = {
+                "paired_n": len(pairs),
+                "expected_n": len(expected_dates[ticker]),
+                "b4_mae": sum(b4_errors) / len(pairs),
+                "comparator_mae": sum(baseline_errors) / len(pairs),
+                "b4_rmse": math.sqrt(sum(error * error for error in b4_errors) / len(pairs)),
+                "comparator_rmse": math.sqrt(sum(error * error for error in baseline_errors) / len(pairs)),
+            }
+        macro = {
+            "paired_n": sum(int(summaries[ticker]["paired_n"]) for ticker in tickers),
+            "expected_n": sum(int(summaries[ticker]["expected_n"]) for ticker in tickers),
+            "b4_mae": sum(float(summaries[ticker]["b4_mae"]) for ticker in tickers) / len(tickers),
+            "comparator_mae": sum(float(summaries[ticker]["comparator_mae"]) for ticker in tickers) / len(tickers),
+        }
+        summaries["MACRO"] = macro
+        for ticker, summary in summaries.items():
+            row_number, row = row_by_scope[(comparison_id, ticker)]
+            paired_n = int(row["paired_n"])
+            expected_n = int(row["expected_eligible_anchor_count"])
+            if paired_n != int(summary["paired_n"]) or expected_n != int(summary["expected_n"]):
+                raise SnapshotError(f"B4 comparison counts do not match paired evaluations on row {row_number}")
+            b4_mae = number_or_none(row["b4_mae"], "b4_mae", row_number)
+            comparator_mae = number_or_none(row["comparator_mae"], "comparator_mae", row_number)
+            delta = signed_finite(row["delta_mae_comparator_minus_b4"], "delta_mae_comparator_minus_b4", row_number)
+            relative = signed_finite(row["relative_improvement_pct"], "relative_improvement_pct", row_number)
+            coverage = number_or_none(row["paired_coverage"], "paired_coverage", row_number)
+            if None in (b4_mae, comparator_mae, coverage):
+                raise SnapshotError(f"B4 comparison summary is incomplete on row {row_number}")
+            close(float(b4_mae), float(summary["b4_mae"]), "b4_mae", row_number)
+            close(float(comparator_mae), float(summary["comparator_mae"]), "comparator_mae", row_number)
+            expected_delta = float(summary["comparator_mae"]) - float(summary["b4_mae"])
+            close(delta, expected_delta, "delta_mae_comparator_minus_b4", row_number)
+            close(float(coverage), paired_n / expected_n, "paired_coverage", row_number)
+            if float(comparator_mae) == 0:
+                raise SnapshotError(f"B4 comparison relative improvement is undefined on row {row_number}")
+            close(relative, expected_delta / float(summary["comparator_mae"]) * 100.0, "relative_improvement_pct", row_number)
+            common_all = sum(all_five_n.values()) if ticker == "MACRO" else all_five_n[ticker]
+            common_base = sum(base_four_n.values()) if ticker == "MACRO" else base_four_n[ticker]
+            if int(row["common_all_five_n"]) != common_all or int(row["common_b0_b3_n"]) != common_base:
+                raise SnapshotError(f"B4 comparison reference panel counts do not match evaluation.csv on row {row_number}")
+            if ticker == "MACRO":
+                if row["b4_rmse"] or row["comparator_rmse"]:
+                    raise SnapshotError(f"Macro B4 comparison RMSE fields must be blank on row {row_number}")
+            else:
+                b4_rmse = number_or_none(row["b4_rmse"], "b4_rmse", row_number)
+                comparator_rmse = number_or_none(row["comparator_rmse"], "comparator_rmse", row_number)
+                close(float(b4_rmse or 0.0), float(summary["b4_rmse"]), "b4_rmse", row_number)
+                close(float(comparator_rmse or 0.0), float(summary["comparator_rmse"]), "comparator_rmse", row_number)
 
 
 def validate_handoff_csvs(payloads: dict[str, bytes], policy: dict[str, Any]) -> tuple[list[str], list[dict[str, str]], list[dict[str, str]], dict[str, Any]]:
@@ -464,10 +585,13 @@ def validate_handoff_csvs(payloads: dict[str, bytes], policy: dict[str, Any]) ->
     if len(model_metric_rows) != counts["modelMetricsRows"] or len(pair_rows) != counts["pairComparisonsRows"] or len(coverage_rows) != counts["coverageRows"]:
         raise SnapshotError("D3 model or coverage CSV row counts do not match the pinned review snapshot")
 
-    additional_keys = (
+    additional_keys = [
         "portfolioRisk", "rollingMae20", "driftErrorTimeline", "h1ScatterData", "h1Results", "h1Sensitivity",
         "hypothesisResults", "bootstrapDiagnostics", "highVolatilityMetrics",
-    )
+    ]
+    for optional_key in ("b4Comparisons", "referenceB0B3Metrics"):
+        if optional_key in members:
+            additional_keys.append(optional_key)
     additional_rows: dict[str, list[dict[str, str]]] = {}
     additional_headers: dict[str, list[str]] = {}
     for key in additional_keys:
@@ -478,8 +602,10 @@ def validate_handoff_csvs(payloads: dict[str, bytes], policy: dict[str, Any]) ->
             raise SnapshotError(f"{members[key]} row count does not match the pinned review snapshot")
 
     validate_d4_d5_sources(audit_rows, evaluation_rows, additional_rows, policy)
+    if "b4Comparisons" in additional_rows:
+        validate_b4_comparisons(audit_rows, evaluation_rows, additional_rows["b4Comparisons"])
 
-    models = {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"}
+    models = {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS"}
     tickers = {"SPY", "IEF", "GLD"}
     macro_tickers = tickers | {"MACRO"}
     metric_keys: set[tuple[str, str, str]] = set()
@@ -652,6 +778,7 @@ def safe_replace_generated_directory(target: Path, expected_evaluation_id: str, 
         "forecast_audit.csv", "evaluation.csv", "model_metrics.csv", "pair_comparisons.csv", "coverage.csv",
         "portfolio_risk.csv", "rolling_mae20.csv", "drift_error_timeline.csv", "H1_scatter_data.csv", "H1_results.csv",
         "H1_sensitivity.csv", "hypothesis_results.csv", "bootstrap_diagnostics.csv", "high_volatility_metrics.csv",
+        "b4_comparisons.csv", "reference_b0_b3_metrics.csv",
     }
     artifact_names = {artifact.get("path") for artifact in public_outputs.values()}
     expected_names = artifact_names | {"dashboard_snapshot_manifest.json"}
@@ -687,6 +814,7 @@ def prepare_snapshot(repo_root: Path, output_root: Path, policy_path: Path) -> P
             "portfolioRisk": "portfolioRiskRows", "rollingMae20": "rollingMae20Rows", "driftErrorTimeline": "driftErrorTimelineRows",
             "h1ScatterData": "h1ScatterDataRows", "h1Results": "h1ResultsRows", "h1Sensitivity": "h1SensitivityRows",
             "hypothesisResults": "hypothesisResultsRows", "bootstrapDiagnostics": "bootstrapDiagnosticsRows", "highVolatilityMetrics": "highVolatilityMetricsRows",
+            "b4Comparisons": "b4ComparisonsRows", "referenceB0B3Metrics": "referenceB0B3MetricsRows",
         }
         for key, filename in policy["publicOutputs"].items():
             member_key = key
@@ -701,7 +829,7 @@ def prepare_snapshot(repo_root: Path, output_root: Path, policy_path: Path) -> P
             }
 
         manifest = {
-            "schemaVersion": "1.0.0",
+            "schemaVersion": policy.get("schemaVersion", "1.1.0" if "b4Comparisons" in policy["publicOutputs"] else "1.0.0"),
             "sourceRepository": policy["source"]["repository"],
             "sourceHandoffCommit": policy["source"]["handoffCommit"],
             "sourceMainCommitAtStart": policy["source"]["mainCommitAtStart"],

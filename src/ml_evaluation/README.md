@@ -10,7 +10,7 @@ From the repository root, after Stage 03, Stage 04, and Stage 05 artifacts are a
 .venv\Scripts\python.exe -m src.ml_evaluation.run --config config/ml_evaluation.yaml
 ```
 
-The configuration locks the XNYS split dates, strict cutoff, B0-B3 identities, eight core features, Train P80 high-volatility threshold, 20-session rolling window, H1-H3 settings, and default portfolio weights. The paths section binds a run to the current local Stage 03-05 artifacts; update the run-specific paths when upstream artifacts are regenerated.
+The configuration locks the XNYS split dates, strict cutoff, B0-B4 identities, eight core features, Train P80 high-volatility threshold, 20-session rolling window, H1-H3 settings, and default portfolio weights. The paths section binds a run to the current local Stage 03-05 artifacts; update the run-specific paths when upstream artifacts are regenerated.
 
 `rolling_minimum_evaluable: 10` and `minimum_pairs_per_ticker: 30` are explicit implementation details because the approved design leaves these gates configurable. Fewer than 30 paired observations for any ETF yields `Insufficient Evidence` for H2/H3. Rolling diagnostics are omitted until at least 10 of the 20 XNYS sessions have mature, evaluable errors.
 
@@ -19,7 +19,7 @@ The configuration locks the XNYS split dates, strict cutoff, B0-B3 identities, e
 - Validate Stage 03 Parquet inputs against their manifests and publish transactions, then cross-check lineage against the Final Replay.
 - Verify checksums and locked metadata for Final Replay outputs, Stage 04 selected artifacts, and Stage 03 H1 evidence. Verify the saved Replay evaluations against independently joined Labels and immutable Predictions.
 - Use only Test anchors from 2025-10-01 through 2026-09-25 for final Test metrics. Pending labels remain visible in coverage and do not count as forecast failures.
-- Report B0-B3 metrics on their common mature/evaluable Test panel, and report pair-specific B3 comparisons using only matching date/ticker rows. Macro metrics give equal weight to each ETF.
+- Report B0-B4 metrics on their common mature/evaluable Test panel and B4 retrospective pairwise comparisons on matching date/ticker rows. Macro metrics give equal weight to each ETF.
 - Set each ETF's High-Vol threshold from eligible, purge-clean Train labels only. Keep monthly and yearly metrics split-separated. Rolling metrics use fixed XNYS-session windows.
 - Reconcile B3's Test ADWIN error stream one-to-one with its mature/evaluable Test predictions. ADWIN remains a monitor; alerts do not change model state or scores.
 - Compute forecast-based portfolio risk for each model/date from all three forecasts and same-date 20-session correlations. Invalid, incomplete, or non-PSD inputs produce `INCOMPLETE_INPUTS`. Default weights are 50/30/20; the pure risk consumer accepts different valid weights without loading or retraining a model.

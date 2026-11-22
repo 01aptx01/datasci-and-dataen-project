@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -10,18 +11,25 @@ import numpy as np
 import pandas as pd
 import pandas_market_calendars as market_calendars
 import pytest
-from sklearn.linear_model import SGDRegressor
+from sklearn.linear_model import LinearRegression, SGDRegressor
 
 from src.features.pipeline import CORE_FEATURE_COLUMNS, SUPPORTED_TICKERS
 from src.ml_dataset.dataset import DatasetView, PreparationReport, PreparedDataset
 from src.ml_training import (
+    B4_MODEL_ID,
+    B4_MODEL_NAME,
+    B4_MODEL_VERSION,
     CandidateConfig,
     TrainingConfig,
     TrainingError,
+    b4_state_sha256,
+    evaluate_b4_validation,
     evaluate_candidate,
+    fit_b4_ols,
     model_state_sha256,
     predict_baselines,
     run_training_selection,
+    scaler_state_sha256,
 )
 from src.ml_training import pipeline as training_pipeline
 
@@ -155,13 +163,59 @@ def _synthetic_prepared() -> tuple[PreparedDataset, pd.DataFrame]:
 def test_training_config_locks_grid_and_deterministic_selection_rules() -> None:
     config = TrainingConfig.from_yaml()
 
+    assert config.training_config_version == "1.1.0"
     assert len(config.grid) == 27
     assert {item.eta0 for item in config.grid} == {0.0001, 0.001, 0.01}
     assert {item.alpha for item in config.grid} == {1e-5, 1e-4, 1e-3}
     assert {item.max_iter for item in config.grid} == {20, 50, 100}
     assert config.coverage_policy == "all_expected_paired_anchors_required"
+    assert config.b4_estimator == "LinearRegression"
+    assert config.b4_fit_intercept is True
+    assert config.b4_ill_conditioned_threshold == 1e8
     assert config.tie_break_policy == "grid_order_with_absolute_tolerance"
     assert config.tie_tolerance == 1e-12
+
+
+def test_b4_fit_intercept_config_requires_a_boolean(tmp_path: Path) -> None:
+    config_text = Path("config/ml_training.yaml").read_text(encoding="utf-8")
+    invalid_path = tmp_path / "invalid_b4_config.yaml"
+    invalid_path.write_text(
+        config_text.replace("fit_intercept: true", 'fit_intercept: "false"', 1),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TrainingError, match="b4_fit_intercept must be a boolean"):
+        TrainingConfig.from_yaml(invalid_path)
+
+
+def test_training_config_accepts_legacy_version_but_requires_current_version_for_b4(
+    tmp_path: Path,
+) -> None:
+    config_text = Path("config/ml_training.yaml").read_text(encoding="utf-8")
+    legacy_path = tmp_path / "legacy_ml_training.yaml"
+    legacy_path.write_text(
+        config_text.replace('training_config_version: "1.1.0"', 'training_config_version: "1.0.0"', 1),
+        encoding="utf-8",
+    )
+    legacy_config = TrainingConfig.from_yaml(legacy_path)
+
+    assert legacy_config.training_config_version == "1.0.0"
+    prepared, labels = _synthetic_prepared_b4()
+    with pytest.raises(TrainingError, match="1.0.0 predates B4"):
+        fit_b4_ols(prepared, "SPY", legacy_config)
+    with pytest.raises(TrainingError, match="1.0.0 predates B4"):
+        run_training_selection(prepared, labels, config=legacy_config, include_b4=True)
+
+    current_config = TrainingConfig.from_yaml()
+    artifact = fit_b4_ols(prepared, "SPY", current_config)
+    legacy_evaluation_config = replace(current_config, training_config_version="1.0.0")
+    summary, _ = evaluate_b4_validation(
+        prepared,
+        "SPY",
+        artifact,
+        legacy_evaluation_config,
+    )
+    assert summary["valid_count"] == summary["expected_anchor_count"]
 
 
 def test_b0_uses_frozen_train_mean_and_b1_reads_same_day_rv20() -> None:
@@ -246,6 +300,7 @@ def test_run_selection_saves_all_trials_and_clean_same_state_pairs(tmp_path: Pat
         prepared,
         labels,
         artifact_dir=tmp_path / "training-run",
+        include_b4=False,
     )
 
     assert len(result.candidate_evaluations) == 81
@@ -320,3 +375,260 @@ def test_failed_selection_still_saves_candidate_audit(
     assert manifest["selection_status"] == "failed_no_admissible_candidate"
     assert "SPY has no candidate" in manifest["selection_failures"][0]
     assert manifest["initial_state_sha256_by_ticker"] == {}
+
+
+def _synthetic_prepared_b4(
+    *,
+    n_train: int = 16,
+    collinear: bool = False,
+    ill_conditioned: bool = False,
+) -> tuple[PreparedDataset, pd.DataFrame]:
+    rng = np.random.default_rng(12345)
+    train_sessions = [
+        stamp.date()
+        for stamp in market_calendars.get_calendar("XNYS")
+        .schedule(start_date="2024-08-01", end_date="2024-09-24")
+        .index
+    ]
+    # Keep last session (2024-09-24) as fixed_purged; pick n_train - 1 earlier sessions + 2024-09-24.
+    assert len(train_sessions) >= n_train
+    train_dates = train_sessions[-(n_train):]
+    validation_dates = [
+        date(2024, 10, 1),
+        date(2024, 10, 2),
+        date(2024, 10, 3),
+        date(2024, 10, 4),
+    ]
+    test_dates = [date(2025, 10, 1)]
+
+    rows: list[dict[str, object]] = []
+    label_rows: list[dict[str, object]] = []
+    supervised_keys: set[tuple[date, str]] = set()
+    for ticker_index, ticker in enumerate(SUPPORTED_TICKERS):
+        for split, anchors in (
+            ("train", train_dates),
+            ("validation", validation_dates),
+            ("test", test_dates),
+        ):
+            for index, anchor in enumerate(anchors):
+                fixed_purged = split == "train" and anchor == date(2024, 9, 24)
+                target_end = _next_xnys_session(anchor, 5)
+                if collinear:
+                    base_val = 0.01 + 0.001 * index + 0.0005 * ticker_index
+                    feature_values = {name: base_val for name in CORE_FEATURE_COLUMNS}
+                elif ill_conditioned and split == "train":
+                    vec = rng.normal(0.0, 0.02, size=len(CORE_FEATURE_COLUMNS))
+                    vec[1] = vec[0] + rng.normal(0.0, 1e-11)
+                    feature_values = dict(zip(CORE_FEATURE_COLUMNS, vec))
+                    feature_values["rv_20d"] = abs(feature_values["rv_20d"]) + 0.10
+                else:
+                    vec = rng.normal(0.0, 0.02, size=len(CORE_FEATURE_COLUMNS))
+                    feature_values = dict(zip(CORE_FEATURE_COLUMNS, vec))
+                    feature_values["rv_5d"] = abs(feature_values["rv_5d"]) + 0.10
+                    feature_values["rv_20d"] = abs(feature_values["rv_20d"]) + 0.12
+                    feature_values["rv_60d"] = abs(feature_values["rv_60d"]) + 0.13
+                if split == "test":
+                    feature_values = {name: 9999.0 for name in CORE_FEATURE_COLUMNS}
+                target = (
+                    float(0.14 + 0.3 * abs(feature_values["rv_20d"]) + 0.005 * ticker_index)
+                    if split != "test"
+                    else 25.0
+                )
+                rows.append(
+                    {
+                        "date": anchor,
+                        "ticker": ticker,
+                        **feature_values,
+                        "split": split,
+                        "target_end_date": target_end,
+                        "is_label_mature": True,
+                        "target_obs_count": 5,
+                        "feature_quality_passed": True,
+                        "label_quality_passed": True,
+                        "prediction_eligible": True,
+                        "supervised_eligible": split != "train" or not fixed_purged,
+                        "fixed_purged": fixed_purged,
+                        "online_update_eligible": True,
+                        "already_updated": False,
+                        "exclusion_reasons": ("fixed_split_purge",) if fixed_purged else (),
+                    }
+                )
+                label_rows.append(
+                    {
+                        "date": anchor,
+                        "ticker": ticker,
+                        "target_end_date": target_end,
+                        "target_obs_count": 5,
+                        "target_realized_vol_5d": target,
+                        "is_label_mature": True,
+                    }
+                )
+                if split != "train" or not fixed_purged:
+                    supervised_keys.add((anchor, ticker))
+
+    ordered = sorted(rows, key=lambda row: (row["ticker"], row["date"]))
+    metadata_columns = [
+        "date",
+        "ticker",
+        "split",
+        "target_end_date",
+        "is_label_mature",
+        "target_obs_count",
+        "feature_quality_passed",
+        "label_quality_passed",
+        "prediction_eligible",
+        "supervised_eligible",
+        "fixed_purged",
+        "online_update_eligible",
+        "already_updated",
+        "exclusion_reasons",
+    ]
+    metadata = pd.DataFrame(ordered).loc[:, metadata_columns].reset_index(drop=True)
+    X = pd.DataFrame(ordered).loc[:, list(CORE_FEATURE_COLUMNS)].reset_index(drop=True)
+    audit = metadata.copy()
+    supervised_mask = [(row["date"], row["ticker"]) in supervised_keys for row in ordered]
+    supervised_metadata = metadata.loc[supervised_mask].reset_index(drop=True)
+    supervised_X = X.loc[supervised_mask].reset_index(drop=True)
+    target_lookup = {
+        (row["date"], row["ticker"]): row["target_realized_vol_5d"] for row in label_rows
+    }
+    supervised_y = pd.Series(
+        [target_lookup[(row.date, row.ticker)] for row in supervised_metadata.itertuples()],
+        name="target_realized_vol_5d",
+        dtype="float64",
+    )
+    prepared = PreparedDataset(
+        prediction=DatasetView(X=X, metadata=metadata),
+        supervised=DatasetView(X=supervised_X, metadata=supervised_metadata, y=supervised_y),
+        audit=audit,
+        report=PreparationReport(
+            summary={"as_of_date": "2026-09-25", "data_cutoff": "2026-09-25"},
+            counts_by_ticker_split_reason=pd.DataFrame(),
+            lineage={"source_snapshot_id": "synthetic-b4-snapshot"},
+            versions={"feature": ["2.0.0"], "target": ["2.0.0"]},
+            limitations=("synthetic b4 fixture",),
+        ),
+    )
+    return prepared, pd.DataFrame(label_rows)
+
+
+def test_b4_fit_and_validation_matches_b2_sample_and_scaler(tmp_path: Path) -> None:
+    prepared, labels = _synthetic_prepared_b4()
+    run_with_b4 = run_training_selection(
+        prepared,
+        labels,
+        artifact_dir=tmp_path / "run-b4-a",
+        include_b4=True,
+    )
+    run_without_b4 = run_training_selection(
+        prepared,
+        labels,
+        artifact_dir=tmp_path / "run-no-b4",
+        include_b4=False,
+    )
+    run_rerun = run_training_selection(
+        prepared,
+        labels,
+        artifact_dir=tmp_path / "run-b4-b",
+        include_b4=True,
+    )
+
+    # B2/B3 selection must remain identical whether B4 runs or not.
+    pd.testing.assert_frame_equal(run_with_b4.selected_configs, run_without_b4.selected_configs)
+    pd.testing.assert_frame_equal(
+        run_with_b4.candidate_evaluations, run_without_b4.candidate_evaluations
+    )
+
+    assert run_with_b4.b4_models is not None
+    assert run_with_b4.b4_validation is not None
+    bundle = joblib.load((tmp_path / "run-b4-a") / "initial_models.joblib")
+    manifest = json.loads(((tmp_path / "run-b4-a") / "training_manifest.json").read_text("utf-8"))
+    assert set(bundle["b4_models"]) == set(SUPPORTED_TICKERS)
+    assert "b4_validation_evaluations.csv" in manifest["artifact_sha256"]
+
+    for ticker in SUPPORTED_TICKERS:
+        b2_entry = run_with_b4.initial_models[ticker]
+        b4_entry = run_with_b4.b4_models[ticker]
+        loaded_b4 = bundle["b4_models"][ticker]
+        assert b4_entry["model_id"] == B4_MODEL_ID
+        assert b4_entry["model_name"] == B4_MODEL_NAME
+        assert b4_entry["model_version"] == B4_MODEL_VERSION
+        assert tuple(b4_entry["feature_order"]) == tuple(CORE_FEATURE_COLUMNS)
+        assert b4_entry["design_rank"] == 9
+        assert b4_entry["last_training_target_end_date"] < date(2024, 10, 1)
+        assert b4_entry["scaler_state_sha256"] == scaler_state_sha256(b2_entry["scaler"])
+        assert b4_state_sha256(loaded_b4["model"], loaded_b4["scaler"]) == b4_entry["state_sha256"]
+        assert loaded_b4["state_sha256"] == manifest["b4_models"][ticker]["state_sha256"]
+
+        # Reloaded artifact predictions match in-memory fitted model & rerun within 1e-15.
+        val_mask = (prepared.supervised.metadata["split"] == "validation") & (
+            prepared.supervised.metadata["ticker"] == ticker
+        )
+        val_X = prepared.supervised.X.loc[val_mask]
+        pred_mem = b4_entry["model"].predict(b4_entry["scaler"].transform(val_X))
+        pred_disk = loaded_b4["model"].predict(loaded_b4["scaler"].transform(val_X))
+        assert np.allclose(pred_mem, pred_disk, atol=1e-15, rtol=0.0)
+        assert b4_entry["state_sha256"] == run_rerun.b4_models[ticker]["state_sha256"]
+
+
+def test_b4_rejects_insufficient_train_rows() -> None:
+    prepared, labels = _synthetic_prepared_b4(n_train=8)  # 7 eligible + 1 fixed_purged < 9
+    with pytest.raises(TrainingError, match="at least 9 eligible Train rows"):
+        fit_b4_ols(prepared, "SPY")
+
+
+def test_b4_rejects_rank_deficient_design_matrix() -> None:
+    prepared, labels = _synthetic_prepared_b4(n_train=14, collinear=True)
+    with pytest.raises(TrainingError, match="rank-deficient"):
+        fit_b4_ols(prepared, "SPY")
+
+
+def test_b4_warns_on_ill_conditioned_design_matrix_without_failing() -> None:
+    prepared, _ = _synthetic_prepared_b4(n_train=16, ill_conditioned=True)
+    artifact = fit_b4_ols(prepared, "SPY")
+    assert artifact["design_rank"] == 9
+    assert artifact["ill_conditioned"] is True
+    assert any("ill_conditioned" in msg for msg in artifact["warnings"])
+
+
+def test_b4_rejects_non_finite_train_inputs() -> None:
+    prepared, _ = _synthetic_prepared_b4(n_train=16)
+    spy_train_idx = prepared.supervised.metadata.index[
+        (prepared.supervised.metadata["split"] == "train")
+        & (prepared.supervised.metadata["ticker"] == "SPY")
+    ][0]
+    prepared.supervised.X.loc[spy_train_idx, "rv_5d"] = np.nan
+    with pytest.raises(TrainingError, match="must be finite"):
+        fit_b4_ols(prepared, "SPY")
+
+
+def test_b4_validation_rejects_negative_forecasts_without_clipping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, _ = _synthetic_prepared_b4(n_train=16)
+    artifact = fit_b4_ols(prepared, "SPY")
+    original_predict = LinearRegression.predict
+
+    def predict_one_negative(self: LinearRegression, X: np.ndarray) -> np.ndarray:
+        preds = original_predict(self, X).copy()
+        preds[0] = -0.05
+        return preds
+
+    monkeypatch.setattr(LinearRegression, "predict", predict_one_negative)
+    summary, rows = evaluate_b4_validation(prepared, "SPY", artifact)
+    assert summary["expected_anchor_count"] == 4
+    assert summary["valid_count"] == 3
+    assert summary["invalid_count"] == 1
+    assert summary["coverage"] == pytest.approx(0.75)
+    assert len(summary["invalid_reasons"]) == 1
+    assert rows.iloc[0]["raw_prediction"] == pytest.approx(-0.05)
+    assert pd.isna(rows.iloc[0]["predicted_vol_annualized"])
+    assert bool(rows.iloc[0]["forecast_valid"]) is False
+
+    monkeypatch.setattr(
+        LinearRegression,
+        "predict",
+        lambda self, X: np.full(len(X), -0.1),
+    )
+    with pytest.raises(TrainingError, match="zero valid Validation forecasts"):
+        evaluate_b4_validation(prepared, "SPY", artifact)

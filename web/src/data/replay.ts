@@ -35,7 +35,7 @@ export function resolveAsOfLabelView(
 }
 
 export function selectSameDateForecasts(rows: ForecastAuditRow[], ticker: Ticker, predictionDate: string): ForecastAuditRow[] {
-  const modelOrder: ModelName[] = ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"];
+  const modelOrder: ModelName[] = ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS"];
   return rows
     .filter((row) => row.split === "test" && row.ticker === ticker && row.predictionDate === predictionDate)
     .sort((left, right) => modelOrder.indexOf(left.modelName) - modelOrder.indexOf(right.modelName));

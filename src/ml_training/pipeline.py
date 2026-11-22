@@ -18,12 +18,21 @@ import joblib
 import numpy as np
 import pandas as pd
 import pandas_market_calendars as market_calendars
-from sklearn.linear_model import SGDRegressor
+from sklearn.linear_model import LinearRegression, SGDRegressor
 from sklearn.preprocessing import RobustScaler
 
 from src.features.pipeline import CORE_FEATURE_COLUMNS, SUPPORTED_TICKERS
+
+B4_MODEL_ID = "B4"
+B4_MODEL_NAME = "HAR_X_OLS"
+B4_MODEL_VERSION = "b4_ols_v1.0.0"
 from src.ml_dataset.dataset import PreparedDataset
-from src.ml_training.config import CandidateConfig, TrainingConfig, TrainingError
+from src.ml_training.config import (
+    LEGACY_TRAINING_CONFIG_VERSION,
+    CandidateConfig,
+    TrainingConfig,
+    TrainingError,
+)
 
 
 @dataclass
@@ -59,6 +68,8 @@ class TrainingSelectionResult:
     baselines: dict[str, dict[str, Any]]
     manifest: dict[str, Any]
     artifact_dir: Path | None = None
+    b4_models: dict[str, dict[str, Any]] | None = None
+    b4_validation: pd.DataFrame | None = None
 
 
 def _market_date(value: Any, name: str) -> date:
@@ -73,6 +84,14 @@ def _market_date(value: Any, name: str) -> date:
     if pd.isna(stamp):
         raise TrainingError(f"{name} must be a valid market date")
     return stamp.date()
+
+
+def _require_b4_training_config(config: TrainingConfig) -> None:
+    if config.training_config_version == LEGACY_TRAINING_CONFIG_VERSION:
+        raise TrainingError(
+            f"training_config_version {LEGACY_TRAINING_CONFIG_VERSION} predates B4; "
+            "use version 1.1.0 to train B4"
+        )
 
 
 def _boolean_values(values: pd.Series) -> pd.Series:
@@ -121,6 +140,74 @@ def model_state_sha256(model: SGDRegressor, scaler: RobustScaler) -> str:
                 digest.update(payload.encode("utf-8"))
             else:
                 digest.update(array.tobytes())
+    return digest.hexdigest()
+
+
+def scaler_state_sha256(scaler: RobustScaler) -> str:
+    """Hash a fitted RobustScaler's parameters and learned statistics."""
+    digest = hashlib.sha256()
+    payload = json.dumps(
+        scaler.get_params(deep=False),
+        sort_keys=True,
+        default=_json_default,
+        separators=(",", ":"),
+    )
+    digest.update(b"scaler_params")
+    digest.update(payload.encode("utf-8"))
+    for attribute in ("center_", "scale_", "n_features_in_", "feature_names_in_"):
+        if not hasattr(scaler, attribute):
+            continue
+        array = np.asarray(getattr(scaler, attribute))
+        digest.update(f"scaler.{attribute}:{array.dtype}:{array.shape}".encode("utf-8"))
+        if array.dtype.hasobject:
+            encoded = json.dumps(
+                array.tolist(), sort_keys=True, default=_json_default, separators=(",", ":")
+            )
+            digest.update(encoded.encode("utf-8"))
+        else:
+            digest.update(array.tobytes())
+    return digest.hexdigest()
+
+
+def b4_state_sha256(model: LinearRegression, scaler: RobustScaler) -> str:
+    """Hash frozen B4 HAR-X OLS state together with its frozen RobustScaler."""
+    digest = hashlib.sha256()
+    identity = {
+        "model_id": B4_MODEL_ID,
+        "model_name": B4_MODEL_NAME,
+        "model_version": B4_MODEL_VERSION,
+        "feature_order": list(CORE_FEATURE_COLUMNS),
+        "model_params": model.get_params(deep=False),
+    }
+    digest.update(
+        json.dumps(identity, sort_keys=True, default=_json_default, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    )
+    for attribute in ("coef_", "intercept_", "n_features_in_"):
+        if not hasattr(model, attribute):
+            continue
+        array = np.asarray(getattr(model, attribute), dtype=float)
+        digest.update(f"b4.{attribute}:{array.dtype}:{array.shape}".encode("utf-8"))
+        digest.update(array.tobytes())
+    digest.update(scaler_state_sha256(scaler).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _train_keys_fingerprint(
+    train_metadata: pd.DataFrame,
+    train_X: pd.DataFrame,
+    train_y: pd.Series,
+) -> str:
+    """Fingerprint exact Train (date, ticker) keys, features, and targets."""
+    digest = hashlib.sha256()
+    keys = [
+        [_market_date(row.date, "train date").isoformat(), str(row.ticker)]
+        for row in train_metadata.itertuples(index=False)
+    ]
+    digest.update(json.dumps(keys, separators=(",", ":")).encode("utf-8"))
+    digest.update(np.ascontiguousarray(train_X.to_numpy(dtype=np.float64)).tobytes())
+    digest.update(np.ascontiguousarray(train_y.to_numpy(dtype=np.float64)).tobytes())
     return digest.hexdigest()
 
 
@@ -566,6 +653,193 @@ def evaluate_candidate(
     )
 
 
+def fit_b4_ols(
+    prepared: PreparedDataset,
+    ticker: str,
+    config: TrainingConfig | None = None,
+    *,
+    b2_scaler: RobustScaler | None = None,
+) -> dict[str, Any]:
+    """Fit frozen B4 HAR-X OLS with intercept on the exact B2 Train sample and RobustScaler."""
+    effective_config = config or TrainingConfig.from_yaml()
+    _require_b4_training_config(effective_config)
+    if ticker not in SUPPORTED_TICKERS:
+        raise TrainingError(f"unsupported ETF: {ticker}")
+    train_X, train_y, _, _ = _training_rows(prepared, ticker, effective_config)
+    metadata = prepared.supervised.metadata
+    train_mask = (metadata["split"] == "train") & (metadata["ticker"].astype(str) == ticker)
+    train_metadata = metadata.loc[train_mask].reset_index(drop=True)
+    n_features = len(effective_config.core_features)
+    min_rows = n_features + 1
+    if len(train_X) < min_rows:
+        raise TrainingError(
+            f"{ticker} B4 requires at least {min_rows} eligible Train rows for OLS with intercept (got {len(train_X)})"
+        )
+    X_arr = train_X.to_numpy(dtype=float)
+    y_arr = train_y.to_numpy(dtype=float)
+    if not np.isfinite(X_arr).all() or not np.isfinite(y_arr).all() or (y_arr < 0).any():
+        raise TrainingError(f"{ticker} B4 Train features and labels must be finite and nonnegative")
+
+    scaler = RobustScaler()
+    scaler.fit(train_X)
+    scaler_hash = scaler_state_sha256(scaler)
+    if b2_scaler is not None:
+        b2_scaler_hash = scaler_state_sha256(b2_scaler)
+        if scaler_hash != b2_scaler_hash:
+            raise TrainingError(f"{ticker} B4 RobustScaler identity does not match B2")
+        scaler = deepcopy(b2_scaler)
+
+    scaled_train = scaler.transform(train_X)
+    if not np.isfinite(scaled_train).all():
+        raise TrainingError(f"{ticker} B4 scaled Train features contain non-finite values")
+    design = np.column_stack([np.ones(len(scaled_train), dtype=float), scaled_train])
+    rank = int(np.linalg.matrix_rank(design))
+    if rank < min_rows:
+        raise TrainingError(
+            f"{ticker} B4 OLS design matrix is rank-deficient (rank={rank} < {min_rows})"
+        )
+    singular_values = np.linalg.svd(design, compute_uv=False)
+    cond = float(singular_values[0] / singular_values[-1]) if singular_values[-1] > 0 else float("inf")
+    warnings: list[str] = []
+    threshold = effective_config.b4_ill_conditioned_threshold
+    if not math.isfinite(cond) or cond > threshold:
+        warnings.append(
+            f"design_matrix_ill_conditioned:cond={cond:.6e}>threshold={threshold:.1e}"
+        )
+
+    model = LinearRegression(fit_intercept=effective_config.b4_fit_intercept)
+    model.fit(scaled_train, y_arr)
+    if (
+        not np.isfinite(model.intercept_)
+        or not np.isfinite(model.coef_).all()
+        or len(model.coef_) != n_features
+    ):
+        raise TrainingError(f"{ticker} B4 OLS produced non-finite or malformed parameters")
+
+    train_ends = [
+        _market_date(value, "target_end_date")
+        for value in train_metadata["target_end_date"]
+    ]
+    last_target_end = max(train_ends)
+    if last_target_end >= effective_config.dataset.validation_start_date:
+        raise TrainingError(f"{ticker} B4 Train labels violate fixed split purge")
+    keys_fingerprint = _train_keys_fingerprint(train_metadata, train_X, train_y)
+    state_hash = b4_state_sha256(model, scaler)
+    return {
+        "model_id": B4_MODEL_ID,
+        "model_name": B4_MODEL_NAME,
+        "model_version": B4_MODEL_VERSION,
+        "model": model,
+        "scaler": scaler,
+        "intercept": float(model.intercept_),
+        "coefficients": {
+            name: float(coef)
+            for name, coef in zip(effective_config.core_features, model.coef_)
+        },
+        "feature_order": tuple(effective_config.core_features),
+        "scaler_state_sha256": scaler_hash,
+        "state_sha256": state_hash,
+        "train_keys_count": int(len(train_metadata)),
+        "train_keys_fingerprint": keys_fingerprint,
+        "train_cutoff": effective_config.dataset.train_end_date,
+        "last_training_target_end_date": last_target_end,
+        "design_rank": rank,
+        "condition_number": cond,
+        "ill_conditioned": bool(warnings),
+        "warnings": tuple(warnings),
+    }
+
+
+def evaluate_b4_validation(
+    prepared: PreparedDataset,
+    ticker: str,
+    b4_artifact: Mapping[str, Any],
+    config: TrainingConfig | None = None,
+) -> tuple[dict[str, Any], pd.DataFrame]:
+    """Evaluate frozen B4 HAR-X OLS on Validation anchors without affecting B2/B3 selection."""
+    effective_config = config or TrainingConfig.from_yaml()
+    if ticker not in SUPPORTED_TICKERS:
+        raise TrainingError(f"unsupported ETF: {ticker}")
+    _, _, validation_X, validation_y = _training_rows(prepared, ticker, effective_config)
+    metadata = prepared.supervised.metadata
+    validation_mask = (metadata["split"] == "validation") & (metadata["ticker"].astype(str) == ticker)
+    validation_metadata = metadata.loc[validation_mask].reset_index(drop=True)
+    if tuple(b4_artifact["feature_order"]) != tuple(effective_config.core_features):
+        raise TrainingError(f"{ticker} B4 feature_order does not match locked Core Features")
+
+    scaler: RobustScaler = b4_artifact["scaler"]
+    model: LinearRegression = b4_artifact["model"]
+    scaled_val = scaler.transform(validation_X)
+    raw_preds = model.predict(scaled_val)
+
+    rows: list[dict[str, Any]] = []
+    valid_errors: list[float] = []
+    invalid_reasons: list[str] = []
+    for meta_row, actual, pred_raw in zip(
+        validation_metadata.itertuples(index=False),
+        validation_y.to_numpy(dtype=float),
+        raw_preds,
+    ):
+        pred_val = float(pred_raw)
+        is_valid = _is_valid_forecast(pred_val)
+        reason = (
+            None
+            if is_valid
+            else "forecast must be finite and nonnegative; value was rejected without clipping"
+        )
+        if not is_valid:
+            invalid_reasons.append(
+                f"{_market_date(meta_row.date, 'validation date').isoformat()}:{reason}"
+            )
+        else:
+            valid_errors.append(abs(float(actual) - pred_val))
+        rows.append(
+            {
+                "prediction_date": _market_date(meta_row.date, "validation date"),
+                "ticker": ticker,
+                "model_id": B4_MODEL_ID,
+                "model_name": B4_MODEL_NAME,
+                "model_version": B4_MODEL_VERSION,
+                "target_realized_vol_5d": float(actual),
+                "predicted_vol_annualized": pred_val if is_valid else np.nan,
+                "raw_prediction": pred_val,
+                "forecast_valid": bool(is_valid),
+                "invalid_reason": reason,
+                "absolute_error": abs(float(actual) - pred_val) if is_valid else np.nan,
+                "squared_error": (float(actual) - pred_val) ** 2 if is_valid else np.nan,
+            }
+        )
+    expected_count = len(validation_X)
+    valid_count = len(valid_errors)
+    invalid_count = expected_count - valid_count
+    if valid_count == 0:
+        raise TrainingError(f"{ticker} B4 produced zero valid Validation forecasts")
+    coverage = valid_count / expected_count
+    mae = float(np.mean(valid_errors))
+    rmse = float(np.sqrt(np.mean(np.square(valid_errors))))
+    summary = {
+        "ticker": ticker,
+        "model_id": B4_MODEL_ID,
+        "model_name": B4_MODEL_NAME,
+        "model_version": B4_MODEL_VERSION,
+        "expected_anchor_count": int(expected_count),
+        "valid_count": int(valid_count),
+        "invalid_count": int(invalid_count),
+        "coverage": float(coverage),
+        "mae_validation": mae,
+        "rmse_validation": rmse,
+        "invalid_reasons": invalid_reasons,
+        "train_keys_count": int(b4_artifact["train_keys_count"]),
+        "train_keys_fingerprint": str(b4_artifact["train_keys_fingerprint"]),
+        "last_training_target_end_date": b4_artifact["last_training_target_end_date"].isoformat(),
+        "design_rank": int(b4_artifact["design_rank"]),
+        "condition_number": float(b4_artifact["condition_number"]),
+        "ill_conditioned": bool(b4_artifact["ill_conditioned"]),
+        "warnings": list(b4_artifact["warnings"]),
+    }
+    return summary, pd.DataFrame(rows)
+
+
 def predict_baselines(
     features: pd.DataFrame,
     baselines: Mapping[str, Mapping[str, Any]],
@@ -686,6 +960,9 @@ def _persist_artifacts(
     *,
     selection_status: str = "selected",
     selection_failures: Iterable[str] = (),
+    b4_models: dict[str, dict[str, Any]] | None = None,
+    b4_validation_rows: pd.DataFrame | None = None,
+    b4_validation_summary: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     target = artifact_dir.expanduser().resolve()
     if target.exists():
@@ -706,19 +983,48 @@ def _persist_artifacts(
             selected_rows.drop(columns=["grid_order"], errors="ignore").to_dict("records"),
         )
         _write_json(config_path, config.as_dict())
+        bundle_payload: dict[str, Any] = {
+            "bundle_version": "1.0.0",
+            "tickers": initial_models,
+            "baselines": baselines,
+        }
+        if b4_models is not None:
+            bundle_payload["b4_models"] = b4_models
         joblib.dump(
-            {
-                "bundle_version": "1.0.0",
-                "tickers": initial_models,
-                "baselines": baselines,
-            },
+            bundle_payload,
             models_path,
             compress=3,
         )
+        hashed_paths = [candidate_path, selected_path, models_path, config_path]
+        if b4_validation_rows is not None and not b4_validation_rows.empty:
+            b4_val_path = stage / "b4_validation_evaluations.csv"
+            b4_validation_rows.to_csv(b4_val_path, index=False, float_format="%.17g")
+            hashed_paths.append(b4_val_path)
         artifact_hashes = {
             path.name: _sha256(path)
-            for path in (candidate_path, selected_path, models_path, config_path)
+            for path in hashed_paths
         }
+        b4_manifest_metadata: dict[str, Any] = {}
+        if b4_models:
+            for ticker, entry in b4_models.items():
+                b4_manifest_metadata[ticker] = {
+                    "model_id": entry["model_id"],
+                    "model_name": entry["model_name"],
+                    "model_version": entry["model_version"],
+                    "intercept": entry["intercept"],
+                    "coefficients": entry["coefficients"],
+                    "feature_order": list(entry["feature_order"]),
+                    "scaler_state_sha256": entry["scaler_state_sha256"],
+                    "state_sha256": entry["state_sha256"],
+                    "train_keys_count": entry["train_keys_count"],
+                    "train_keys_fingerprint": entry["train_keys_fingerprint"],
+                    "train_cutoff": entry["train_cutoff"].isoformat(),
+                    "last_training_target_end_date": entry["last_training_target_end_date"].isoformat(),
+                    "design_rank": entry["design_rank"],
+                    "condition_number": entry["condition_number"],
+                    "ill_conditioned": entry["ill_conditioned"],
+                    "warnings": list(entry["warnings"]),
+                }
         manifest = {
             "stage": "04_models_training_and_validation",
             "training_run_id": str(uuid.uuid4()),
@@ -740,6 +1046,8 @@ def _persist_artifacts(
                 ticker: pair["state_sha256"] for ticker, pair in initial_models.items()
             },
             "baselines": baselines,
+            "b4_models": b4_manifest_metadata,
+            "b4_validation": list(b4_validation_summary or []),
             "source_lineage": dict(source_lineage),
             "versions": _package_versions(),
             "artifact_sha256": artifact_hashes,
@@ -760,9 +1068,12 @@ def run_training_selection(
     *,
     config: TrainingConfig | None = None,
     artifact_dir: str | Path | None = None,
+    include_b4: bool = True,
 ) -> TrainingSelectionResult:
     """Run the locked 81-candidate Validation search and save clean initial model pairs."""
     effective_config = config or TrainingConfig.from_yaml()
+    if include_b4:
+        _require_b4_training_config(effective_config)
     if len(effective_config.grid) != 27:
         raise TrainingError("Stage 04 must evaluate exactly 27 candidates per ETF")
     runs: list[CandidateRun] = []
@@ -802,6 +1113,9 @@ def run_training_selection(
 
     initial_models: dict[str, dict[str, Any]] = {}
     baselines: dict[str, dict[str, Any]] = {}
+    b4_models: dict[str, dict[str, Any]] = {}
+    b4_validation_summaries: list[dict[str, Any]] = []
+    b4_validation_frames: list[pd.DataFrame] = []
     for ticker in SUPPORTED_TICKERS:
         train_X, train_y, _, _ = _training_rows(prepared, ticker, effective_config)
         selected = selected_rows.loc[selected_rows["ticker"] == ticker].iloc[0]
@@ -821,6 +1135,22 @@ def run_training_selection(
             "train_cutoff": effective_config.dataset.train_end_date,
             "feature_order": tuple(effective_config.core_features),
         }
+        if include_b4:
+            b4_artifact = fit_b4_ols(
+                prepared,
+                ticker,
+                effective_config,
+                b2_scaler=clean_pair["scaler"],
+            )
+            b4_summary, b4_val_df = evaluate_b4_validation(
+                prepared,
+                ticker,
+                b4_artifact,
+                effective_config,
+            )
+            b4_models[ticker] = b4_artifact
+            b4_validation_summaries.append(b4_summary)
+            b4_validation_frames.append(b4_val_df)
         train_metadata = prepared.supervised.metadata
         train_mask = (train_metadata["split"] == "train") & (
             train_metadata["ticker"].astype(str) == ticker
@@ -838,6 +1168,11 @@ def run_training_selection(
             "b1_strategy": "feature_value",
         }
 
+    b4_validation_all = (
+        pd.concat(b4_validation_frames, ignore_index=True)
+        if b4_validation_frames
+        else pd.DataFrame()
+    )
     manifest: dict[str, Any] = {
         "stage": "04_models_training_and_validation",
         "training_config_version": effective_config.training_config_version,
@@ -848,6 +1183,7 @@ def run_training_selection(
         "limitations": list(prepared.report.limitations),
         "candidate_count_total": int(len(candidate_rows)),
         "candidate_count_per_ticker": int(len(effective_config.grid)),
+        "b4_validation": b4_validation_summaries,
         "source_lineage": lineage,
         "versions": _package_versions(),
     }
@@ -864,6 +1200,9 @@ def run_training_selection(
             lineage,
             prepared.report.limitations,
             selection_status="selected",
+            b4_models=b4_models if include_b4 else None,
+            b4_validation_rows=b4_validation_all if include_b4 else None,
+            b4_validation_summary=b4_validation_summaries if include_b4 else None,
         )
     return TrainingSelectionResult(
         candidate_evaluations=candidate_rows,
@@ -874,4 +1213,6 @@ def run_training_selection(
         baselines=baselines,
         manifest=manifest,
         artifact_dir=persisted_dir,
+        b4_models=b4_models if include_b4 else None,
+        b4_validation=b4_validation_all if include_b4 else None,
     )

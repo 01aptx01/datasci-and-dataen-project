@@ -67,7 +67,9 @@ FINAL_EVALUATION_OUTPUTS = frozenset(
         "forecast_exceptions.csv",
         "coverage.csv",
         "model_metrics.csv",
+        "reference_b0_b3_metrics.csv",
         "pair_comparisons.csv",
+        "b4_comparisons.csv",
         "high_volatility_metrics.csv",
         "monthly_metrics.csv",
         "yearly_metrics.csv",
@@ -102,6 +104,8 @@ class FinalEvaluationResult:
     hypothesis_results: pd.DataFrame
     portfolio_risk: pd.DataFrame
     manifest: Mapping[str, Any]
+    b4_comparisons: pd.DataFrame | None = None
+    reference_b0_b3_metrics: pd.DataFrame | None = None
 
 
 def _json_default(value: Any) -> Any:
@@ -274,7 +278,7 @@ def _verify_replay_artifacts(replay_dir: Path, config: EvaluationConfig) -> tupl
     if predictions.empty:
         raise EvaluationError("Final Replay contains no predictions")
     if set(predictions["model_name"].astype(str)) != set(config.model_names):
-        raise EvaluationError("Final Replay must contain the complete locked B0-B3 model suite")
+        raise EvaluationError("Final Replay must contain the complete locked B0-B4 model suite")
     if set(predictions["ticker"].astype(str)) != set(config.tickers):
         raise EvaluationError("Final Replay must contain all three approved ETFs")
     if not predictions["prediction_mode"].eq("HISTORICAL_REPLAY").all():
@@ -311,12 +315,21 @@ def _verify_replay_artifacts(replay_dir: Path, config: EvaluationConfig) -> tupl
 def _verify_training_artifacts(training_dir: Path, replay_manifest: Mapping[str, Any]) -> dict[str, str]:
     expected = replay_manifest.get("stage04_artifact_sha256", {})
     manifest_expected = replay_manifest.get("stage04_training_manifest_sha256")
-    names = (
+    names = [
         "initial_models.joblib",
         "selected_configs.json",
         "training_config.json",
         "validation_candidate_evaluations.csv",
+    ]
+    # Stage 04 always writes this audit for the B0-B4 suite. Require its
+    # checksum from the Final Replay lineage instead of silently treating a
+    # missing entry as evidence that this is a legacy B0-B3 artifact.
+    has_b4_suite = (
+        replay_manifest.get("model_suite_version") == "1.1.0"
+        or "b4_initial_state_sha256_by_ticker" in replay_manifest
     )
+    if has_b4_suite:
+        names.append("b4_validation_evaluations.csv")
     hashes: dict[str, str] = {}
     for name in names:
         digest = _file_sha256(training_dir / name)
@@ -612,6 +625,25 @@ def _error_frame(audit: pd.DataFrame, *, split: str | None = None, common_only: 
     return selected
 
 
+REFERENCE_B0_B3_MODELS = (
+    "CONSTANT_BASELINE",
+    "ROLLING_20D_BASELINE",
+    "STATIC_SGD",
+    "ONLINE_SGD",
+)
+
+
+def _common_b0_b3_keys(audit: pd.DataFrame) -> set[tuple[Any, Any, Any]]:
+    evaluable = audit.loc[
+        (audit["evaluation_status"] == "EVALUABLE")
+        & audit["model_name"].isin(REFERENCE_B0_B3_MODELS)
+    ]
+    counts = evaluable.groupby(["prediction_date", "ticker", "split"], sort=False)[
+        "model_name"
+    ].nunique()
+    return set(counts.loc[counts == len(REFERENCE_B0_B3_MODELS)].index.tolist())
+
+
 def _build_model_metrics(audit: pd.DataFrame, config: EvaluationConfig) -> pd.DataFrame:
     common = _error_frame(audit, split="test", common_only=True)
     rows: list[dict[str, Any]] = []
@@ -634,7 +666,7 @@ def _build_model_metrics(audit: pd.DataFrame, config: EvaluationConfig) -> pd.Da
                 "expected_eligible_anchor_count": int(test_coverage.get(ticker, 0)),
                 "mae": values["mae"],
                 "rmse": values["rmse"],
-                "comparison_panel": "common B0-B3 matured valid anchors",
+                "comparison_panel": "common B0-B4 matured valid anchors",
             }
             rows.append(row)
             ticker_rows.append(row)
@@ -653,7 +685,61 @@ def _build_model_metrics(audit: pd.DataFrame, config: EvaluationConfig) -> pd.Da
                 "expected_eligible_anchor_count": int(sum(int(test_coverage.get(ticker, 0)) for ticker in config.tickers)),
                 "mae": macro_mae,
                 "rmse": macro_rmse,
-                "comparison_panel": "equal ETF weight; common B0-B3 matured valid anchors",
+                "comparison_panel": "equal ETF weight; common B0-B4 matured valid anchors",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _build_reference_b0_b3_metrics(audit: pd.DataFrame, config: EvaluationConfig) -> pd.DataFrame:
+    b0_b3_keys = _common_b0_b3_keys(audit)
+    evaluable = _error_frame(audit, split="test", common_only=False)
+    evaluable = evaluable.loc[
+        [
+            (row.prediction_date, row.ticker, row.split) in b0_b3_keys
+            for row in evaluable.itertuples(index=False)
+        ]
+    ]
+    rows: list[dict[str, Any]] = []
+    test_coverage = audit.loc[audit["split"] == "test"].groupby("ticker")["prediction_date"].nunique()
+    for model in REFERENCE_B0_B3_MODELS:
+        ticker_rows: list[dict[str, Any]] = []
+        for ticker in config.tickers:
+            sample = evaluable.loc[
+                (evaluable["ticker"] == ticker) & (evaluable["model_name"] == model)
+            ]
+            values = calculate_error_metrics(
+                sample["target_realized_vol_5d"].to_numpy(dtype=float),
+                sample["predicted_vol_annualized"].to_numpy(dtype=float),
+            )
+            row = {
+                "split": "test",
+                "ticker": ticker,
+                "model_name": model,
+                "paired_n": values["n"],
+                "expected_eligible_anchor_count": int(test_coverage.get(ticker, 0)),
+                "mae": values["mae"],
+                "rmse": values["rmse"],
+                "comparison_panel": "reference B0-B3 common matured valid anchors",
+            }
+            rows.append(row)
+            ticker_rows.append(row)
+        if all(int(row["paired_n"]) > 0 for row in ticker_rows):
+            macro_mae = float(np.mean([float(row["mae"]) for row in ticker_rows]))
+            macro_rmse = float(np.sqrt(np.mean([float(row["rmse"]) ** 2 for row in ticker_rows])))
+        else:
+            macro_mae = np.nan
+            macro_rmse = np.nan
+        rows.append(
+            {
+                "split": "test",
+                "ticker": "MACRO",
+                "model_name": model,
+                "paired_n": int(sum(int(row["paired_n"]) for row in ticker_rows)),
+                "expected_eligible_anchor_count": int(sum(int(test_coverage.get(ticker, 0)) for ticker in config.tickers)),
+                "mae": macro_mae,
+                "rmse": macro_rmse,
+                "comparison_panel": "equal ETF weight; reference B0-B3 common matured valid anchors",
             }
         )
     return pd.DataFrame(rows)
@@ -661,29 +747,29 @@ def _build_model_metrics(audit: pd.DataFrame, config: EvaluationConfig) -> pd.Da
 
 def _paired_error_differences(
     evaluations: pd.DataFrame,
-    baseline_name: str,
-    online_name: str = "ONLINE_SGD",
+    comparator_name: str,
+    comparison_name: str = "ONLINE_SGD",
 ) -> pd.DataFrame:
-    baseline = evaluations.loc[evaluations["model_name"] == baseline_name, [
+    comparator = evaluations.loc[evaluations["model_name"] == comparator_name, [
         "prediction_date", "ticker", "target_realized_vol_5d", "absolute_error"
-    ]].rename(columns={"absolute_error": "baseline_absolute_error", "target_realized_vol_5d": "baseline_target"})
-    online = evaluations.loc[evaluations["model_name"] == online_name, [
+    ]].rename(columns={"absolute_error": "comparator_absolute_error", "target_realized_vol_5d": "comparator_target"})
+    comparison = evaluations.loc[evaluations["model_name"] == comparison_name, [
         "prediction_date", "ticker", "target_realized_vol_5d", "absolute_error"
-    ]].rename(columns={"absolute_error": "online_absolute_error", "target_realized_vol_5d": "online_target"})
-    paired = baseline.merge(
-        online,
+    ]].rename(columns={"absolute_error": "comparison_absolute_error", "target_realized_vol_5d": "comparison_target"})
+    paired = comparator.merge(
+        comparison,
         on=["prediction_date", "ticker"],
         how="inner",
         validate="one_to_one",
     )
     if not np.allclose(
-        paired["baseline_target"].to_numpy(dtype=float),
-        paired["online_target"].to_numpy(dtype=float),
+        paired["comparator_target"].to_numpy(dtype=float),
+        paired["comparison_target"].to_numpy(dtype=float),
         atol=1e-12,
         rtol=0.0,
     ):
         raise EvaluationError("paired model rows do not share the same realized target")
-    paired["difference"] = paired["baseline_absolute_error"] - paired["online_absolute_error"]
+    paired["difference"] = paired["comparator_absolute_error"] - paired["comparison_absolute_error"]
     return paired.loc[:, ["prediction_date", "ticker", "difference"]].sort_values(
         ["prediction_date", "ticker"], kind="stable"
     ).reset_index(drop=True)
@@ -775,6 +861,115 @@ def _build_pair_comparisons(evaluations: pd.DataFrame, config: EvaluationConfig)
                     .drop_duplicates()
                     .shape[0]
                 ),
+                "pairing_policy": "equal ETF weight over per-ETF paired anchors",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _build_b4_comparisons(audit: pd.DataFrame, config: EvaluationConfig) -> pd.DataFrame:
+    """Build retrospective Test paired comparisons for B4 (HAR_X_OLS) vs B2/B3/B1."""
+    b4_name = "HAR_X_OLS"
+    test_evaluable = _error_frame(audit, split="test", common_only=False)
+    test_expected = audit.loc[audit["split"] == "test"].groupby("ticker")["prediction_date"].nunique()
+    b0_b3_keys = _common_b0_b3_keys(audit.loc[audit["split"] == "test"])
+    common_five_keys = set(
+        test_evaluable.loc[test_evaluable["is_common_panel"], ["prediction_date", "ticker"]]
+        .itertuples(index=False, name=None)
+    )
+    b0_b3_test_keys = {(pred_date, ticker) for pred_date, ticker, _ in b0_b3_keys}
+
+    specs = (
+        ("B4_VS_B2", "STATIC_SGD"),
+        ("B4_VS_B3", "ONLINE_SGD"),
+        ("B4_VS_B1", "ROLLING_20D_BASELINE"),
+    )
+    rows: list[dict[str, Any]] = []
+    for comparison_id, comparator in specs:
+        differences = _paired_error_differences(test_evaluable, comparator, comparison_name=b4_name)
+        pair_source = test_evaluable.loc[test_evaluable["model_name"].isin((comparator, b4_name))]
+        pair = pair_source.pivot(
+            index=["prediction_date", "ticker"],
+            columns="model_name",
+            values=["target_realized_vol_5d", "absolute_error", "predicted_vol_annualized"],
+        )
+        b4_mae_by_ticker: dict[str, float] = {}
+        comp_mae_by_ticker: dict[str, float] = {}
+        for ticker in config.tickers:
+            if (
+                not pair.empty
+                and comparator in pair.columns.get_level_values(1)
+                and b4_name in pair.columns.get_level_values(1)
+                and ticker in pair.index.get_level_values("ticker")
+            ):
+                sample = pair.xs(ticker, level="ticker").dropna(
+                    subset=[("absolute_error", comparator), ("absolute_error", b4_name)]
+                )
+            else:
+                sample = pd.DataFrame()
+            comp_errors = sample[("absolute_error", comparator)].to_numpy(dtype=float) if not sample.empty else np.asarray([])
+            b4_errors = sample[("absolute_error", b4_name)].to_numpy(dtype=float) if not sample.empty else np.asarray([])
+            comp_mae = float(np.mean(comp_errors)) if len(comp_errors) else np.nan
+            b4_mae = float(np.mean(b4_errors)) if len(b4_errors) else np.nan
+            comp_rmse = float(np.sqrt(np.mean(np.square(comp_errors)))) if len(comp_errors) else np.nan
+            b4_rmse = float(np.sqrt(np.mean(np.square(b4_errors)))) if len(b4_errors) else np.nan
+            delta = comp_mae - b4_mae if len(comp_errors) else np.nan
+            expected_n = int(test_expected.get(ticker, 0))
+            if len(comp_errors):
+                b4_mae_by_ticker[ticker] = b4_mae
+                comp_mae_by_ticker[ticker] = comp_mae
+            rows.append(
+                {
+                    "comparison_id": comparison_id,
+                    "b4_model": b4_name,
+                    "comparator_model": comparator,
+                    "split": "test",
+                    "ticker": ticker,
+                    "paired_n": int(len(comp_errors)),
+                    "expected_eligible_anchor_count": expected_n,
+                    "paired_coverage": (len(comp_errors) / expected_n) if expected_n else np.nan,
+                    "b4_mae": b4_mae,
+                    "comparator_mae": comp_mae,
+                    "delta_mae_comparator_minus_b4": delta,
+                    "relative_improvement_pct": (delta / comp_mae * 100.0) if len(comp_errors) and comp_mae != 0 else np.nan,
+                    "b4_rmse": b4_rmse,
+                    "comparator_rmse": comp_rmse,
+                    "common_all_five_n": sum(1 for _, t in common_five_keys if t == ticker),
+                    "common_b0_b3_n": sum(1 for _, t in b0_b3_test_keys if t == ticker),
+                    "direction_definition": "comparator_mae_minus_b4_mae (positive means HAR_X_OLS lower error)",
+                    "evaluation_scope": "retrospective_test_non_hypothesis",
+                    "pairing_policy": "same prediction_date/ticker/split with mature target and both forecasts valid",
+                }
+            )
+        per_ticker = differences.groupby("ticker")["difference"].agg(["mean", "count"])
+        total_expected = int(sum(int(test_expected.get(ticker, 0)) for ticker in config.tickers))
+        if set(per_ticker.index) == set(config.tickers) and per_ticker["count"].gt(0).all():
+            macro_delta = float(per_ticker["mean"].mean())
+            macro_b4 = float(np.mean([b4_mae_by_ticker[t] for t in config.tickers]))
+            macro_comp = float(np.mean([comp_mae_by_ticker[t] for t in config.tickers]))
+            macro_rel = (macro_delta / macro_comp * 100.0) if macro_comp != 0 else np.nan
+        else:
+            macro_delta = macro_b4 = macro_comp = macro_rel = np.nan
+        rows.append(
+            {
+                "comparison_id": comparison_id,
+                "b4_model": b4_name,
+                "comparator_model": comparator,
+                "split": "test",
+                "ticker": "MACRO",
+                "paired_n": int(differences.shape[0]),
+                "expected_eligible_anchor_count": total_expected,
+                "paired_coverage": (int(differences.shape[0]) / total_expected) if total_expected else np.nan,
+                "b4_mae": macro_b4,
+                "comparator_mae": macro_comp,
+                "delta_mae_comparator_minus_b4": macro_delta,
+                "relative_improvement_pct": macro_rel,
+                "b4_rmse": np.nan,
+                "comparator_rmse": np.nan,
+                "common_all_five_n": len(common_five_keys),
+                "common_b0_b3_n": len(b0_b3_test_keys),
+                "direction_definition": "comparator_mae_minus_b4_mae (positive means HAR_X_OLS lower error)",
+                "evaluation_scope": "retrospective_test_non_hypothesis",
                 "pairing_policy": "equal ETF weight over per-ETF paired anchors",
             }
         )
@@ -1316,6 +1511,8 @@ def _load_existing_result(artifact_dir: Path, evaluation_id: str, identity_sha25
         hypothesis_results=pd.read_csv(artifact_dir / "hypothesis_results.csv", low_memory=False),
         portfolio_risk=pd.read_csv(artifact_dir / "portfolio_risk.csv", low_memory=False),
         manifest=manifest,
+        b4_comparisons=pd.read_csv(artifact_dir / "b4_comparisons.csv", low_memory=False),
+        reference_b0_b3_metrics=pd.read_csv(artifact_dir / "reference_b0_b3_metrics.csv", low_memory=False),
     )
 
 
@@ -1325,6 +1522,7 @@ def _summary_markdown(
     hypotheses: pd.DataFrame,
     coverage: pd.DataFrame,
     evaluation_id: str,
+    b4_comparisons: pd.DataFrame | None = None,
 ) -> str:
     lines = [
         "# Stage 06 Final Evaluation",
@@ -1333,7 +1531,7 @@ def _summary_markdown(
         "- Test: 2025-10-01 through 2026-09-25; predictions come from the completed Final Replay.",
         "- Test data were not used to select models, hyperparameters, features, thresholds, or methods.",
         "",
-        "## Test error on the common B0-B3 panel",
+        "## Test error on the common B0-B4 panel",
         "",
         "| Model | SPY MAE | IEF MAE | GLD MAE | Macro MAE | Macro RMSE |",
         "|---|---:|---:|---:|---:|---:|",
@@ -1358,6 +1556,22 @@ def _summary_markdown(
         delta = "NA" if pd.isna(row.delta_mae_baseline_minus_online) else f"{row.delta_mae_baseline_minus_online:.6f}"
         relative = "NA" if pd.isna(row.relative_improvement_pct) else f"{row.relative_improvement_pct:.2f}"
         lines.append(f"| {row.comparison_id} (B3 vs {row.baseline_model}) | {delta} | {relative} | {row.paired_n} |")
+    if b4_comparisons is not None and not b4_comparisons.empty:
+        lines.extend(
+            [
+                "",
+                "## B4 (HAR-X OLS) retrospective paired comparisons",
+                "",
+                "Positive DeltaMAE means B4 (HAR_X_OLS) has lower paired absolute error than the comparator. These are retrospective non-hypothesis comparisons.",
+                "",
+                "| Comparison | Macro DeltaMAE | Relative improvement (%) | Paired N |",
+                "|---|---:|---:|---:|",
+            ]
+        )
+        for row in b4_comparisons.loc[b4_comparisons["ticker"] == "MACRO"].itertuples(index=False):
+            delta = "NA" if pd.isna(row.delta_mae_comparator_minus_b4) else f"{row.delta_mae_comparator_minus_b4:.6f}"
+            relative = "NA" if pd.isna(row.relative_improvement_pct) else f"{row.relative_improvement_pct:.2f}"
+            lines.append(f"| {row.comparison_id} (B4 vs {row.comparator_model}) | {delta} | {relative} | {row.paired_n} |")
     lines.extend(
         [
             "",
@@ -1485,6 +1699,9 @@ def run_final_evaluation(
             failures,
             cutoff=effective_config.data_cutoff,
             model_names=effective_config.model_names,
+            validation_start_date=effective_config.validation_start_date,
+            test_end_date=effective_config.test_end_date,
+            tickers=effective_config.tickers,
         )
         _validate_joined_windows(audit)
         if audit.empty or not audit["split"].isin(("validation", "test")).all():
@@ -1500,7 +1717,9 @@ def run_final_evaluation(
             raise EvaluationError("Final Test evaluation includes an anchor outside the locked study period")
         coverage = _build_coverage_summary(audit)
         model_metrics = _build_model_metrics(audit, effective_config)
+        reference_b0_b3_metrics = _build_reference_b0_b3_metrics(audit, effective_config)
         pair_comparisons = _build_pair_comparisons(test_evaluations, effective_config)
+        b4_comparisons = _build_b4_comparisons(audit, effective_config)
         thresholds, threshold_counts = _train_high_vol_thresholds(prepared, effective_config)
         high_volatility = _build_high_volatility_metrics(audit, thresholds, threshold_counts, effective_config)
         monthly = aggregate_period_metrics(expected_anchors, evaluations, period="month", model_names=effective_config.model_names)
@@ -1554,7 +1773,9 @@ def run_final_evaluation(
             "forecast_exceptions.csv": _build_forecast_exceptions(audit),
             "coverage.csv": coverage,
             "model_metrics.csv": model_metrics,
+            "reference_b0_b3_metrics.csv": reference_b0_b3_metrics,
             "pair_comparisons.csv": pair_comparisons,
+            "b4_comparisons.csv": b4_comparisons,
             "high_volatility_metrics.csv": high_volatility,
             "monthly_metrics.csv": monthly,
             "yearly_metrics.csv": yearly,
@@ -1579,7 +1800,14 @@ def run_final_evaluation(
             "ML_dataset_preparation_report.json",
         ):
             shutil.copyfile(h1_dir / filename, temporary_dir / filename)
-        summary = _summary_markdown(model_metrics, pair_comparisons, hypothesis_results, coverage, evaluation_id)
+        summary = _summary_markdown(
+            model_metrics,
+            pair_comparisons,
+            hypothesis_results,
+            coverage,
+            evaluation_id,
+            b4_comparisons=b4_comparisons,
+        )
         (temporary_dir / "evaluation_summary.md").write_text(summary, encoding="utf-8", newline="\n")
 
         # Recheck all read-only upstream evidence before committing the output directory.
@@ -1655,6 +1883,8 @@ def run_final_evaluation(
             hypothesis_results=hypothesis_results,
             portfolio_risk=portfolio,
             manifest=manifest,
+            b4_comparisons=b4_comparisons,
+            reference_b0_b3_metrics=reference_b0_b3_metrics,
         )
     except Exception:
         if temporary_dir.exists():

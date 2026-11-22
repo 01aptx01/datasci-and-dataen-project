@@ -72,6 +72,7 @@ def completed_source(tmp_path: Path) -> tuple[Path, Path]:
                 "ROLLING_20D_BASELINE",
                 "STATIC_SGD",
                 "ONLINE_SGD",
+                "HAR_X_OLS",
             ],
         },
         "source_lineage": {

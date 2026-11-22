@@ -1,4 +1,4 @@
-training_config_version: "1.0.0"
+training_config_version: "1.1.0"
 
 core_features:
   - ret_1d_t
@@ -21,6 +21,11 @@ sgd:
   early_stopping: false
   scaler: RobustScaler
   scaler_fit_scope: train_only_per_etf
+
+b4:
+  estimator: LinearRegression
+  fit_intercept: true
+  ill_conditioned_threshold: 100000000.0
 
 search_grid:
   eta0: [0.0001, 0.001, 0.01]

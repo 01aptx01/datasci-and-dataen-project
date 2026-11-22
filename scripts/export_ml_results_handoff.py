@@ -22,6 +22,7 @@ REQUIRED_OUTPUT_FILES = (
     "H1_scatter_plot_spec.json",
     "H1_sensitivity.csv",
     "ML_dataset_preparation_report.json",
+    "b4_comparisons.csv",
     "bootstrap_diagnostics.csv",
     "coverage.csv",
     "drift_error_timeline.csv",
@@ -36,6 +37,7 @@ REQUIRED_OUTPUT_FILES = (
     "monthly_metrics.csv",
     "pair_comparisons.csv",
     "portfolio_risk.csv",
+    "reference_b0_b3_metrics.csv",
     "rolling_mae20.csv",
     "yearly_metrics.csv",
 )
@@ -54,6 +56,7 @@ _EXPECTED_MODELS = [
     "ROLLING_20D_BASELINE",
     "STATIC_SGD",
     "ONLINE_SGD",
+    "HAR_X_OLS",
 ]
 _ABSOLUTE_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+|/(?!/)[^/])")
 
@@ -145,6 +148,16 @@ def _verify_current_code_and_config(
     ):
         raise ArtifactVerificationError("Stage 06 code identity is incomplete")
 
+    dirty_eval = subprocess.run(
+        ["git", "status", "--porcelain", "--", "src/ml_evaluation"],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if dirty_eval.returncode != 0 or dirty_eval.stdout.strip():
+        raise ArtifactVerificationError("Stage 06 evaluation code has uncommitted changes against HEAD")
+
     actual_code_hashes: dict[str, str] = {}
     for name in _EVALUATION_CODE_FILES:
         relative = f"src/ml_evaluation/{name}"
@@ -156,9 +169,17 @@ def _verify_current_code_and_config(
         )
         if result.returncode != 0:
             raise ArtifactVerificationError(f"cannot verify tracked evaluation code: {relative}")
-        actual_code_hashes[name] = hashlib.sha256(result.stdout).hexdigest()
-    if actual_code_hashes != expected_code_hashes:
-        raise ArtifactVerificationError("Stage 06 code hashes do not match the current Git source")
+        lf_bytes = result.stdout.replace(b"\r\n", b"\n")
+        crlf_bytes = lf_bytes.replace(b"\n", b"\r\n")
+        head_candidates = {
+            hashlib.sha256(result.stdout).hexdigest(),
+            hashlib.sha256(lf_bytes).hexdigest(),
+            hashlib.sha256(crlf_bytes).hexdigest(),
+        }
+        expected_hash = expected_code_hashes.get(name)
+        if expected_hash not in head_candidates:
+            raise ArtifactVerificationError("Stage 06 code hashes do not match the current Git source")
+        actual_code_hashes[name] = expected_hash
 
     config_path = repo_root / "config" / "ml_evaluation.yaml"
     hypothesis_path = repo_root / "config" / "hypothesis_tests.yaml"
@@ -415,7 +436,7 @@ def export_results_bundle(
 
     row_counts = _row_counts(approved_dir, REQUIRED_OUTPUT_FILES)
     identity = {
-        "handoff_schema_version": "1.0.0",
+        "handoff_schema_version": "1.1.0",
         "source_verification_status": "SOURCE VERIFIED",
         "evaluation_id": manifest["evaluation_id"],
         "final_replay_experiment_id": manifest["final_replay_experiment_id"],

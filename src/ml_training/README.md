@@ -1,10 +1,12 @@
 # ML Training and Validation
 
 Stage 04 consumes the in-memory `PreparedDataset` from Stage 03 and its label
-table. It fits B0–B3 per ETF, evaluates the locked 27 SGD configurations per
-ETF on Validation, and creates clean B2/B3 initial pairs using the selected
-configuration. It does not run the Final Replay, ADWIN, Test evaluation, or
-write to a logical data table.
+table. It fits B0–B4 per ETF, evaluates the locked 27 SGD configurations per
+ETF on Validation, creates clean B2/B3 initial pairs using the selected
+configuration, and fits frozen B4 HAR-X OLS using the same Train rows and
+RobustScaler as B2. B4 Validation results are audited separately and do not
+affect B2/B3 selection. It does not run the Final Replay, ADWIN, Test
+evaluation, or write to a logical data table.
 
 ```python
 from src.ml_dataset import load_validated_inputs, prepare_ml_dataset
@@ -20,10 +22,10 @@ result = run_training_selection(
 ```
 
 The output directory must be new. It contains the 81 Validation trial rows,
-the selected configuration per ETF, the clean initial model/scaler bundle, a
-copy of the effective config, and a manifest with source lineage, package
-versions, state hashes, and checksums. Artifacts are staged in the destination
-parent and exposed by one final directory rename.
+the selected configuration per ETF, the clean initial model/scaler bundle,
+`b4_validation_evaluations.csv`, a copy of the effective config, and a manifest
+with source lineage, package versions, state hashes, and checksums. Artifacts
+are staged in the destination parent and exposed by one final directory rename.
 
 ## Training and selection rules
 
@@ -36,6 +38,10 @@ parent and exposed by one final directory rename.
   session, after the day's forecasts are recorded. Fitted Train keys seed the
   update ledger; later-maturing Train rows purged at the fixed boundary may
   still update B3.
+- B4 is a static OLS regression with intercept, fit separately per ETF on the
+  same eligible Train rows and the same Train-only `RobustScaler` as B2. Its
+  fit is not part of the SGD search objective. Replay keeps B4 and its scaler
+  frozen.
 - A candidate is selectable only when B2 and B3 both produce valid forecasts
   for every expected fixed-purge-clean Validation anchor. Invalid predictions
   remain visible in the audit and are never clipped or silently omitted.

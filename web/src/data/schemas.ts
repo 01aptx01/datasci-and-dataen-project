@@ -31,6 +31,8 @@ export interface SnapshotPolicy {
     hypothesisResults: string;
     bootstrapDiagnostics: string;
     highVolatilityMetrics: string;
+    b4Comparisons?: string;
+    referenceB0B3Metrics?: string;
   };
   memberSha256: Record<string, string>;
   expectedHeaders: {
@@ -48,6 +50,8 @@ export interface SnapshotPolicy {
     hypothesisResults: string[];
     bootstrapDiagnostics: string[];
     highVolatilityMetrics: string[];
+    b4Comparisons?: string[];
+    referenceB0B3Metrics?: string[];
   };
   expectedCounts: {
     forecastAuditRows: number;
@@ -67,6 +71,8 @@ export interface SnapshotPolicy {
     hypothesisResultsRows: number;
     bootstrapDiagnosticsRows: number;
     highVolatilityMetricsRows: number;
+    b4ComparisonsRows?: number;
+    referenceB0B3MetricsRows?: number;
   };
   publicOutputs: {
     forecastAudit: string;
@@ -83,6 +89,8 @@ export interface SnapshotPolicy {
     hypothesisResults: string;
     bootstrapDiagnostics: string;
     highVolatilityMetrics: string;
+    b4Comparisons?: string;
+    referenceB0B3Metrics?: string;
   };
 }
 
@@ -95,7 +103,7 @@ export interface SnapshotFileArtifact {
 }
 
 export interface SnapshotManifest {
-  schemaVersion: "1.0.0";
+  schemaVersion: "1.0.0" | "1.1.0";
   sourceRepository: string;
   sourceHandoffCommit: string;
   sourceMainCommitAtStart: string;
@@ -117,7 +125,7 @@ export interface SnapshotManifest {
   files: Record<string, SnapshotFileArtifact>;
 }
 
-export type ModelName = "CONSTANT_BASELINE" | "ROLLING_20D_BASELINE" | "STATIC_SGD" | "ONLINE_SGD";
+export type ModelName = "CONSTANT_BASELINE" | "ROLLING_20D_BASELINE" | "STATIC_SGD" | "ONLINE_SGD" | "HAR_X_OLS";
 import { minimumEigenvalueSymmetric3 } from "./portfolio.js";
 
 export type Ticker = "SPY" | "IEF" | "GLD";
@@ -165,6 +173,26 @@ export interface ModelMetricRow {
   mae: number;
   rmse: number;
   comparisonPanel: string;
+}
+
+export interface B4ComparisonRow {
+  comparisonId: "B4_VS_B2" | "B4_VS_B3" | "B4_VS_B1";
+  b4Model: "HAR_X_OLS";
+  comparatorModel: ModelName;
+  split: "test";
+  ticker: Ticker | "MACRO";
+  pairedN: number;
+  expectedEligibleAnchorCount: number;
+  pairedCoverage: number;
+  b4Mae: number;
+  comparatorMae: number;
+  deltaMaeComparatorMinusB4: number;
+  relativeImprovementPct: number;
+  b4Rmse: number | null;
+  comparatorRmse: number | null;
+  commonAllFiveN: number;
+  commonB0B3N: number;
+  evaluationScope: string;
 }
 
 export interface PairComparisonRow {
@@ -389,7 +417,7 @@ export function parsePolicy(value: unknown): SnapshotPolicy {
     identity: {
       evaluationId: stringField(identity, "evaluationId"),
       replayId: stringField(identity, "replayId"),
-      baselineGitCommit: stringField(identity, "baselineGitCommit"),
+      baselineGitCommit: typeof identity.baselineGitCommit === "string" ? identity.baselineGitCommit : "unverified",
       strictCutoff: stringField(identity, "strictCutoff"),
       reportApproval: "PENDING",
     },
@@ -411,6 +439,8 @@ export function parsePolicy(value: unknown): SnapshotPolicy {
       hypothesisResults: stringField(members, "hypothesisResults"),
       bootstrapDiagnostics: stringField(members, "bootstrapDiagnostics"),
       highVolatilityMetrics: stringField(members, "highVolatilityMetrics"),
+      ...(members.b4Comparisons !== undefined ? { b4Comparisons: stringField(members, "b4Comparisons") } : {}),
+      ...(members.referenceB0B3Metrics !== undefined ? { referenceB0B3Metrics: stringField(members, "referenceB0B3Metrics") } : {}),
     },
     memberSha256: hashEntries,
     expectedHeaders: {
@@ -428,6 +458,8 @@ export function parsePolicy(value: unknown): SnapshotPolicy {
       hypothesisResults: stringArray(expectedHeaders.hypothesisResults, "hypothesisResults headers"),
       bootstrapDiagnostics: stringArray(expectedHeaders.bootstrapDiagnostics, "bootstrapDiagnostics headers"),
       highVolatilityMetrics: stringArray(expectedHeaders.highVolatilityMetrics, "highVolatilityMetrics headers"),
+      ...(expectedHeaders.b4Comparisons ? { b4Comparisons: stringArray(expectedHeaders.b4Comparisons, "b4Comparisons headers") } : {}),
+      ...(expectedHeaders.referenceB0B3Metrics ? { referenceB0B3Metrics: stringArray(expectedHeaders.referenceB0B3Metrics, "referenceB0B3Metrics headers") } : {}),
     },
     expectedCounts: {
       forecastAuditRows: numberField(counts, "forecastAuditRows"),
@@ -447,6 +479,8 @@ export function parsePolicy(value: unknown): SnapshotPolicy {
       hypothesisResultsRows: numberField(counts, "hypothesisResultsRows"),
       bootstrapDiagnosticsRows: numberField(counts, "bootstrapDiagnosticsRows"),
       highVolatilityMetricsRows: numberField(counts, "highVolatilityMetricsRows"),
+      ...(counts.b4ComparisonsRows !== undefined ? { b4ComparisonsRows: numberField(counts, "b4ComparisonsRows") } : {}),
+      ...(counts.referenceB0B3MetricsRows !== undefined ? { referenceB0B3MetricsRows: numberField(counts, "referenceB0B3MetricsRows") } : {}),
     },
     publicOutputs: {
       forecastAudit: stringField(value.publicOutputs, "forecastAudit"),
@@ -463,6 +497,8 @@ export function parsePolicy(value: unknown): SnapshotPolicy {
       hypothesisResults: stringField(value.publicOutputs, "hypothesisResults"),
       bootstrapDiagnostics: stringField(value.publicOutputs, "bootstrapDiagnostics"),
       highVolatilityMetrics: stringField(value.publicOutputs, "highVolatilityMetrics"),
+      ...(value.publicOutputs.b4Comparisons !== undefined ? { b4Comparisons: stringField(value.publicOutputs, "b4Comparisons") } : {}),
+      ...(value.publicOutputs.referenceB0B3Metrics !== undefined ? { referenceB0B3Metrics: stringField(value.publicOutputs, "referenceB0B3Metrics") } : {}),
     },
   };
 }
@@ -485,7 +521,9 @@ export function parseSnapshotManifest(value: unknown, policy: SnapshotPolicy): S
   const equal = (field: string, expected: string | boolean): void => {
     if (manifest[field] !== expected) throw new Error(`${field} does not match the pinned handoff policy`);
   };
-  equal("schemaVersion", "1.0.0");
+    if (typeof manifest.schemaVersion !== "string" || (manifest.schemaVersion !== "1.0.0" && manifest.schemaVersion !== "1.1.0")) {
+    throw new Error("schemaVersion does not match the pinned handoff policy");
+  }
   equal("sourceRepository", policy.source.repository);
   equal("sourceHandoffCommit", policy.source.handoffCommit);
   equal("sourceMainCommitAtStart", policy.source.mainCommitAtStart);
@@ -493,7 +531,9 @@ export function parseSnapshotManifest(value: unknown, policy: SnapshotPolicy): S
   equal("sourceZipSha256", policy.source.zipSha256);
   equal("evaluationId", policy.identity.evaluationId);
   equal("replayId", policy.identity.replayId);
-  equal("baselineGitCommit", policy.identity.baselineGitCommit);
+  if ((manifest.baselineGitCommit ?? "unverified") !== policy.identity.baselineGitCommit) {
+    throw new Error("baselineGitCommit does not match the pinned handoff policy");
+  }
   equal("sourceVerificationStatus", "SOURCE VERIFIED");
   equal("stage05Status", "COMPLETED");
   equal("stage06Status", "COMPLETED");
@@ -521,6 +561,8 @@ export function parseSnapshotManifest(value: unknown, policy: SnapshotPolicy): S
     hypothesisResultsRows: numberField(counts, "hypothesisResultsRows"),
     bootstrapDiagnosticsRows: numberField(counts, "bootstrapDiagnosticsRows"),
     highVolatilityMetricsRows: numberField(counts, "highVolatilityMetricsRows"),
+    ...(counts.b4ComparisonsRows !== undefined ? { b4ComparisonsRows: numberField(counts, "b4ComparisonsRows") } : {}),
+    ...(counts.referenceB0B3MetricsRows !== undefined ? { referenceB0B3MetricsRows: numberField(counts, "referenceB0B3MetricsRows") } : {}),
     recordedTestDates: numberField(counts, "recordedTestDates"),
   };
   for (const key of ["forecastAuditRows", "evaluationRows", "testForecastRows", "testEvaluableRows", "testPendingRows", "modelMetricsRows", "pairComparisonsRows", "coverageRows", "portfolioRiskRows", "rollingMae20Rows", "driftErrorTimelineRows", "h1ScatterDataRows", "h1ResultsRows", "h1SensitivityRows", "hypothesisResultsRows", "bootstrapDiagnosticsRows", "highVolatilityMetricsRows"] as const) {
@@ -542,21 +584,27 @@ export function parseSnapshotManifest(value: unknown, policy: SnapshotPolicy): S
     hypothesisResults: "hypothesisResultsRows",
     bootstrapDiagnostics: "bootstrapDiagnosticsRows",
     highVolatilityMetrics: "highVolatilityMetricsRows",
+    b4Comparisons: "b4ComparisonsRows",
+    referenceB0B3Metrics: "referenceB0B3MetricsRows",
   };
   const parsedFiles = {} as SnapshotManifest["files"];
   const outputKeys = Object.keys(policy.publicOutputs) as (keyof SnapshotPolicy["publicOutputs"])[];
   if (Object.keys(files).length !== outputKeys.length) throw new Error("Snapshot manifest includes an unexpected file list");
   for (const key of outputKeys) {
     const artifact = parseArtifact(files[key], key);
-    if (artifact.path !== policy.publicOutputs[key]) throw new Error(`Snapshot manifest uses an unapproved output path for ${key}`);
-    if (artifact.sha256 !== policy.memberSha256[policy.members[key]]) throw new Error(`Snapshot manifest ${key} hash differs from the pinned source hash`);
+    const expectedPath = policy.publicOutputs[key];
+    const memberKey = policy.members[key];
+    const expectedHeaders = policy.expectedHeaders[key];
+    if (!expectedPath || !memberKey || !expectedHeaders) throw new Error(`Snapshot policy is missing definition for ${key}`);
+    if (artifact.path !== expectedPath) throw new Error(`Snapshot manifest uses an unapproved output path for ${key}`);
+    if (artifact.sha256 !== policy.memberSha256[memberKey]) throw new Error(`Snapshot manifest ${key} hash differs from the pinned source hash`);
     if (artifact.rowCount !== expectedCounts[artifactCountKey[key]]) throw new Error(`Snapshot manifest ${key} row count does not match the pinned source`);
-    if (!sameArray(artifact.headers, policy.expectedHeaders[key])) throw new Error(`Snapshot manifest ${key} headers do not match the pinned source schema`);
+    if (!sameArray(artifact.headers, expectedHeaders)) throw new Error(`Snapshot manifest ${key} headers do not match the pinned source schema`);
     parsedFiles[key] = artifact;
   }
 
   return {
-    schemaVersion: "1.0.0",
+    schemaVersion: manifest.schemaVersion as "1.0.0" | "1.1.0",
     sourceRepository: policy.source.repository,
     sourceHandoffCommit: policy.source.handoffCommit,
     sourceMainCommitAtStart: policy.source.mainCommitAtStart,
@@ -626,7 +674,7 @@ function parseCount(value: string, field: string): number {
 }
 
 function parseModelName(value: string, field: string): ModelName {
-  return oneOf(value, ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"], field);
+  return oneOf(value, ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS"], field);
 }
 
 function parseTickerOrMacro(value: string, field: string): Ticker | "MACRO" {
@@ -892,7 +940,7 @@ export function parseForecastAuditRow(record: Record<string, string>): ForecastA
     predictionDate: dateString(record.prediction_date, "prediction_date"),
     ticker: oneOf(record.ticker, ["SPY", "IEF", "GLD"], "ticker"),
     split: oneOf(record.split, ["test", "validation"], "split"),
-    modelName: oneOf(record.model_name, ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"], "model_name"),
+    modelName: oneOf(record.model_name, ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS"], "model_name"),
     isLabelMature: parseBoolean(record.is_label_mature, "is_label_mature"),
     isCommonPanel: parseBoolean(record.is_common_panel, "is_common_panel"),
     targetStartDate: dateString(record.target_start_date, "target_start_date"),
@@ -931,7 +979,7 @@ export function parseEvaluationRow(record: Record<string, string>): EvaluationRo
     predictionDate: dateString(record.prediction_date, "prediction_date"),
     split: oneOf(record.split, ["test"], "split"),
     ticker: oneOf(record.ticker, ["SPY", "IEF", "GLD"], "ticker"),
-    modelName: oneOf(record.model_name, ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"], "model_name"),
+    modelName: oneOf(record.model_name, ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS"], "model_name"),
     targetStartDate: dateString(record.target_start_date, "target_start_date"),
     targetEndDate: dateString(record.target_end_date, "target_end_date"),
     predictedVolAnnualized: parseFinite(record.predicted_vol_annualized, "predicted_vol_annualized"),
@@ -940,12 +988,13 @@ export function parseEvaluationRow(record: Record<string, string>): EvaluationRo
   };
 }
 
-export function modelId(model: ModelName): "B0" | "B1" | "B2" | "B3" {
-  const ids: Record<ModelName, "B0" | "B1" | "B2" | "B3"> = {
+export function modelId(model: ModelName): "B0" | "B1" | "B2" | "B3" | "B4" {
+  const ids: Record<ModelName, "B0" | "B1" | "B2" | "B3" | "B4"> = {
     CONSTANT_BASELINE: "B0",
     ROLLING_20D_BASELINE: "B1",
     STATIC_SGD: "B2",
     ONLINE_SGD: "B3",
+    HAR_X_OLS: "B4",
   };
   return ids[model];
 }
@@ -956,6 +1005,54 @@ export function modelLabel(model: ModelName): string {
     ROLLING_20D_BASELINE: "Rolling 20D baseline",
     STATIC_SGD: "Static SGD",
     ONLINE_SGD: "Online SGD",
+    HAR_X_OLS: "HAR-X (OLS)",
   };
   return labels[model];
+}
+
+export function parseB4ComparisonRow(record: Record<string, string>): B4ComparisonRow {
+  const comparisonId = oneOf(record.comparison_id, ["B4_VS_B2", "B4_VS_B3", "B4_VS_B1"], "comparison_id");
+  const b4Model = oneOf(record.b4_model, ["HAR_X_OLS"], "b4_model");
+  const comparatorModel = parseModelName(record.comparator_model, "comparator_model");
+  const expectedComparator: Record<B4ComparisonRow["comparisonId"], ModelName> = {
+    B4_VS_B2: "STATIC_SGD",
+    B4_VS_B3: "ONLINE_SGD",
+    B4_VS_B1: "ROLLING_20D_BASELINE",
+  };
+  if (comparatorModel !== expectedComparator[comparisonId]) throw new Error("B4 comparison identity does not match comparator model");
+  if (record.split !== "test") throw new Error("B4 comparisons are Test-only");
+  if (record.direction_definition !== "comparator_mae_minus_b4_mae (positive means HAR_X_OLS lower error)") throw new Error("B4 comparison direction is inconsistent");
+  if (record.evaluation_scope !== "retrospective_test_non_hypothesis") throw new Error("B4 comparison scope is inconsistent");
+  const ticker = parseTickerOrMacro(record.ticker, "ticker");
+  const row: B4ComparisonRow = {
+    comparisonId,
+    b4Model,
+    comparatorModel,
+    split: "test",
+    ticker,
+    pairedN: parseCount(record.paired_n, "paired_n"),
+    expectedEligibleAnchorCount: parseCount(record.expected_eligible_anchor_count, "expected_eligible_anchor_count"),
+    pairedCoverage: parseCoverageRate(record.paired_coverage, "paired_coverage"),
+    b4Mae: parseFinite(record.b4_mae, "b4_mae"),
+    comparatorMae: parseFinite(record.comparator_mae, "comparator_mae"),
+    deltaMaeComparatorMinusB4: parseSignedFinite(record.delta_mae_comparator_minus_b4, "delta_mae_comparator_minus_b4"),
+    relativeImprovementPct: parseSignedFinite(record.relative_improvement_pct, "relative_improvement_pct"),
+    b4Rmse: ticker === "MACRO" ? null : parseFinite(record.b4_rmse, "b4_rmse"),
+    comparatorRmse: ticker === "MACRO" ? null : parseFinite(record.comparator_rmse, "comparator_rmse"),
+    commonAllFiveN: parseCount(record.common_all_five_n, "common_all_five_n"),
+    commonB0B3N: parseCount(record.common_b0_b3_n, "common_b0_b3_n"),
+    evaluationScope: record.evaluation_scope,
+  };
+  if (row.pairedN === 0 || row.expectedEligibleAnchorCount === 0 || row.pairedN > row.expectedEligibleAnchorCount) throw new Error("B4 comparison counts are inconsistent");
+  if (Math.abs(row.pairedCoverage - row.pairedN / row.expectedEligibleAnchorCount) > 1e-12) throw new Error("B4 comparison coverage does not match paired counts");
+  if (Math.abs(row.deltaMaeComparatorMinusB4 - (row.comparatorMae - row.b4Mae)) > 1e-12) throw new Error("B4 comparison DeltaMAE does not match model MAEs");
+  if (row.comparatorMae === 0) throw new Error("B4 comparison relative improvement is undefined when comparator MAE is zero");
+  const expectedRelativeImprovement = (row.deltaMaeComparatorMinusB4 / row.comparatorMae) * 100;
+  if (Math.abs(row.relativeImprovementPct - expectedRelativeImprovement) > 1e-9) throw new Error("B4 comparison relative improvement does not match model MAEs");
+  if ((ticker === "MACRO") !== (row.b4Rmse === null && row.comparatorRmse === null)) throw new Error("Macro B4 RMSE must remain blank while ETF RMSE must be present");
+  const expectedPairingPolicy = ticker === "MACRO"
+    ? "equal ETF weight over per-ETF paired anchors"
+    : "same prediction_date/ticker/split with mature target and both forecasts valid";
+  if (record.pairing_policy !== expectedPairingPolicy) throw new Error("B4 comparison pairing policy is inconsistent");
+  return row;
 }

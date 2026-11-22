@@ -1,7 +1,7 @@
 # Daily ML Replay
 
 Stage 05 consumes a Stage 03 `PreparedDataset`, the Stage 03 label frame, and a
-checksum-verified Stage 04 training artifact. It runs B0–B3 in chronological
+checksum-verified Stage 04 training artifact. It runs B0–B4 in chronological
 XNYS order and preserves the locked Validation-to-Test state transition.
 
 ```python
@@ -30,12 +30,13 @@ stages.
 
 Each XNYS session runs:
 
-1. Predict with pre-update state and stage immutable B0–B3 forecasts.
+1. Predict with pre-update state and stage immutable B0–B4 forecasts.
 2. Evaluate only forecasts whose valid five-session label has
    `target_end_date <= replay_date`.
 3. Feed each mature B3 absolute error to that ETF's ADWIN monitor once.
 4. Call B3 `partial_fit` once per ETF for the deterministic batch of newly
-   mature eligible labels. B2 stays frozen and the RobustScaler stays frozen.
+   mature eligible labels. B2 and B4 stay frozen, and all fitted RobustScalers
+   stay frozen.
 5. Save the post-update model, detector, ledgers, and session outputs in one
    checksummed daily directory, then atomically rename it into `committed/`.
 
@@ -43,7 +44,8 @@ The commit marker is trusted only when its manifest and every listed file pass
 SHA-256 validation. Resume restores the latest compatible committed state;
 uncommitted staging directories are ignored. A checkpoint includes the full
 pending forecast set, updated-label and processed-error ledgers, River ADWIN
-state, B3 state, frozen scaler, and hashes of the unchanged Stage 04 B2 states.
+state, B3 state, frozen scalers, and hashes of the unchanged Stage 04 B2 and
+B4 states.
 
 ## Files
 

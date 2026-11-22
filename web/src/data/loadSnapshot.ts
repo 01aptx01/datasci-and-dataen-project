@@ -15,6 +15,7 @@ import {
   parseHypothesisResultRow,
   parseBootstrapDiagnosticRow,
   parseHighVolatilityMetricRow,
+  parseB4ComparisonRow,
   parsePolicy,
   parseSnapshotManifest,
   type EvaluationRow,
@@ -25,6 +26,7 @@ import {
   type ModelName,
   type ModelMetricRow,
   type PairComparisonRow,
+  type B4ComparisonRow,
   type CoverageRow,
   type PortfolioRiskRow,
   type RollingMae20Row,
@@ -58,6 +60,8 @@ export type SnapshotState =
       hypothesisResults: HypothesisResultRow[];
       bootstrapDiagnostics: BootstrapDiagnosticRow[];
       highVolatilityMetrics: HighVolatilityMetricRow[];
+      b4Comparisons?: B4ComparisonRow[];
+      referenceB0B3Metrics?: ModelMetricRow[];
     }
   | { status: "missing"; message: string }
   | { status: "error"; message: string };
@@ -183,10 +187,14 @@ export async function verifySnapshotFileBytes(
   policy: SnapshotPolicy,
   files: Record<string, Uint8Array | undefined>,
 ): Promise<void> {
-  const artifacts = (Object.keys(policy.publicOutputs) as (keyof SnapshotPolicy["publicOutputs"])[]).map((key) => ({
-    artifact: manifest.files[key],
-    expected: policy.memberSha256[policy.members[key]],
-  }));
+  const artifacts = (Object.keys(policy.publicOutputs) as (keyof SnapshotPolicy["publicOutputs"])[]).map((key) => {
+    const memberKey = policy.members[key];
+    if (!memberKey) throw new SnapshotLoadError(`Snapshot policy missing member path for ${key}`, "integrity");
+    return {
+      artifact: manifest.files[key],
+      expected: policy.memberSha256[memberKey],
+    };
+  });
   requireSnapshotFiles(files, artifacts.map(({ artifact }) => artifact.path));
   for (const { artifact, expected } of artifacts) {
     const bytes = files[artifact.path];
@@ -218,6 +226,93 @@ function validateEvaluationJoin(auditRows: ForecastAuditRow[], evaluationRows: E
   const evaluableTest = auditRows.filter((row) => row.split === "test" && row.evaluationStatus === "EVALUABLE");
   if (evaluableTest.length !== evaluationRows.length) throw new SnapshotLoadError("Test evaluation rows do not cover the verified evaluable forecast set", "integrity");
   return evaluationById;
+}
+
+function validateB4Comparisons(
+  comparisons: B4ComparisonRow[],
+  auditRows: ForecastAuditRow[],
+  evaluationRows: EvaluationRow[],
+): void {
+  const comparators: Record<B4ComparisonRow["comparisonId"], ModelName> = {
+    B4_VS_B2: "STATIC_SGD",
+    B4_VS_B3: "ONLINE_SGD",
+    B4_VS_B1: "ROLLING_20D_BASELINE",
+  };
+  const tickers: Ticker[] = ["SPY", "IEF", "GLD"];
+  const modelSet: ModelName[] = ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS"];
+  const evaluationByScope = new Map<string, EvaluationRow>();
+  for (const evaluation of evaluationRows) {
+    const key = `${evaluation.predictionDate}:${evaluation.ticker}:${evaluation.modelName}`;
+    if (evaluationByScope.has(key)) throw new SnapshotLoadError("Duplicate model/date/ticker evaluation scope", "integrity");
+    evaluationByScope.set(key, evaluation);
+  }
+  const expectedDates = new Map<Ticker, Set<string>>();
+  for (const ticker of tickers) {
+    expectedDates.set(ticker, new Set(auditRows.filter((row) => row.split === "test" && row.ticker === ticker).map((row) => row.predictionDate)));
+  }
+  const hasEvaluation = (date: string, ticker: Ticker, model: ModelName) => evaluationByScope.has(`${date}:${ticker}:${model}`);
+  const close = (actual: number, expected: number, field: string) => {
+    if (Math.abs(actual - expected) > 1e-9) throw new SnapshotLoadError(`b4_comparisons.csv ${field} does not reconcile with evaluation.csv`, "integrity");
+  };
+  const requiredScopes = new Set<string>();
+  for (const comparisonId of Object.keys(comparators) as B4ComparisonRow["comparisonId"][]) {
+    const comparator = comparators[comparisonId];
+    const pairByTicker = new Map<Ticker, { pairedN: number; b4Mae: number; comparatorMae: number; b4Rmse: number; comparatorRmse: number }>();
+    for (const ticker of tickers) {
+      const dates = [...(expectedDates.get(ticker) ?? [])];
+      const pairs = dates.flatMap((date) => {
+        const b4 = evaluationByScope.get(`${date}:${ticker}:HAR_X_OLS`);
+        const base = evaluationByScope.get(`${date}:${ticker}:${comparator}`);
+        if (!b4 || !base) return [];
+        if (b4.targetRealizedVol5d !== base.targetRealizedVol5d || b4.targetEndDate !== base.targetEndDate) {
+          throw new SnapshotLoadError("B4 paired evaluations have mismatched target windows", "integrity");
+        }
+        return [{ b4, base }];
+      });
+      if (pairs.length === 0) throw new SnapshotLoadError("B4 comparison has no evaluable paired observations", "integrity");
+      const b4Mae = pairs.reduce((total, pair) => total + pair.b4.absoluteError, 0) / pairs.length;
+      const comparatorMae = pairs.reduce((total, pair) => total + pair.base.absoluteError, 0) / pairs.length;
+      const b4Rmse = Math.sqrt(pairs.reduce((total, pair) => total + pair.b4.absoluteError ** 2, 0) / pairs.length);
+      const comparatorRmse = Math.sqrt(pairs.reduce((total, pair) => total + pair.base.absoluteError ** 2, 0) / pairs.length);
+      pairByTicker.set(ticker, { pairedN: pairs.length, b4Mae, comparatorMae, b4Rmse, comparatorRmse });
+    }
+    const pairedN = [...pairByTicker.values()].reduce((total, pair) => total + pair.pairedN, 0);
+    const expectedEligibleAnchorCount = tickers.reduce((total, ticker) => total + (expectedDates.get(ticker)?.size ?? 0), 0);
+    const macroB4Mae = tickers.reduce((total, ticker) => total + pairByTicker.get(ticker)!.b4Mae, 0) / tickers.length;
+    const macroComparatorMae = tickers.reduce((total, ticker) => total + pairByTicker.get(ticker)!.comparatorMae, 0) / tickers.length;
+    const commonAllFiveN = tickers.reduce((total, ticker) => total + [...(expectedDates.get(ticker) ?? [])].filter((date) => modelSet.every((model) => hasEvaluation(date, ticker, model))).length, 0);
+    const commonB0B3N = tickers.reduce((total, ticker) => total + [...(expectedDates.get(ticker) ?? [])].filter((date) => modelSet.slice(0, 4).every((model) => hasEvaluation(date, ticker, model))).length, 0);
+    for (const ticker of [...tickers, "MACRO" as const]) {
+      const row = comparisons.find((candidate) => candidate.comparisonId === comparisonId && candidate.ticker === ticker);
+      if (!row) throw new SnapshotLoadError(`b4_comparisons.csv is missing ${comparisonId}/${ticker}`, "integrity");
+      requiredScopes.add(`${comparisonId}:${ticker}`);
+      const expected = ticker === "MACRO" ? {
+        pairedN,
+        eligible: expectedEligibleAnchorCount,
+        b4Mae: macroB4Mae,
+        comparatorMae: macroComparatorMae,
+        b4Rmse: null,
+        comparatorRmse: null,
+      } : { ...pairByTicker.get(ticker)!, eligible: expectedDates.get(ticker)!.size };
+      if (row.comparatorModel !== comparator || row.split !== "test") throw new SnapshotLoadError("B4 comparison model identity is inconsistent", "integrity");
+      if (row.pairedN !== expected.pairedN || row.expectedEligibleAnchorCount !== expected.eligible) throw new SnapshotLoadError("B4 comparison counts do not match paired evaluations", "integrity");
+      close(row.pairedCoverage, expected.pairedN / expected.eligible, "paired_coverage");
+      close(row.b4Mae, expected.b4Mae, "b4_mae");
+      close(row.comparatorMae, expected.comparatorMae, "comparator_mae");
+      close(row.deltaMaeComparatorMinusB4, expected.comparatorMae - expected.b4Mae, "delta_mae_comparator_minus_b4");
+      close(row.relativeImprovementPct, ((expected.comparatorMae - expected.b4Mae) / expected.comparatorMae) * 100, "relative_improvement_pct");
+      if (ticker === "MACRO") {
+        if (row.b4Rmse !== null || row.comparatorRmse !== null) throw new SnapshotLoadError("Macro B4 comparison RMSE must be blank", "integrity");
+      } else {
+        close(row.b4Rmse!, expected.b4Rmse!, "b4_rmse");
+        close(row.comparatorRmse!, expected.comparatorRmse!, "comparator_rmse");
+      }
+      const expectedCommonAllFive = ticker === "MACRO" ? commonAllFiveN : [...expectedDates.get(ticker)!].filter((date) => modelSet.every((model) => hasEvaluation(date, ticker, model))).length;
+      const expectedCommonB0B3 = ticker === "MACRO" ? commonB0B3N : [...expectedDates.get(ticker)!].filter((date) => modelSet.slice(0, 4).every((model) => hasEvaluation(date, ticker, model))).length;
+      if (row.commonAllFiveN !== expectedCommonAllFive || row.commonB0B3N !== expectedCommonB0B3) throw new SnapshotLoadError("B4 comparison reference panel counts do not match evaluations", "integrity");
+    }
+  }
+  if (comparisons.length !== requiredScopes.size) throw new SnapshotLoadError("b4_comparisons.csv has duplicate or unsupported comparison scopes", "integrity");
 }
 
 function sameNumber(left: number | null, right: number): boolean {
@@ -334,7 +429,7 @@ function validateAdditionalSources(
   const bootstrapByScope = keyed(bootstrap, (row) => `${row.hypothesisId}:${row.blockLength}`, "bootstrap_diagnostics.csv");
   if (bootstrapByScope.size !== 4 || !["H2", "H3"].every((hypothesis) => [5, 20].every((blockLength) => bootstrapByScope.has(`${hypothesis}:${blockLength}`)))) throw new SnapshotLoadError("bootstrap_diagnostics.csv does not contain the pinned sensitivity rows", "integrity");
   const highVolByScope = keyed(highVolatility, (row) => `${row.split}:${row.ticker}:${row.modelName}`, "high_volatility_metrics.csv");
-  if (highVolByScope.size !== 12 || highVolatility.some((row) => row.split === "test" && row.ticker === "IEF" && (row.highVolAnchorCount !== 0 || row.highVolCommonEvaluableN !== 0 || row.mae !== null || row.rmse !== null))) throw new SnapshotLoadError("High-volatility subset counts do not match the pinned source; IEF Test must remain insufficient evidence", "integrity");
+  if (highVolByScope.size !== manifest.expectedCounts.highVolatilityMetricsRows || highVolatility.some((row) => row.split === "test" && row.ticker === "IEF" && (row.highVolAnchorCount !== 0 || row.highVolCommonEvaluableN !== 0 || row.mae !== null || row.rmse !== null))) throw new SnapshotLoadError("High-volatility subset counts do not match the pinned source; IEF Test must remain insufficient evidence", "integrity");
   void rollingByScope;
   void portfolioByScope;
 }
@@ -380,9 +475,22 @@ export async function loadSnapshot(fetcher: typeof fetch = fetch, baseHref: stri
     const hypothesisResults = parseHypothesisResults(content.hypothesisResults, policy);
     const bootstrapDiagnostics = parseBootstrapDiagnostics(content.bootstrapDiagnostics, policy);
     const highVolatilityMetrics = parseHighVolatilityMetrics(content.highVolatilityMetrics, policy);
+    const b4Comparisons = content.b4Comparisons && policy.expectedHeaders.b4Comparisons
+      ? parseRows(content.b4Comparisons, policy.expectedHeaders.b4Comparisons, "b4_comparisons.csv", parseB4ComparisonRow)
+      : undefined;
+    const referenceB0B3Metrics = content.referenceB0B3Metrics && policy.expectedHeaders.referenceB0B3Metrics
+      ? parseRows(content.referenceB0B3Metrics, policy.expectedHeaders.referenceB0B3Metrics, "reference_b0_b3_metrics.csv", parseModelMetricRow)
+      : undefined;
     verifyCounts(auditRows, evaluationRows, manifest);
     if (modelMetrics.length !== manifest.expectedCounts.modelMetricsRows || pairComparisons.length !== manifest.expectedCounts.pairComparisonsRows || coverage.length !== manifest.expectedCounts.coverageRows) {
       throw new SnapshotLoadError("D3 source row counts do not match the verified manifest", "integrity");
+    }
+    if (b4Comparisons && manifest.expectedCounts.b4ComparisonsRows !== undefined && b4Comparisons.length !== manifest.expectedCounts.b4ComparisonsRows) {
+      throw new SnapshotLoadError("b4_comparisons.csv row count does not match the verified manifest", "integrity");
+    }
+    if (b4Comparisons) validateB4Comparisons(b4Comparisons, auditRows, evaluationRows);
+    if (referenceB0B3Metrics && manifest.expectedCounts.referenceB0B3MetricsRows !== undefined && referenceB0B3Metrics.length !== manifest.expectedCounts.referenceB0B3MetricsRows) {
+      throw new SnapshotLoadError("reference_b0_b3_metrics.csv row count does not match the verified manifest", "integrity");
     }
     if (new Set(modelMetrics.map((row) => `${row.ticker}:${row.modelName}`)).size !== modelMetrics.length || new Set(pairComparisons.map((row) => `${row.comparisonId}:${row.ticker}`)).size !== pairComparisons.length || new Set(coverage.map((row) => `${row.split}:${row.ticker}:${row.modelName}`)).size !== coverage.length) {
       throw new SnapshotLoadError("A D3 source CSV contains duplicate scope rows", "integrity");
@@ -392,6 +500,8 @@ export async function loadSnapshot(fetcher: typeof fetch = fetch, baseHref: stri
       status: "ready", policy, manifest, sessions: auditRows.filter((row) => row.split === "test"), forecasts: auditRows,
       evaluations: validateEvaluationJoin(auditRows, evaluationRows), modelMetrics, pairComparisons, coverage,
       portfolioRisk, rollingMae20, driftTimeline, h1Scatter, h1Results, h1Sensitivity, hypothesisResults, bootstrapDiagnostics, highVolatilityMetrics,
+      ...(b4Comparisons ? { b4Comparisons } : {}),
+      ...(referenceB0B3Metrics ? { referenceB0B3Metrics } : {}),
     };
   } catch (error) {
     if (error instanceof SnapshotLoadError && error.kind === "missing") return { status: "missing", message: error.message };

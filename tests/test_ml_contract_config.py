@@ -13,6 +13,7 @@ EXPECTED_MODELS = {
     "B1": "ROLLING_20D_BASELINE",
     "B2": "STATIC_SGD",
     "B3": "ONLINE_SGD",
+    "B4": "HAR_X_OLS",
 }
 
 CORE_FEATURES = [
@@ -59,6 +60,12 @@ def test_model_config_defines_locked_b0_through_b3_policies() -> None:
             "model_name": "ONLINE_SGD",
             "strategy": "sgd",
             "update_policy": "partial_fit_mature_labels_only",
+        },
+        {
+            "model_id": "B4",
+            "model_name": "HAR_X_OLS",
+            "strategy": "ols",
+            "update_policy": "frozen_after_initial_fit",
         },
     ]
     assert config["sgd"]["estimator"] == "SGDRegressor"

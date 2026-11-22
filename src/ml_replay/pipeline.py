@@ -36,8 +36,17 @@ from src.ml_replay.storage import (
     stage_table,
     write_json_atomic,
 )
-from src.ml_training.config import CandidateConfig, TrainingConfig
-from src.ml_training.pipeline import model_state_sha256
+from src.ml_training.config import (
+    SUPPORTED_TRAINING_CONFIG_VERSIONS,
+    CandidateConfig,
+    TrainingConfig,
+)
+from src.ml_training.pipeline import (
+    B4_MODEL_VERSION,
+    b4_state_sha256,
+    model_state_sha256,
+    scaler_state_sha256,
+)
 
 
 PREDICTION_COLUMNS = [
@@ -141,8 +150,10 @@ MODEL_NAMES = {
     "B1": "ROLLING_20D_BASELINE",
     "B2": "STATIC_SGD",
     "B3": "ONLINE_SGD",
+    "B4": "HAR_X_OLS",
 }
-MODEL_ORDER = ("B0", "B1", "B2", "B3")
+MODEL_ORDER = ("B0", "B1", "B2", "B3", "B4")
+MODEL_SUITE_VERSION = "1.1.0"
 REQUIRED_LABEL_COLUMNS = {
     "date",
     "ticker",
@@ -319,18 +330,24 @@ def _contract_identity(prepared: PreparedDataset, labels: pd.DataFrame) -> dict[
     }
 
 
-def _validate_model_names() -> None:
+def _validate_model_names() -> str:
     path = Path("config/models.yaml")
     if not path.is_file():
         raise ReplayError("config/models.yaml is required for Stage 05 model identity")
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    suite_version = str(raw.get("model_suite_version", ""))
+    if suite_version != MODEL_SUITE_VERSION:
+        raise ReplayError(
+            f"config/models.yaml model_suite_version must be {MODEL_SUITE_VERSION} (got {suite_version})"
+        )
     configured = {
         str(item.get("model_id")): str(item.get("model_name"))
         for item in raw.get("models", [])
         if isinstance(item, dict)
     }
     if configured != MODEL_NAMES:
-        raise ReplayError("config/models.yaml model IDs/names do not match the locked B0-B3 contract")
+        raise ReplayError("config/models.yaml model IDs/names do not match the locked B0-B4 contract")
+    return suite_version
 
 
 def _input_maps(
@@ -420,8 +437,16 @@ def _load_initial_artifact(
         raise ReplayError("unsupported Stage 04 initial model bundle version")
     tickers = bundle.get("tickers", {})
     baselines = bundle.get("baselines", {})
+    b4_models = bundle.get("b4_models", {})
+    if (
+        b4_models
+        and manifest.get("training_config_version") not in SUPPORTED_TRAINING_CONFIG_VERSIONS
+    ):
+        raise ReplayError("B4 Stage 04 artifact has an incompatible training config version")
     if set(tickers) != set(SUPPORTED_TICKERS) or set(baselines) != set(SUPPORTED_TICKERS):
         raise ReplayError("Stage 04 artifacts must contain B0-B3 states for SPY, IEF, and GLD")
+    if not isinstance(b4_models, dict) or set(b4_models) != set(SUPPORTED_TICKERS):
+        raise ReplayError("Stage 04 artifacts must contain B4 HAR-X OLS states for SPY, IEF, and GLD")
 
     supervised = prepared.supervised
     if supervised.y is None or len(supervised.X) != len(supervised.metadata) or len(supervised.y) != len(supervised.metadata):
@@ -460,6 +485,30 @@ def _load_initial_artifact(
             raise ReplayError(f"{ticker} B0 Train mean does not match the prepared Train labels")
         train_ends = [_as_date(value, "Train target end") for value in ticker_train["target_end_date"]]
         last_train_target_end[ticker] = max(train_ends)
+        b4_entry = b4_models[ticker]
+        if (
+            b4_entry.get("model_id") != "B4"
+            or b4_entry.get("model_name") != "HAR_X_OLS"
+            or b4_entry.get("model_version") != B4_MODEL_VERSION
+        ):
+            raise ReplayError(f"{ticker} B4 Stage 04 identity is invalid")
+        manifest_b4_entry = manifest.get("b4_models", {}).get(ticker, {})
+        if (
+            manifest_b4_entry.get("model_id") != b4_entry["model_id"]
+            or manifest_b4_entry.get("model_name") != b4_entry["model_name"]
+            or manifest_b4_entry.get("model_version") != B4_MODEL_VERSION
+        ):
+            raise ReplayError(f"{ticker} B4 training manifest identity is invalid")
+        if tuple(b4_entry.get("feature_order", ())) != expected_order:
+            raise ReplayError(f"{ticker} B4 Stage 04 feature order is incompatible")
+        actual_b4 = b4_state_sha256(b4_entry["model"], b4_entry["scaler"])
+        b4_manifest_hash = manifest.get("b4_models", {}).get(ticker, {}).get("state_sha256")
+        if not actual_b4 or actual_b4 != b4_entry.get("state_sha256") or b4_manifest_hash != actual_b4:
+            raise ReplayError(f"{ticker} B4 model and scaler hashes do not match")
+        if scaler_state_sha256(b4_entry["scaler"]) != scaler_state_sha256(pair["scaler"]):
+            raise ReplayError(f"{ticker} B4 RobustScaler does not match B2 RobustScaler")
+        if _as_date(b4_entry["last_training_target_end_date"], "B4 Train target end") != last_train_target_end[ticker]:
+            raise ReplayError(f"{ticker} B4 last_training_target_end_date does not match Train labels")
         seed_keys.update(
             (_as_date(row.date, "Train anchor"), str(row.ticker))
             for row in ticker_train.itertuples(index=False)
@@ -921,7 +970,7 @@ def run_final_replay(
     ``stop_after_session`` and ``failure_injector`` support bounded acceptance and
     recovery tests. Use the strict data cutoff as the end date for Final Replay.
     """
-    _validate_model_names()
+    model_suite_version = _validate_model_names()
     replay_config = config or ReplayConfig.from_yaml()
     effective_end = replay_config.data_cutoff if replay_end_date is None else _as_date(
         replay_end_date, "replay_end_date"
@@ -934,8 +983,12 @@ def run_final_replay(
     bundle, training_manifest, initial_tickers, initial_train_ends, seed_keys = _load_initial_artifact(
         initial_model_artifact_dir, prepared
     )
+    b4_models = bundle["b4_models"]
     initial_hash_by_ticker = {
         ticker: str(initial_tickers[ticker]["state_sha256"]) for ticker in SUPPORTED_TICKERS
+    }
+    b4_initial_hash_by_ticker = {
+        ticker: str(b4_models[ticker]["state_sha256"]) for ticker in SUPPORTED_TICKERS
     }
     input_snapshot_id = _input_snapshot_id(prepared, labels)
     versions = _package_versions()
@@ -948,9 +1001,15 @@ def run_final_replay(
         "initial_models_sha256": training_manifest["artifact_sha256"]["initial_models.joblib"],
         "selected_configs": training_manifest.get("selected_configs", []),
         "initial_state_sha256_by_ticker": initial_hash_by_ticker,
+        "b4_initial_state_sha256_by_ticker": b4_initial_hash_by_ticker,
+        "b4_model_versions": {
+            ticker: str(b4_models[ticker]["model_version"]) for ticker in SUPPORTED_TICKERS
+        },
     }
     semantic_identity = {
         "phase": "FINAL_REPLAY",
+        "model_suite_version": model_suite_version,
+        "model_order": list(MODEL_ORDER),
         "replay_config": replay_config.as_dict(),
         "effective_replay_end_date": effective_end.isoformat(),
         "input_snapshot_id": input_snapshot_id,
@@ -1035,6 +1094,8 @@ def run_final_replay(
             "stage04_artifact_sha256": training_manifest.get("artifact_sha256", {}),
             "selected_configs": training_manifest.get("selected_configs", []),
             "initial_state_sha256_by_ticker": initial_hash_by_ticker,
+            "b4_initial_state_sha256_by_ticker": b4_initial_hash_by_ticker,
+            "model_suite_version": model_suite_version,
             "code_sha256": code_sha,
             "git_commit_sha": git_sha,
             "contract_identity": contract_identity,
@@ -1176,10 +1237,22 @@ def run_final_replay(
                             )[0]
                             model_version = b2_version[ticker]
                             training_end = initial_train_ends[ticker]
-                        else:
+                        elif model_id == "B3":
                             value = runtime.b3_models[ticker].predict(scaled)[0]
                             model_version = b3_state_version
                             training_end = runtime.last_b3_target_end_by_ticker[ticker]
+                        elif model_id == "B4":
+                            b4_entry = b4_models[ticker]
+                            value = b4_entry["model"].predict(
+                                b4_entry["scaler"].transform(_feature_frame(values))
+                            )[0]
+                            model_version = str(b4_entry["model_version"])
+                            training_end = _as_date(
+                                b4_entry["last_training_target_end_date"],
+                                "B4 Train target end",
+                            )
+                        else:
+                            raise ReplayError(f"unsupported model_id in replay: {model_id}")
                     except Exception as error:
                         invalid = 1
                         session_failures.append(
@@ -1510,6 +1583,13 @@ def run_final_replay(
         if final_b2_hashes != initial_hash_by_ticker:
             raise ReplayError("B2 Static SGD or its frozen scaler changed during Final Replay")
         experiment_manifest["b2_frozen_state_verified"] = True
+        final_b4_hashes = {
+            ticker: b4_state_sha256(b4_models[ticker]["model"], b4_models[ticker]["scaler"])
+            for ticker in SUPPORTED_TICKERS
+        }
+        if final_b4_hashes != b4_initial_hash_by_ticker:
+            raise ReplayError("B4 HAR-X OLS or its frozen scaler changed during Final Replay")
+        experiment_manifest["b4_frozen_state_verified"] = True
         if completed:
             outputs = _build_outputs(
                 experiment_dir,

@@ -16,7 +16,9 @@ MODEL_NAMES = (
     "ROLLING_20D_BASELINE",
     "STATIC_SGD",
     "ONLINE_SGD",
+    "HAR_X_OLS",
 )
+EVALUATION_CONFIG_VERSION = "1.1.0"
 
 
 class EvaluationError(ValueError):
@@ -25,7 +27,7 @@ class EvaluationError(ValueError):
 
 @dataclass(frozen=True)
 class EvaluationConfig:
-    evaluation_config_version: str = "1.0.0"
+    evaluation_config_version: str = EVALUATION_CONFIG_VERSION
     market: str = "XNYS"
     data_cutoff: date = date(2026, 9, 25)
     test_start_date: date = date(2025, 10, 1)
@@ -78,14 +80,14 @@ class EvaluationConfig:
             expected.test_start_date,
             expected.test_end_date,
         )
-        if self.evaluation_config_version != "1.0.0":
+        if self.evaluation_config_version != EVALUATION_CONFIG_VERSION:
             raise EvaluationError("unsupported evaluation_config_version")
         if self.market != "XNYS" or locked_dates != expected_dates:
             raise EvaluationError("market, split dates, and data cutoff are locked by the approved contract")
         if tuple(self.tickers) != tuple(SUPPORTED_TICKERS):
             raise EvaluationError("tickers must be SPY, IEF, GLD in the approved order")
         if tuple(self.model_names) != MODEL_NAMES:
-            raise EvaluationError("model_names must match the locked B0-B3 identities and order")
+            raise EvaluationError("model_names must match the locked B0-B4 identities and order")
         if tuple(self.core_features) != tuple(CORE_FEATURE_COLUMNS):
             raise EvaluationError("core_features must match the locked eight-feature order")
         if self.high_volatility_quantile != 0.80:

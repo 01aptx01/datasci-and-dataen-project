@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import date
 from types import SimpleNamespace
 
@@ -18,16 +20,83 @@ from src.ml_evaluation.metrics import (
     rolling_session_metrics,
 )
 from src.ml_evaluation.portfolio import calculate_portfolio_risk
-from src.ml_evaluation.config import EvaluationConfig
+from src.ml_evaluation.config import EvaluationConfig, EvaluationError
 from src.ml_evaluation.pipeline import (
+    _build_b4_comparisons,
+    _build_coverage_summary,
     _build_drift_error_timeline,
+    _build_model_metrics,
     _build_pair_comparisons,
     _build_portfolio_risk_table,
+    _build_reference_b0_b3_metrics,
+    _mark_common_panel,
     _train_high_vol_thresholds,
+    _verify_training_artifacts,
 )
 
 
 TICKERS = ("SPY", "IEF", "GLD")
+
+
+def _training_artifact_lineage(tmp_path, *, include_b4_hash: bool, b4_suite: bool = True):
+    artifact_names = [
+        "initial_models.joblib",
+        "selected_configs.json",
+        "training_config.json",
+        "validation_candidate_evaluations.csv",
+        "b4_validation_evaluations.csv",
+    ]
+    artifact_hashes = {}
+    for name in artifact_names:
+        path = tmp_path / name
+        path.write_text(f"artifact:{name}", encoding="utf-8")
+        artifact_hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    training_manifest = {
+        "selection_split": "validation",
+        "test_used_for_training_or_selection": False,
+        "selection_status": "selected",
+        "selected_configs": [],
+    }
+    manifest_path = tmp_path / "training_manifest.json"
+    manifest_path.write_text(json.dumps(training_manifest), encoding="utf-8")
+    if not include_b4_hash:
+        artifact_hashes.pop("b4_validation_evaluations.csv")
+    replay_manifest = {
+        "stage04_artifact_sha256": artifact_hashes,
+        "stage04_training_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "selected_configs": [],
+    }
+    if b4_suite:
+        replay_manifest["model_suite_version"] = "1.1.0"
+        replay_manifest["b4_initial_state_sha256_by_ticker"] = {}
+    return replay_manifest, artifact_hashes
+
+
+def test_training_artifact_verification_requires_b4_validation_hash_for_b4_suite(tmp_path) -> None:
+    replay_manifest, _ = _training_artifact_lineage(tmp_path, include_b4_hash=False)
+
+    with pytest.raises(EvaluationError, match="b4_validation_evaluations.csv"):
+        _verify_training_artifacts(tmp_path, replay_manifest)
+
+
+def test_training_artifact_verification_includes_b4_validation_hash_for_b4_suite(tmp_path) -> None:
+    replay_manifest, artifact_hashes = _training_artifact_lineage(tmp_path, include_b4_hash=True)
+
+    verified = _verify_training_artifacts(tmp_path, replay_manifest)
+
+    assert verified["b4_validation_evaluations.csv"] == artifact_hashes["b4_validation_evaluations.csv"]
+
+
+def test_training_artifact_verification_preserves_legacy_b0_b3_lineage(tmp_path) -> None:
+    replay_manifest, _ = _training_artifact_lineage(
+        tmp_path,
+        include_b4_hash=False,
+        b4_suite=False,
+    )
+
+    verified = _verify_training_artifacts(tmp_path, replay_manifest)
+
+    assert "b4_validation_evaluations.csv" not in verified
 
 
 def test_forecast_audit_separates_pending_targets_from_invalid_forecasts() -> None:
@@ -546,3 +615,121 @@ def test_adwin_timeline_matches_test_errors_and_overlays_alerts() -> None:
     assert len(timeline) == 2
     assert timeline["drift_detected"].tolist() == [False, True]
     assert timeline["alert_record_present"].tolist() == [False, True]
+
+
+def _synthetic_audit_five_models() -> pd.DataFrame:
+    rows = []
+    # SPY has 2 evaluable dates, IEF has 1, GLD has 1, plus 1 pending date across all ETFs.
+    evaluable_dates = {
+        "SPY": [date(2025, 10, 1), date(2025, 10, 2)],
+        "IEF": [date(2025, 10, 1)],
+        "GLD": [date(2025, 10, 1)],
+    }
+    errors_by_model = {
+        "CONSTANT_BASELINE": {"SPY": [0.10, 0.30], "IEF": [0.20], "GLD": [0.40]},
+        "ROLLING_20D_BASELINE": {"SPY": [0.08, 0.12], "IEF": [0.15], "GLD": [0.25]},
+        "STATIC_SGD": {"SPY": [0.06, 0.14], "IEF": [0.12], "GLD": [0.22]},
+        "ONLINE_SGD": {"SPY": [0.05, 0.11], "IEF": [0.10], "GLD": [0.20]},
+        "HAR_X_OLS": {"SPY": [0.04, 0.08], "IEF": [0.11], "GLD": [0.18]},
+    }
+    for ticker, sessions in evaluable_dates.items():
+        for idx, session in enumerate(sessions):
+            for model, per_etf in errors_by_model.items():
+                err = per_etf[ticker][idx]
+                actual = 0.20
+                rows.append(
+                    {
+                        "prediction_date": session,
+                        "ticker": ticker,
+                        "split": "test",
+                        "model_name": model,
+                        "target_realized_vol_5d": actual,
+                        "predicted_vol_annualized": actual + err,
+                        "absolute_error": err,
+                        "squared_error": err ** 2,
+                        "forecast_status": "VALID",
+                        "label_status": "MATURE",
+                        "evaluation_status": "EVALUABLE",
+                    }
+                )
+        # Pending label row on 2025-10-10 must remain unscored.
+        for model in errors_by_model:
+            rows.append(
+                {
+                    "prediction_date": date(2025, 10, 10),
+                    "ticker": ticker,
+                    "split": "test",
+                    "model_name": model,
+                    "target_realized_vol_5d": np.nan,
+                    "predicted_vol_annualized": 0.25,
+                    "absolute_error": np.nan,
+                    "squared_error": np.nan,
+                    "forecast_status": "VALID",
+                    "label_status": "PENDING",
+                    "evaluation_status": "PENDING_LABEL",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_b4_evaluation_manual_mae_rmse_macro_and_deltamae_direction() -> None:
+    config = EvaluationConfig()
+    audit = _mark_common_panel(_synthetic_audit_five_models(), config.model_names)
+    metrics = _build_model_metrics(audit, config)
+    b4_comp = _build_b4_comparisons(audit, config)
+
+    # Hand calculation for HAR_X_OLS:
+    # SPY errors: [0.04, 0.08] -> MAE=0.06, RMSE=sqrt((0.0016+0.0064)/2)=sqrt(0.004)
+    # IEF error: [0.11] -> MAE=0.11, RMSE=0.11
+    # GLD error: [0.18] -> MAE=0.18, RMSE=0.18
+    # Equal-ETF Macro MAE = (0.06 + 0.11 + 0.18)/3 = 0.35/3
+    # Equal-ETF Macro RMSE = sqrt((0.004 + 0.11**2 + 0.18**2)/3)
+    b4_spy = metrics.loc[(metrics["model_name"] == "HAR_X_OLS") & (metrics["ticker"] == "SPY")].iloc[0]
+    b4_macro = metrics.loc[(metrics["model_name"] == "HAR_X_OLS") & (metrics["ticker"] == "MACRO")].iloc[0]
+    assert b4_spy["mae"] == pytest.approx(0.06)
+    assert b4_spy["rmse"] == pytest.approx(np.sqrt(0.004))
+    assert b4_macro["mae"] == pytest.approx((0.06 + 0.11 + 0.18) / 3.0)
+    assert b4_macro["rmse"] == pytest.approx(np.sqrt((0.004 + 0.11 ** 2 + 0.18 ** 2) / 3.0))
+
+    # B4 vs B2 (STATIC_SGD):
+    # SPY: B2 MAE=(0.06+0.14)/2=0.10, B4 MAE=0.06 -> DeltaMAE = 0.10 - 0.06 = +0.04
+    # IEF: B2 MAE=0.12, B4 MAE=0.11 -> DeltaMAE = +0.01
+    # GLD: B2 MAE=0.22, B4 MAE=0.18 -> DeltaMAE = +0.04
+    # Macro DeltaMAE = (0.04 + 0.01 + 0.04) / 3 = 0.03
+    b4_vs_b2_macro = b4_comp.loc[
+        (b4_comp["comparison_id"] == "B4_VS_B2") & (b4_comp["ticker"] == "MACRO")
+    ].iloc[0]
+    assert b4_vs_b2_macro["paired_n"] == 4
+    assert b4_vs_b2_macro["delta_mae_comparator_minus_b4"] == pytest.approx(0.03)
+    assert b4_vs_b2_macro["evaluation_scope"] == "retrospective_test_non_hypothesis"
+
+
+def test_b4_invalid_shrinks_common_five_without_shrinking_b0_b3_reference_and_pending_unscored() -> None:
+    config = EvaluationConfig()
+    audit = _synthetic_audit_five_models()
+    # Mark HAR_X_OLS on SPY 2025-10-02 as INVALID_FORECAST.
+    mask = (
+        (audit["ticker"] == "SPY")
+        & (audit["prediction_date"] == date(2025, 10, 2))
+        & (audit["model_name"] == "HAR_X_OLS")
+    )
+    audit.loc[mask, ["forecast_status", "evaluation_status"]] = ["INVALID", "INVALID_FORECAST"]
+    audit.loc[mask, ["predicted_vol_annualized", "absolute_error", "squared_error"]] = np.nan
+
+    marked = _mark_common_panel(audit, config.model_names)
+    metrics_5 = _build_model_metrics(marked, config)
+    ref_4 = _build_reference_b0_b3_metrics(marked, config)
+    cov = _build_coverage_summary(marked)
+
+    # Common 5-model SPY count drops from 2 to 1, while B0-B3 reference SPY count stays 2!
+    b2_in_5 = metrics_5.loc[(metrics_5["model_name"] == "STATIC_SGD") & (metrics_5["ticker"] == "SPY")].iloc[0]
+    b2_in_4 = ref_4.loc[(ref_4["model_name"] == "STATIC_SGD") & (ref_4["ticker"] == "SPY")].iloc[0]
+    assert b2_in_5["paired_n"] == 1
+    assert b2_in_4["paired_n"] == 2
+
+    # Pending 2025-10-10 rows are never scored, and remain visible in coverage.
+    b4_spy_cov = cov.loc[(cov["model_name"] == "HAR_X_OLS") & (cov["ticker"] == "SPY")].iloc[0]
+    assert b4_spy_cov["expected_eligible_prediction_anchors"] == 3
+    assert b4_spy_cov["invalid_forecast_count"] == 1
+    assert b4_spy_cov["pending_label_count"] == 1
+    assert b4_spy_cov["mature_evaluable_count"] == 1
