@@ -21,7 +21,7 @@ The configuration locks the XNYS split dates, strict cutoff, B0-B4 identities, e
 - Use only Test anchors from 2025-10-01 through 2026-09-25 for final Test metrics. Pending labels remain visible in coverage and do not count as forecast failures.
 - Report B0-B4 metrics on their common mature/evaluable Test panel and B4 retrospective pairwise comparisons on matching date/ticker rows. Macro metrics give equal weight to each ETF.
 - Set each ETF's High-Vol threshold from eligible, purge-clean Train labels only. Keep monthly and yearly metrics split-separated. Rolling metrics use fixed XNYS-session windows.
-- Reconcile B3's Test ADWIN error stream one-to-one with its mature/evaluable Test predictions. ADWIN remains a monitor; alerts do not change model state or scores.
+- Current baseline replay has no B3 ADWIN stream. Champion ADWIN observations and decisions are evaluated separately through the policy replay artifacts.
 - Compute forecast-based portfolio risk for each model/date from all three forecasts and same-date 20-session correlations. Invalid, incomplete, or non-PSD inputs produce `INCOMPLETE_INPUTS`. Default weights are 50/30/20; the pure risk consumer accepts different valid weights without loading or retraining a model.
 - Reuse the Stage 03 H1 Train-only OLS/HAC/Holm results. Run H2/H3 on paired Final Test errors using the locked synchronized block bootstrap and Holm correction. Test results do not tune models, thresholds, or analysis settings.
 
@@ -34,7 +34,7 @@ The output root receives a new content-addressed evaluation directory; an existi
 - `evaluation.csv`, `forecast_audit.csv`, `forecast_exceptions.csv`, and `coverage.csv`
 - `model_metrics.csv`, `pair_comparisons.csv`, and `high_volatility_metrics.csv`
 - `monthly_metrics.csv`, `yearly_metrics.csv`, and `rolling_mae20.csv`
-- `drift_error_timeline.csv` and `portfolio_risk.csv`
+- `portfolio_risk.csv` (legacy historical evaluations may also contain `drift_error_timeline.csv`)
 - `hypotheses_plan.json`, `hypothesis_results.csv`, and `bootstrap_diagnostics.csv`
 - Copied H1 results, Train audit, sensitivity output, specification, and plot evidence
 - `evaluation_summary.md` and `execution_manifest.json` with lineage, software versions, counts, and output checksums

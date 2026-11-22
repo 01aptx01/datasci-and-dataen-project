@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { loadFeatureDrift } from "../dist/assets/data/featureDrift.js";
-import { renderMonitoringFeatureDrift, renderReplayFeatureDriftCard } from "../dist/assets/featureDriftView.js";
+import { monitoringTabFromRoute, renderMonitoringFeatureDrift, renderReplayFeatureDriftCard } from "../dist/assets/featureDriftView.js";
 
 const sidecarDirectory = new URL("../dist/feature-drift/current/", import.meta.url);
 const manifestBytes = new Uint8Array(await readFile(new URL("feature_drift_manifest.json", sidecarDirectory)));
@@ -63,7 +63,7 @@ test("Monitoring Feature Drift has accessible tabs, controls, chart, and distrib
   if (loaded.status !== "ready") return;
   const row = loaded.metrics[0];
   const selection = { ticker: row.ticker, date: row.asOfDate, feature: row.featureName, windowSize: row.windowSize, metric: "wasserstein_normalized", tab: "feature", model: "ONLINE_SGD" };
-  const panel = renderMonitoringFeatureDrift(loaded, selection, "<strong>Error chart retained</strong>");
+  const panel = renderMonitoringFeatureDrift(loaded, selection);
   assert.match(panel, /role="tablist"/);
   assert.match(panel, /aria-controls="monitor-feature-panel"/);
   assert.match(panel, /data-field="monitoring-date"/);
@@ -72,19 +72,27 @@ test("Monitoring Feature Drift has accessible tabs, controls, chart, and distrib
   const trendPoints = [...panel.matchAll(/<circle class="st-fd-point[^\"]*"[^>]*>/g)];
   assert.equal(trendPoints.filter(([markup]) => markup.includes('tabindex="0"')).length, 1);
   assert.match(panel, /การกระจายเทียบกับ Train/);
-  assert.match(panel, /Error chart retained/);
+  assert.doesNotMatch(panel, /B3 Error Drift|B3 Monitor ADWIN|monitor-error-tab/);
 });
 
-test("Monitoring keeps the original Error Drift panel available when Feature Drift is missing", () => {
+test("Monitoring exposes Feature Drift and Policy without the retired B3 Error Drift tab", () => {
   const panel = renderMonitoringFeatureDrift(
     { status: "missing", message: "No sidecar" },
-    { ticker: "SPY", date: "2026-09-25", feature: "ret_1d_t", windowSize: 60, metric: "wasserstein_normalized", tab: "error", model: "ONLINE_SGD" },
-    "<strong>Rolling MAE20 retained</strong>",
+    { ticker: "SPY", date: "2026-09-25", feature: "ret_1d_t", windowSize: 60, metric: "wasserstein_normalized", tab: "policy", model: "ONLINE_SGD" },
+    "<strong>Champion policy panel</strong>",
   );
   assert.match(panel, /Feature Drift/);
-  assert.match(panel, /id="monitor-error-panel"[^>]*>/);
-  assert.doesNotMatch(panel, /id="monitor-error-panel"[^>]*hidden/);
-  assert.match(panel, /Rolling MAE20 retained/);
+  assert.match(panel, /Champion–Challenger Policy/);
+  assert.match(panel, /id="monitor-policy-panel"[^>]*>/);
+  assert.doesNotMatch(panel, /monitor-error-tab|monitor-error-panel|B3 Error Drift|B3 Monitor ADWIN/);
+  assert.match(panel, /Champion policy panel/);
+});
+
+test("legacy error tab links open Feature Drift while policy links remain valid", () => {
+  assert.equal(monitoringTabFromRoute("error"), "feature");
+  assert.equal(monitoringTabFromRoute("feature"), "feature");
+  assert.equal(monitoringTabFromRoute("policy"), "policy");
+  assert.equal(monitoringTabFromRoute(null), null);
 });
 
 test("Feature Drift loader treats an absent manifest as unavailable", async () => {

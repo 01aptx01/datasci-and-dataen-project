@@ -72,11 +72,12 @@ test("parseB4ComparisonRow validates retrospective B4 comparison schema", () => 
   }), /relative improvement is undefined/);
 });
 
-test("B4 1.1.0 snapshot loads all 5 models, pending rows, and B4 comparisons", async () => {
+test("current snapshot loads all 5 models, pending rows, and B4 comparisons", async () => {
   const policyText = await readFile(path.join(webDir, "snapshot.policy.json"), "utf8");
-  const evalId = JSON.parse(policyText).identity.evaluationId;
-  assert.equal(JSON.parse(policyText).schemaVersion, "1.1.0");
-  assert.ok(JSON.parse(policyText).expectedHeaders.b4Comparisons);
+  const policy = JSON.parse(policyText);
+  const evalId = policy.identity.evaluationId;
+  assert.equal(policy.schemaVersion, "1.2.0");
+  assert.ok(policy.expectedHeaders.b4Comparisons);
   assert.equal(await readFile(path.join(webDir, "dist", "snapshot.policy.json"), "utf8"), policyText);
   const snapDir = path.join(webDir, "public", "snapshots", evalId);
   await readFile(path.join(webDir, "dist", "snapshots", evalId, "b4_comparisons.csv"));
@@ -96,7 +97,7 @@ test("B4 1.1.0 snapshot loads all 5 models, pending rows, and B4 comparisons", a
     return new Response(bytes, { status: 200 });
   }, "http://localhost:4173/");
   assert.equal(state.status, "ready", state.status === "error" ? state.message : "");
-  assert.equal(state.manifest.schemaVersion, "1.1.0");
+  assert.equal(state.manifest.schemaVersion, policy.schemaVersion);
   assert.equal(state.b4Comparisons?.length, 12);
   const b4Pending = filterForecastRows(state.forecasts, {
     split: "test", ticker: "SPY", models: ["HAR_X_OLS"], status: "pending", from: "", to: "",

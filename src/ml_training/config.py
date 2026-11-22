@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+import json
+from dataclasses import dataclass, field
+from datetime import date, datetime
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -15,12 +18,122 @@ class TrainingError(ValueError):
     """Raised when Stage 04 inputs or configuration violate the training contract."""
 
 
-TRAINING_CONFIG_VERSION = "1.1.0"
+TRAINING_CONFIG_VERSION = "1.2.0"
+B4_TRAINING_CONFIG_VERSION = "1.1.0"
 LEGACY_TRAINING_CONFIG_VERSION = "1.0.0"
 SUPPORTED_TRAINING_CONFIG_VERSIONS = {
     LEGACY_TRAINING_CONFIG_VERSION,
+    B4_TRAINING_CONFIG_VERSION,
     TRAINING_CONFIG_VERSION,
 }
+INITIAL_CHAMPION_POLICY_VERSION = "1.0.0"
+ALLOWED_INITIAL_CHAMPION_CANDIDATES = ("B0", "B1", "B2")
+
+
+def _as_date(value: Any, field_name: str) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value))
+    except (TypeError, ValueError) as error:
+        raise TrainingError(f"{field_name} must be a valid ISO market date") from error
+
+
+@dataclass(frozen=True)
+class InitialChampionConfig:
+    policy_version: str = INITIAL_CHAMPION_POLICY_VERSION
+    candidate_models: tuple[str, ...] = ALLOWED_INITIAL_CHAMPION_CANDIDATES
+    tie_break_order: tuple[str, ...] = ALLOWED_INITIAL_CHAMPION_CANDIDATES
+    scoring_split: str = "validation"
+    cutover_date: date = date(2025, 10, 1)
+    cutover_maturity_rule: str = (
+        "is_label_mature and target_obs_count == 5 and target_end_date < cutover_date"
+    )
+    paired_anchor_policy: str = "complete_coverage_required"
+    minimum_paired_coverage: float = 1.0
+    minimum_cutover_anchors: int = 1
+    tie_tolerance: float = 1e-12
+    invalid_prediction_policy: str = "reject_and_count_without_clipping"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "cutover_date", _as_date(self.cutover_date, "cutover_date"))
+        object.__setattr__(self, "candidate_models", tuple(self.candidate_models))
+        object.__setattr__(self, "tie_break_order", tuple(self.tie_break_order))
+        if self.policy_version != INITIAL_CHAMPION_POLICY_VERSION:
+            raise TrainingError("unsupported initial_champion policy_version")
+        if self.candidate_models != ALLOWED_INITIAL_CHAMPION_CANDIDATES:
+            raise TrainingError(
+                "initial_champion candidate_models must be ('B0', 'B1', 'B2'); B3 and B4 are excluded"
+            )
+        if set(self.tie_break_order) != set(self.candidate_models) or len(
+            self.tie_break_order
+        ) != len(self.candidate_models):
+            raise TrainingError("initial_champion tie_break_order must list each candidate once")
+        if self.scoring_split != "validation":
+            raise TrainingError("initial_champion selection must use Validation only")
+        if self.cutover_date != DatasetConfig().test_start_date:
+            raise TrainingError("initial_champion cutover_date must match DatasetConfig().test_start_date")
+        if (
+            self.cutover_maturity_rule
+            != "is_label_mature and target_obs_count == 5 and target_end_date < cutover_date"
+        ):
+            raise TrainingError("initial_champion cutover_maturity_rule violates policy contract")
+        if self.paired_anchor_policy != "complete_coverage_required":
+            raise TrainingError("initial_champion requires complete paired coverage")
+        if self.minimum_paired_coverage != 1.0:
+            raise TrainingError("initial_champion minimum_paired_coverage must remain 1.0")
+        if not isinstance(self.minimum_cutover_anchors, int) or isinstance(
+            self.minimum_cutover_anchors, bool
+        ) or self.minimum_cutover_anchors < 1:
+            raise TrainingError("initial_champion minimum_cutover_anchors must be a positive integer")
+        if self.tie_tolerance != 1e-12:
+            raise TrainingError("initial_champion tie_tolerance must remain 1e-12")
+        if self.invalid_prediction_policy != "reject_and_count_without_clipping":
+            raise TrainingError("initial_champion must reject invalid predictions without clipping")
+
+    @classmethod
+    def from_mapping(cls, raw: dict[str, Any]) -> "InitialChampionConfig":
+        if not isinstance(raw, dict):
+            raise TrainingError("initial_champion config section must be a YAML mapping")
+        try:
+            return cls(
+                policy_version=str(raw["policy_version"]),
+                candidate_models=tuple(str(item) for item in raw["candidate_models"]),
+                tie_break_order=tuple(str(item) for item in raw["tie_break_order"]),
+                scoring_split=str(raw["scoring_split"]),
+                cutover_date=raw["cutover_date"],
+                cutover_maturity_rule=str(raw["cutover_maturity_rule"]),
+                paired_anchor_policy=str(raw["paired_anchor_policy"]),
+                minimum_paired_coverage=float(raw["minimum_paired_coverage"]),
+                minimum_cutover_anchors=int(raw["minimum_cutover_anchors"]),
+                tie_tolerance=float(raw["tie_tolerance"]),
+                invalid_prediction_policy=str(raw["invalid_prediction_policy"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            if isinstance(error, TrainingError):
+                raise
+            raise TrainingError(f"initial_champion config is missing or invalid: {error}") from error
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "policy_version": self.policy_version,
+            "candidate_models": list(self.candidate_models),
+            "tie_break_order": list(self.tie_break_order),
+            "scoring_split": self.scoring_split,
+            "cutover_date": self.cutover_date.isoformat(),
+            "cutover_maturity_rule": self.cutover_maturity_rule,
+            "paired_anchor_policy": self.paired_anchor_policy,
+            "minimum_paired_coverage": self.minimum_paired_coverage,
+            "minimum_cutover_anchors": self.minimum_cutover_anchors,
+            "tie_tolerance": self.tie_tolerance,
+            "invalid_prediction_policy": self.invalid_prediction_policy,
+        }
+
+    def fingerprint(self) -> str:
+        payload = json.dumps(self.as_dict(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -70,10 +183,15 @@ class TrainingConfig:
         "is_label_mature and target_obs_count == 5 and target_end_date <= replay_date"
     )
     dataset: DatasetConfig = DatasetConfig()
+    initial_champion: InitialChampionConfig | None = field(default_factory=InitialChampionConfig)
 
     def __post_init__(self) -> None:
         if self.training_config_version not in SUPPORTED_TRAINING_CONFIG_VERSIONS:
             raise TrainingError("unsupported training_config_version")
+        if self.training_config_version == TRAINING_CONFIG_VERSION and self.initial_champion is None:
+            raise TrainingError(
+                f"training_config_version {TRAINING_CONFIG_VERSION} requires initial_champion config"
+            )
         if not isinstance(self.b4_fit_intercept, bool):
             raise TrainingError("b4_fit_intercept must be a boolean")
         if tuple(self.core_features) != tuple(CORE_FEATURE_COLUMNS):
@@ -141,6 +259,7 @@ class TrainingConfig:
             search = raw["search_grid"]
             selection = raw["selection"]
             replay = raw["replay"]
+            version_str = str(raw["training_config_version"])
             if sgd["estimator"] != "SGDRegressor" or sgd["scaler"] != "RobustScaler":
                 raise TrainingError("Stage 04 requires SGDRegressor and RobustScaler")
             if selection["objective"] != "(mae_b2_validation + mae_b3_validation) / 2":
@@ -155,8 +274,21 @@ class TrainingConfig:
                 raise TrainingError("online updates must use mature labels exactly once")
             if replay["train_fit_ledger_seeded"] is not True:
                 raise TrainingError("initial Train fit keys must seed the B3 update ledger")
+            initial_champion_raw = raw.get("initial_champion")
+            if version_str == TRAINING_CONFIG_VERSION:
+                if initial_champion_raw is None:
+                    raise TrainingError(
+                        f"training_config_version {TRAINING_CONFIG_VERSION} requires an initial_champion section"
+                    )
+                initial_champion = InitialChampionConfig.from_mapping(initial_champion_raw)
+            else:
+                initial_champion = (
+                    InitialChampionConfig.from_mapping(initial_champion_raw)
+                    if initial_champion_raw is not None
+                    else None
+                )
             return cls(
-                training_config_version=raw["training_config_version"],
+                training_config_version=version_str,
                 core_features=tuple(raw["core_features"]),
                 eta0_values=tuple(float(value) for value in search["eta0"]),
                 alpha_values=tuple(float(value) for value in search["alpha"]),
@@ -182,6 +314,7 @@ class TrainingConfig:
                 invalid_prediction_policy=selection["invalid_prediction_policy"],
                 label_maturity_rule=replay["label_maturity_rule"],
                 dataset=dataset or DatasetConfig.from_yaml(),
+                initial_champion=initial_champion,
             )
         except (KeyError, TypeError, ValueError) as error:
             if isinstance(error, TrainingError):
@@ -189,7 +322,7 @@ class TrainingConfig:
             raise TrainingError(f"ML Training config is missing or invalid: {error}") from error
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "training_config_version": self.training_config_version,
             "core_features": list(self.core_features),
             "sgd": {
@@ -234,3 +367,10 @@ class TrainingConfig:
             },
             "dataset": self.dataset.as_dict(),
         }
+        if self.initial_champion is not None:
+            payload["initial_champion"] = self.initial_champion.as_dict()
+        return payload
+
+    def fingerprint(self) -> str:
+        payload = json.dumps(self.as_dict(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()

@@ -1,7 +1,7 @@
 schema_version: "1.0.0"
 market: XNYS
-evaluation_id: "82572c8417041976e1ce540d921e29a5f28c1d5d2a2d953a74c03582e7ca9be2"
-replay_id: "3cbf81eb9242d8894d2f67f39065a17ff1ef55a2e098773aead915949ab11b12"
+evaluation_id: "12b9f92cbdcbb7816a767f8565bb004f3243b114480e5f3f316c497af4014e76"
+replay_id: "0f6dad49e04b684df6d32d7abca7738fa8c06774c5e848476b62e8fa46a2c99a"
 strict_cutoff: "2026-09-25"
 feature_set_version: "2.0.0"
 
@@ -35,19 +35,19 @@ metrics:
 
 sources:
   snapshot_policy: web/snapshot.policy.json
-  snapshot_handoff_zip: docs/ml-results/downloads/ml-results-handoff-82572c84.zip
+  snapshot_handoff_zip: docs/ml-results/downloads/no-b3-adwin/ml-results-handoff-no-b3-adwin-12b9f92c.zip
   features: data/curated/asset_volatility_features.parquet
   labels: data/curated/asset_volatility_labels.parquet
-  feature_manifest: data/audit/features/run_id=feat_readiness_20261115_01/manifest.json
-  feature_transaction: data/audit/features/run_id=feat_readiness_20261115_01/publish-transaction.json
-  target_manifest: data/audit/targets/run_id=target_integration_20261118_04/manifest.json
-  target_transaction: data/audit/targets/run_id=target_integration_20261118_04/publish-transaction.json
-  stage03_report: data/audit/ml_dataset/run_id=stage03_h1_20261120_01/ML_dataset_preparation_report.json
-  stage03_directory: data/audit/ml_dataset/run_id=stage03_h1_20261120_01
-  stage04_directory: data/processed/ml_training/run_id=stage04_20261121_03
-  stage04_manifest: data/processed/ml_training/run_id=stage04_20261121_03/training_manifest.json
-  stage06_directory: data/processed/ml_evaluation/experiments/82572c8417041976e1ce540d921e29a5f28c1d5d2a2d953a74c03582e7ca9be2
-  stage06_manifest: data/processed/ml_evaluation/experiments/82572c8417041976e1ce540d921e29a5f28c1d5d2a2d953a74c03582e7ca9be2/execution_manifest.json
+  feature_manifest: data/audit/features/run_id=feat_20261122T143142_ad87117a/manifest.json
+  feature_transaction: data/audit/features/run_id=feat_20261122T143142_ad87117a/publish-transaction.json
+  target_manifest: data/audit/targets/run_id=target_20261122T143149_c9b24e99/manifest.json
+  target_transaction: data/audit/targets/run_id=target_20261122T143149_c9b24e99/publish-transaction.json
+  stage03_report: data/audit/ml_dataset/run_id=stage03_h1_b4_20261122_s6/ML_dataset_preparation_report.json
+  stage03_directory: data/audit/ml_dataset/run_id=stage03_h1_b4_20261122_s6
+  stage04_directory: data/processed/ml_training/run_id=stage04_no_b3_adwin_20261123
+  stage04_manifest: data/processed/ml_training/run_id=stage04_no_b3_adwin_20261123/training_manifest.json
+  stage06_directory: data/processed/ml_evaluation/experiments/12b9f92cbdcbb7816a767f8565bb004f3243b114480e5f3f316c497af4014e76
+  stage06_manifest: data/processed/ml_evaluation/experiments/12b9f92cbdcbb7816a767f8565bb004f3243b114480e5f3f316c497af4014e76/execution_manifest.json
   correlation_parquet: data/curated/asset_rolling_correlations.parquet
 
 outputs:

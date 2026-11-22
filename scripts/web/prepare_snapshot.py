@@ -236,26 +236,37 @@ def validate_d4_d5_sources(
         number_or_none(row["mae"], "mae", row_number)
         number_or_none(row["rmse"], "rmse", row_number)
 
-    evaluations_by_id = {row["prediction_id"]: row for row in evaluation_rows if row["model_name"] == "ONLINE_SGD"}
-    drift_ids: set[str] = set()
-    for row_number, row in enumerate(sources["driftErrorTimeline"], start=2):
-        prediction_id = row["prediction_id"]
-        if prediction_id in drift_ids:
-            raise SnapshotError(f"Duplicate prediction ID in drift_error_timeline.csv row {row_number}")
-        drift_ids.add(prediction_id)
-        evaluation = evaluations_by_id.get(prediction_id)
-        if evaluation is None or evaluation["ticker"] != row["ticker"] or evaluation["prediction_date"] != row["prediction_date"]:
-            raise SnapshotError(f"Drift row does not match a B3 Test evaluation at row {row_number}")
-        if not math.isclose(signed_finite(row["absolute_error_evaluation"], "absolute_error_evaluation", row_number), float(evaluation["absolute_error"]), rel_tol=0.0, abs_tol=1e-12):
-            raise SnapshotError(f"Drift error disagrees with evaluation.csv on row {row_number}")
-        signed_finite(row["absolute_error_adwin"], "absolute_error_adwin", row_number)
-        if source_bool(row["drift_detected"], "drift_detected", row_number) or source_bool(row["alert_record_present"], "alert_record_present", row_number):
-            raise SnapshotError("Pinned B3 Test drift source contains an unapproved alert event")
-        if signed_finite(row["adwin_delta"], "adwin_delta", row_number) <= 0 or int(row["adwin_width"]) <= 0:
-            raise SnapshotError(f"Invalid ADWIN diagnostics on row {row_number}")
-        signed_finite(row["adwin_estimation"], "adwin_estimation", row_number)
-    if drift_ids != set(evaluations_by_id):
-        raise SnapshotError("Drift timeline does not cover the verified B3 Test evaluation set")
+    if policy["schemaVersion"] != "1.2.0":
+        evaluations_by_id = {row["prediction_id"]: row for row in evaluation_rows if row["model_name"] == "ONLINE_SGD"}
+        drift_ids: set[str] = set()
+        drift_alert_count = 0
+        for row_number, row in enumerate(sources["driftErrorTimeline"], start=2):
+            prediction_id = row["prediction_id"]
+            if prediction_id in drift_ids:
+                raise SnapshotError(f"Duplicate prediction ID in drift_error_timeline.csv row {row_number}")
+            drift_ids.add(prediction_id)
+            evaluation = evaluations_by_id.get(prediction_id)
+            if evaluation is None or evaluation["ticker"] != row["ticker"] or evaluation["prediction_date"] != row["prediction_date"]:
+                raise SnapshotError(f"Drift row does not match a B3 Test evaluation at row {row_number}")
+            if not math.isclose(signed_finite(row["absolute_error_evaluation"], "absolute_error_evaluation", row_number), float(evaluation["absolute_error"]), rel_tol=0.0, abs_tol=1e-12):
+                raise SnapshotError(f"Drift error disagrees with evaluation.csv on row {row_number}")
+            signed_finite(row["absolute_error_adwin"], "absolute_error_adwin", row_number)
+            detected = source_bool(row["drift_detected"], "drift_detected", row_number)
+            alert_present = source_bool(row["alert_record_present"], "alert_record_present", row_number)
+            if detected != alert_present:
+                raise SnapshotError(f"drift_detected and alert_record_present disagree on row {row_number}")
+            if detected:
+                drift_alert_count += 1
+            if signed_finite(row["adwin_delta"], "adwin_delta", row_number) <= 0 or int(row["adwin_width"]) <= 0:
+                raise SnapshotError(f"Invalid ADWIN diagnostics on row {row_number}")
+            signed_finite(row["adwin_estimation"], "adwin_estimation", row_number)
+        expected_drift_alerts = int(policy.get("expectedCounts", {}).get("driftAlertRows", 0))
+        if drift_alert_count != expected_drift_alerts:
+            raise SnapshotError(
+                f"B3 Test drift alert count ({drift_alert_count}) disagrees with expectedCounts.driftAlertRows ({expected_drift_alerts})"
+            )
+        if drift_ids != set(evaluations_by_id):
+            raise SnapshotError("Drift timeline does not cover the verified B3 Test evaluation set")
 
     h1_results = sources["h1Results"]
     h1_by_ticker: dict[str, dict[str, str]] = {}
@@ -397,7 +408,47 @@ def validate_json_identity(
         raise SnapshotError("Stage 05 manifest is not the final replay")
 
 
+def validate_snapshot_policy_schema(policy: dict[str, Any]) -> None:
+    schema_version = policy.get("schemaVersion")
+    if schema_version not in {"1.0.0", "1.1.0", "1.2.0"}:
+        raise SnapshotError(f"Unsupported baseline snapshot schemaVersion: {schema_version}")
+    members = policy.get("members", {})
+    headers = policy.get("expectedHeaders", {})
+    counts = policy.get("expectedCounts", {})
+    outputs = policy.get("publicOutputs", {})
+    member_hashes = policy.get("memberSha256", {})
+    if not all(isinstance(value, dict) for value in (members, headers, counts, outputs, member_hashes)):
+        raise SnapshotError("Snapshot policy schema sections must be JSON objects")
+
+    timeline_hashes = [name for name in member_hashes if "drift_error_timeline.csv" in name.lower()]
+    timeline_fields = (
+        members.get("driftErrorTimeline"),
+        headers.get("driftErrorTimeline"),
+        counts.get("driftErrorTimelineRows"),
+        outputs.get("driftErrorTimeline"),
+        *timeline_hashes,
+    )
+    if schema_version == "1.2.0":
+        has_drift_keys = any(
+            "drift" in str(key).lower()
+            for section in (members, headers, counts, outputs)
+            for key in section
+        )
+        has_timeline_path = any(
+            "drift_error_timeline.csv" in str(value).lower()
+            for section in (members, outputs)
+            for value in section.values()
+        )
+        if any(value is not None for value in timeline_fields) or has_drift_keys or has_timeline_path:
+            raise SnapshotError("Baseline snapshot schema 1.2.0 must not define the retired B3 drift timeline or counts")
+    else:
+        timeline_member = members.get("driftErrorTimeline")
+        if any(value is None for value in timeline_fields[:4]) or timeline_hashes != [timeline_member]:
+            raise SnapshotError(f"Baseline snapshot schema {schema_version} requires the archived B3 drift timeline fields and member hash")
+
+
 def verify_archive(repo_root: Path, policy: dict[str, Any]) -> tuple[dict[str, bytes], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    validate_snapshot_policy_schema(policy)
     source = policy["source"]
     downloads = repo_root / source.get("zipDir", "docs/ml-results/downloads")
     zip_path = downloads / source["zipName"]
@@ -417,6 +468,8 @@ def verify_archive(repo_root: Path, policy: dict[str, Any]) -> tuple[dict[str, b
         raise SnapshotError("Handoff ZIP is corrupt") from error
     with archive:
         archive_names = validate_archive_paths(archive)
+        if policy["schemaVersion"] == "1.2.0" and any("drift_error_timeline.csv" in name.lower() for name in archive_names):
+            raise SnapshotError("Baseline snapshot schema 1.2.0 source ZIP contains the retired B3 drift timeline")
         if "CHECKSUMS.sha256" not in archive_names:
             raise SnapshotError("Handoff ZIP does not include CHECKSUMS.sha256")
         internal_member_checksums = parse_checksums(archive.read("CHECKSUMS.sha256"), "ZIP CHECKSUMS.sha256")
@@ -433,9 +486,11 @@ def verify_archive(repo_root: Path, policy: dict[str, Any]) -> tuple[dict[str, b
         member_names = policy["members"]
         required = [member_names[key] for key in (
             "sourceIdentity", "executionManifest", "stage05Manifest", "forecastAudit", "evaluation",
-            "modelMetrics", "pairComparisons", "coverage", "portfolioRisk", "rollingMae20", "driftErrorTimeline",
+            "modelMetrics", "pairComparisons", "coverage", "portfolioRisk", "rollingMae20",
             "h1ScatterData", "h1Results", "h1Sensitivity", "hypothesisResults", "bootstrapDiagnostics", "highVolatilityMetrics",
         )] + [member_names[k] for k in ("b4Comparisons", "referenceB0B3Metrics") if k in member_names]
+        if policy["schemaVersion"] != "1.2.0":
+            required.append(member_names["driftErrorTimeline"])
         for name in required:
             if name not in internal_member_checksums:
                 raise SnapshotError(f"Required handoff member is missing: {name}")
@@ -572,6 +627,7 @@ def validate_b4_comparisons(
 
 
 def validate_handoff_csvs(payloads: dict[str, bytes], policy: dict[str, Any]) -> tuple[list[str], list[dict[str, str]], list[dict[str, str]], dict[str, Any]]:
+    validate_snapshot_policy_schema(policy)
     members = policy["members"]
     headers = policy["expectedHeaders"]
     audit_rows, audit_headers = parse_csv_bytes(payloads[members["forecastAudit"]], members["forecastAudit"], headers["forecastAudit"])
@@ -586,9 +642,11 @@ def validate_handoff_csvs(payloads: dict[str, bytes], policy: dict[str, Any]) ->
         raise SnapshotError("D3 model or coverage CSV row counts do not match the pinned review snapshot")
 
     additional_keys = [
-        "portfolioRisk", "rollingMae20", "driftErrorTimeline", "h1ScatterData", "h1Results", "h1Sensitivity",
+        "portfolioRisk", "rollingMae20", "h1ScatterData", "h1Results", "h1Sensitivity",
         "hypothesisResults", "bootstrapDiagnostics", "highVolatilityMetrics",
     ]
+    if policy["schemaVersion"] != "1.2.0":
+        additional_keys.append("driftErrorTimeline")
     for optional_key in ("b4Comparisons", "referenceB0B3Metrics"):
         if optional_key in members:
             additional_keys.append(optional_key)
@@ -795,6 +853,7 @@ def safe_replace_generated_directory(target: Path, expected_evaluation_id: str, 
 
 def prepare_snapshot(repo_root: Path, output_root: Path, policy_path: Path) -> Path:
     policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    validate_snapshot_policy_schema(policy)
     payloads, identity, stage06, stage05 = verify_archive(repo_root, policy)
     _audit_headers, _audit_rows, _evaluation_rows, table_summary = validate_handoff_csvs(payloads, policy)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -829,7 +888,7 @@ def prepare_snapshot(repo_root: Path, output_root: Path, policy_path: Path) -> P
             }
 
         manifest = {
-            "schemaVersion": policy.get("schemaVersion", "1.1.0" if "b4Comparisons" in policy["publicOutputs"] else "1.0.0"),
+            "schemaVersion": policy["schemaVersion"],
             "sourceRepository": policy["source"]["repository"],
             "sourceHandoffCommit": policy["source"]["handoffCommit"],
             "sourceMainCommitAtStart": policy["source"]["mainCommitAtStart"],
@@ -865,28 +924,595 @@ def prepare_snapshot(repo_root: Path, output_root: Path, policy_path: Path) -> P
     return target
 
 
+POLICY_SNAPSHOT_SCHEMA_VERSION = "1.2.0"
+ARCHIVED_POLICY_REPLAY_VERSION = "2.0.0"
+ARCHIVED_POLICY_CHECKPOINT_VERSIONS = {"2.0.0", "2.1.0"}
+ARCHIVED_POLICY_PROCESSING_ORDER = (
+    "predict",
+    "save_forecast",
+    "evaluate",
+    "adwin_monitor",
+    "policy_adwin_and_decision",
+    "update_b3",
+    "checkpoint_commit",
+)
+CURRENT_POLICY_REPLAY_VERSION = "2.1.0"
+CURRENT_POLICY_CHECKPOINT_VERSION = "2.2.0"
+CURRENT_POLICY_PROCESSING_ORDER = (
+    "predict",
+    "save_forecast",
+    "evaluate",
+    "policy_adwin_and_decision",
+    "update_b3",
+    "checkpoint_commit",
+)
+RETIRED_B3_ADWIN_OUTPUTS = {"drift_errors.csv", "drift_alerts.csv"}
+RETIRED_B3_ADWIN_FILES = RETIRED_B3_ADWIN_OUTPUTS | {"drift_error_timeline.csv"}
+POLICY_PUBLIC_FILES = {
+    "policyForecasts": "policy_forecasts.csv",
+    "policyEvaluations": "policy_evaluations.csv",
+    "policyDetectorStream": "policy_detector_stream.csv",
+    "policyDecisionEvents": "policy_decision_events.csv",
+    "policyChampionTimeline": "policy_champion_timeline.csv",
+    "policyFailures": "policy_failures.csv",
+    "policyModelMetrics": "policy_model_metrics.csv",
+    "policyComparisons": "policy_comparisons.csv",
+    "policyOperationsSummary": "policy_operations_summary.csv",
+    "policyCoverageSummary": "policy_coverage_summary.csv",
+}
+POLICY_REQUIRED_HEADERS: dict[str, list[str]] = {
+    "policyForecasts": [
+        "experiment_id", "policy_version", "policy_prediction_id", "prediction_date", "split", "ticker", "role",
+        "champion_version_id", "model_id", "model_name", "is_frozen_snapshot", "model_version", "state_sha256",
+        "prediction_mode", "forecast_horizon_trading_days", "target_start_date", "target_end_date",
+        "predicted_vol_annualized", "feature_set_version", "feature_run_id", "input_snapshot_id",
+        "last_training_target_end_date", "champion_effective_from_date", "run_id", "prediction_created_at_utc",
+    ],
+    "policyEvaluations": [
+        "experiment_id", "policy_version", "policy_prediction_id", "prediction_date", "split", "ticker", "role",
+        "champion_version_id", "active_champion_version_id_at_eval", "model_id", "model_name",
+        "is_frozen_snapshot", "model_version", "state_sha256", "target_start_date", "target_end_date",
+        "predicted_vol_annualized", "target_realized_vol_5d", "target_version", "absolute_error",
+        "squared_error", "evaluation_date", "label_available_replay_date",
+        "stale_champion_skipped_from_policy", "policy_skip_reason", "prediction_run_id", "evaluation_run_id",
+    ],
+    "policyDetectorStream": [
+        "experiment_id", "policy_version", "policy_prediction_id", "prediction_date", "evaluation_date", "ticker",
+        "champion_version_id", "champion_model_id", "champion_state_sha256", "feed_order_in_session",
+        "absolute_error", "adwin_delta", "adwin_width", "adwin_estimation_before", "adwin_estimation",
+        "drift_detected", "drift_direction", "triggered_decision", "cooldown_active",
+        "cooldown_remaining_before", "prediction_run_id", "evaluation_run_id",
+    ],
+    "policyDecisionEvents": [
+        "experiment_id", "policy_version", "event_id", "decision_date", "ticker", "trigger_prediction_id",
+        "trigger_prediction_date", "drift_direction", "adwin_estimation_before", "adwin_estimation_after",
+        "adwin_width", "champion_version_id_before", "champion_model_id_before", "champion_state_sha256_before",
+        "shadow_model_id", "shadow_state_sha256_pre_update", "comparison_window_pairs", "minimum_pairs",
+        "min_relative_improvement", "valid_pair_count", "champion_window_mae", "shadow_b3_window_mae",
+        "relative_improvement", "decision_outcome", "decision_reason", "switched",
+        "champion_version_id_after", "champion_model_id_after", "champion_state_sha256_after",
+        "effective_from_date", "rollback_target_version_id", "rollback_target_model_id",
+        "rollback_target_state_sha256", "cooldown_active", "cooldown_remaining_before",
+        "cooldown_remaining_after", "detector_reset_after_decision", "run_id",
+    ],
+    "policyChampionTimeline": [
+        "experiment_id", "policy_version", "timeline_event_id", "event_type", "recorded_date",
+        "decision_date", "effective_from_date", "ticker", "version_seq", "from_champion_version_id",
+        "from_model_id", "from_state_sha256", "to_champion_version_id", "to_model_id", "to_state_sha256",
+        "rollback_target_version_id", "rollback_target_model_id", "rollback_target_state_sha256",
+        "decision_event_id", "reason", "run_id",
+    ],
+    "policyFailures": [
+        "experiment_id", "policy_version", "prediction_date", "split", "ticker", "role",
+        "champion_version_id", "model_id", "model_name", "failure_type", "reason", "raw_value", "run_id",
+    ],
+    "policyModelMetrics": [
+        "split", "ticker", "strategy", "initial_champion_model_id", "paired_n", "evaluable_n",
+        "mae", "rmse", "mse", "status", "evaluation_scope",
+    ],
+    "policyComparisons": [
+        "comparison_id", "split", "ticker", "policy_strategy", "comparator_strategy", "paired_n",
+        "policy_mae", "comparator_mae", "delta_mae_comparator_minus_policy", "relative_mae_improvement",
+        "policy_rmse", "comparator_rmse", "delta_rmse_comparator_minus_policy", "status",
+        "evaluation_scope", "confirmatory_hypothesis", "test_reuse_limitation",
+    ],
+    "policyOperationsSummary": [
+        "split", "ticker", "initial_champion_model_id", "final_champion_model_id", "final_champion_version_id",
+        "matched_common_panel_n", "detector_observation_count", "alert_count", "decision_event_count",
+        "promotion_count", "retained_count", "insufficient_pairs_count", "invalid_decision_count",
+        "cooldown_suppressed_count", "stale_champion_skipped_eval_count", "served_invalid_forecast_count",
+        "shadow_invalid_forecast_count", "pending_served_forecast_count",
+        "mean_label_maturity_lag_calendar_days", "mean_trigger_anchor_to_decision_calendar_days",
+        "mean_decision_to_effective_calendar_days", "first_alert_date", "first_promotion_date",
+        "zero_alerts_observed", "zero_promotions_observed",
+    ],
+    "policyCoverageSummary": [
+        "split", "ticker", "role", "expected_anchors_observed", "published_forecasts", "invalid_forecasts",
+        "mature_evaluated", "pending_labels", "evaluation_failures", "matched_common_panel_n",
+        "publish_rate", "mature_evaluation_rate",
+    ],
+}
+
+
+def _load_policy_bundle_payloads(
+    bundle_source: Path,
+    *,
+    expected_zip_sha256: str | None = None,
+) -> tuple[dict[str, bytes], str | None]:
+    resolved = bundle_source.resolve()
+    if resolved.is_file() and resolved.suffix.lower() == ".zip":
+        raw_zip = resolved.read_bytes()
+        zip_hash = sha256(raw_zip)
+        if expected_zip_sha256 is not None and zip_hash != expected_zip_sha256:
+            raise SnapshotError(f"Policy bundle ZIP SHA-256 mismatch: expected {expected_zip_sha256}, got {zip_hash}")
+        with zipfile.ZipFile(resolved) as archive:
+            names = validate_archive_paths(archive)
+            return {name: archive.read(name) for name in names}, zip_hash
+    if resolved.is_dir():
+        payloads: dict[str, bytes] = {}
+        for file_path in sorted(resolved.rglob("*")):
+            if file_path.is_file():
+                rel = file_path.relative_to(resolved).as_posix()
+                payloads[rel] = file_path.read_bytes()
+        return payloads, None
+    raise SnapshotError(f"Policy bundle path does not exist or is unsupported: {resolved}")
+
+
+def _validate_policy_replay_contract(identity: dict[str, Any], stage05: dict[str, Any]) -> None:
+    replay_config = stage05.get("replay_config")
+    if not isinstance(replay_config, dict):
+        raise SnapshotError("Policy Stage 05 manifest is missing replay_config")
+    replay_version = identity.get("replay_config_version")
+    checkpoint_version = identity.get("checkpoint_version")
+    manifest_replay_version = replay_config.get("replay_config_version")
+    manifest_checkpoint_version = stage05.get("checkpoint_version")
+    if replay_version != manifest_replay_version or checkpoint_version != manifest_checkpoint_version:
+        raise SnapshotError("Policy replay/checkpoint versions disagree between source identity and Stage 05 manifest")
+
+    processing_order = replay_config.get("processing_order")
+    final_outputs = stage05.get("final_outputs_sha256")
+    if not isinstance(final_outputs, dict):
+        raise SnapshotError("Policy Stage 05 manifest is missing final_outputs_sha256")
+    retired_outputs = RETIRED_B3_ADWIN_OUTPUTS.intersection(final_outputs)
+
+    if replay_version == ARCHIVED_POLICY_REPLAY_VERSION:
+        if checkpoint_version not in ARCHIVED_POLICY_CHECKPOINT_VERSIONS:
+            raise SnapshotError("Archived policy replay 2.0.0 requires checkpoint 2.0.0 or 2.1.0")
+        if processing_order != list(ARCHIVED_POLICY_PROCESSING_ORDER):
+            raise SnapshotError("Archived policy replay processing_order does not match its exact 2.0.0 contract")
+        adwin_config = replay_config.get("adwin")
+        if not isinstance(adwin_config, dict) or adwin_config.get("policy") != "monitor_only":
+            raise SnapshotError("Archived policy replay must declare its historical B3 ADWIN monitor-only policy")
+        if retired_outputs != RETIRED_B3_ADWIN_OUTPUTS:
+            raise SnapshotError("Archived policy replay must identify both historical B3 ADWIN outputs")
+        return
+
+    if replay_version != CURRENT_POLICY_REPLAY_VERSION or checkpoint_version != CURRENT_POLICY_CHECKPOINT_VERSION:
+        raise SnapshotError("Current policy replay requires replay_config_version 2.1.0 and checkpoint_version 2.2.0")
+    if processing_order != list(CURRENT_POLICY_PROCESSING_ORDER):
+        raise SnapshotError("Current policy replay processing_order does not match its exact 2.1.0 contract")
+    if "adwin" in replay_config or RETIRED_B3_ADWIN_FILES.intersection(final_outputs):
+        raise SnapshotError("Current policy replay must not contain retired B3 ADWIN configuration or outputs")
+
+
+def validate_policy_bundle_payloads(payloads: dict[str, bytes]) -> dict[str, Any]:
+    """Strictly validate a 1.2.0 Champion-Challenger policy bundle before publishing."""
+    if "CHECKSUMS.sha256" not in payloads or "policy_source_identity.json" not in payloads:
+        raise SnapshotError("Policy bundle is missing CHECKSUMS.sha256 or policy_source_identity.json")
+    checksums = parse_checksums(payloads["CHECKSUMS.sha256"], "policy CHECKSUMS.sha256")
+    expected_members = set(payloads) - {"CHECKSUMS.sha256"}
+    if set(checksums) != expected_members:
+        raise SnapshotError("Policy CHECKSUMS.sha256 entries do not match bundle contents")
+    for name, expected_hash in checksums.items():
+        if sha256(payloads[name]) != expected_hash:
+            raise SnapshotError(f"Policy bundle member SHA-256 mismatch: {name}")
+
+    identity = json.loads(payloads["policy_source_identity.json"].decode("utf-8"))
+    eval_manifest = json.loads(payloads["policy_results/policy_evaluation_manifest.json"].decode("utf-8"))
+    stage05 = json.loads(payloads["policy_results/stage05_policy_manifest.json"].decode("utf-8"))
+    reconciliation = json.loads(payloads["policy_results/policy_reconciliation.json"].decode("utf-8"))
+
+    if identity.get("handoff_schema_version") != POLICY_SNAPSHOT_SCHEMA_VERSION:
+        raise SnapshotError(f"Unsupported policy handoff_schema_version: {identity.get('handoff_schema_version')}")
+    if eval_manifest.get("policy_evaluation_version") != POLICY_SNAPSHOT_SCHEMA_VERSION:
+        raise SnapshotError("Policy evaluation manifest version mismatch")
+    if identity.get("policy_version") != "1.0.0" or stage05.get("champion_challenger_policy", {}).get("policy_version") != "1.0.0":
+        raise SnapshotError("Policy bundle policy_version must be 1.0.0")
+    _validate_policy_replay_contract(identity, stage05)
+    if identity.get("replay_config_version") == CURRENT_POLICY_REPLAY_VERSION and any(
+        PurePosixPath(name).name in RETIRED_B3_ADWIN_FILES
+        for name in payloads
+    ):
+        raise SnapshotError("Current policy handoff must not package retired B3 ADWIN outputs")
+    if identity.get("policy_evaluation_id") != eval_manifest.get("evaluation_id"):
+        raise SnapshotError("Policy evaluation_id mismatch between source identity and evaluation manifest")
+    if (
+        identity.get("policy_replay_experiment_id") != eval_manifest.get("replay_experiment_id")
+        or identity.get("policy_replay_experiment_id") != stage05.get("experiment_id")
+    ):
+        raise SnapshotError("Policy replay experiment_id mismatch across bundle manifests")
+    if (
+        identity.get("policy_config_fingerprint") != eval_manifest.get("policy_config_fingerprint")
+        or identity.get("policy_config_fingerprint") != stage05.get("policy_config_fingerprint")
+    ):
+        raise SnapshotError("Policy config fingerprint mismatch across bundle manifests")
+    if (
+        identity.get("source_point_in_time_availability_verified") is not False
+        or identity.get("test_reuse_exploratory_only") is not True
+        or identity.get("h1_h3_confirmatory_unchanged") is not True
+    ):
+        raise SnapshotError("Policy bundle violates exploratory/PIT/H1-H3 disclosure invariants")
+
+    exported_hashes = identity.get("exported_file_sha256", {})
+    for rel_path, expected_hash in exported_hashes.items():
+        if rel_path not in payloads or sha256(payloads[rel_path]) != expected_hash:
+            raise SnapshotError(f"Policy exported_file_sha256 mismatch: {rel_path}")
+
+    parsed: dict[str, list[dict[str, str]]] = {}
+    headers_by_key: dict[str, list[str]] = {}
+    for key, filename in POLICY_PUBLIC_FILES.items():
+        rel = f"policy_results/{filename}"
+        if rel not in payloads:
+            raise SnapshotError(f"Policy bundle is missing required CSV: {rel}")
+        rows, headers = parse_csv_bytes(payloads[rel], filename, POLICY_REQUIRED_HEADERS[key])
+        parsed[key] = rows
+        headers_by_key[key] = headers
+        expected_rows = identity.get("csv_data_rows", {}).get(filename)
+        if expected_rows is not None and len(rows) != int(expected_rows):
+            raise SnapshotError(f"Policy CSV row count mismatch for {filename}: expected {expected_rows}, got {len(rows)}")
+
+    tickers = {"SPY", "IEF", "GLD"}
+    initial_by_ticker = identity.get("initial_champion", {})
+    if set(initial_by_ticker) != tickers or any(str(v) not in {"B0", "B1", "B2"} for v in initial_by_ticker.values()):
+        raise SnapshotError("Policy initial_champion must specify B0/B1/B2 per ETF (B3/B4 excluded)")
+
+    # 1. Validate policy_forecasts.csv
+    forecasts_by_id: dict[str, dict[str, str]] = {}
+    for idx, row in enumerate(parsed["policyForecasts"], start=2):
+        pid = row["policy_prediction_id"]
+        if not pid or pid in forecasts_by_id:
+            raise SnapshotError(f"Missing or duplicate policy_prediction_id in policy_forecasts.csv row {idx}")
+        if row["ticker"] not in tickers or row["role"] not in {"SERVED_CHAMPION", "SHADOW_B3"} or row["model_id"] not in {"B0", "B1", "B2", "B3"}:
+            raise SnapshotError(f"Unsupported ticker/role/model_id in policy_forecasts.csv row {idx}")
+        pred_d = source_date(row["prediction_date"], "prediction_date", idx)
+        t_start = source_date(row["target_start_date"], "target_start_date", idx)
+        t_end = source_date(row["target_end_date"], "target_end_date", idx)
+        if not pred_d <= t_start <= t_end:
+            raise SnapshotError(f"Invalid target date ordering in policy_forecasts.csv row {idx}")
+        if signed_finite(row["predicted_vol_annualized"], "predicted_vol_annualized", idx) < 0:
+            raise SnapshotError(f"Negative forecast in policy_forecasts.csv row {idx}")
+        forecasts_by_id[pid] = row
+
+    # 2. Validate policy_evaluations.csv
+    evals_by_id: dict[str, dict[str, str]] = {}
+    for idx, row in enumerate(parsed["policyEvaluations"], start=2):
+        pid = row["policy_prediction_id"]
+        if not pid or pid in evals_by_id:
+            raise SnapshotError(f"Missing or duplicate policy_prediction_id in policy_evaluations.csv row {idx}")
+        fc = forecasts_by_id.get(pid)
+        if (
+            fc is None
+            or fc["ticker"] != row["ticker"]
+            or fc["role"] != row["role"]
+            or fc["prediction_date"] != row["prediction_date"]
+            or fc["champion_version_id"] != row["champion_version_id"]
+        ):
+            raise SnapshotError(f"policy_evaluations.csv row {idx} does not match policy_forecasts.csv")
+        pred_d = source_date(row["prediction_date"], "prediction_date", idx)
+        t_end = source_date(row["target_end_date"], "target_end_date", idx)
+        ev_d = source_date(row["evaluation_date"], "evaluation_date", idx)
+        if not pred_d <= t_end <= ev_d:
+            raise SnapshotError(f"Invalid evaluation maturity dates in policy_evaluations.csv row {idx}")
+        if signed_finite(row["target_realized_vol_5d"], "target_realized_vol_5d", idx) < 0:
+            raise SnapshotError(f"Negative realized target in policy_evaluations.csv row {idx}")
+        signed_finite(row["absolute_error"], "absolute_error", idx)
+        signed_finite(row["squared_error"], "squared_error", idx)
+        evals_by_id[pid] = row
+
+    # 3. Validate policy_detector_stream.csv (supports both 0 and >0 alerts!)
+    stream_ids: set[str] = set()
+    triggered_by_key: dict[tuple[str, str, str], dict[str, str]] = {}
+    alert_count = 0
+    for idx, row in enumerate(parsed["policyDetectorStream"], start=2):
+        pid = row["policy_prediction_id"]
+        if not pid or pid in stream_ids:
+            raise SnapshotError(f"Missing or duplicate policy_prediction_id in policy_detector_stream.csv row {idx}")
+        ev = evals_by_id.get(pid)
+        if (
+            ev is None
+            or ev["role"] != "SERVED_CHAMPION"
+            or ev["ticker"] != row["ticker"]
+            or ev["prediction_date"] != row["prediction_date"]
+            or ev["evaluation_date"] != row["evaluation_date"]
+            or ev["champion_version_id"] != row["champion_version_id"]
+        ):
+            raise SnapshotError(f"policy_detector_stream.csv row {idx} does not match a served evaluation")
+        if not math.isclose(
+            signed_finite(row["absolute_error"], "absolute_error", idx),
+            float(ev["absolute_error"]),
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise SnapshotError(f"policy_detector_stream.csv absolute_error disagrees with evaluation on row {idx}")
+        if signed_finite(row["adwin_delta"], "adwin_delta", idx) <= 0 or int(row["adwin_width"]) <= 0:
+            raise SnapshotError(f"Invalid ADWIN diagnostics in policy_detector_stream.csv row {idx}")
+        detected = source_bool(row["drift_detected"], "drift_detected", idx)
+        triggered = source_bool(row["triggered_decision"], "triggered_decision", idx)
+        if triggered and not detected:
+            raise SnapshotError(f"Forged triggered_decision without drift_detected on stream row {idx}")
+        if row["drift_direction"] not in {"error_increase", "error_decrease", "shift_neutral", "no_signal"}:
+            raise SnapshotError(f"Invalid drift_direction in policy_detector_stream.csv row {idx}")
+        if detected:
+            alert_count += 1
+        if triggered:
+            triggered_by_key[(pid, row["ticker"], row["evaluation_date"])] = row
+        stream_ids.add(pid)
+
+    # 4. Validate policy_decision_events.csv (reject forged events, bad dates/models/outcomes)
+    decisions_by_id: dict[str, dict[str, str]] = {}
+    promoted_by_id: dict[str, dict[str, str]] = {}
+    for idx, row in enumerate(parsed["policyDecisionEvents"], start=2):
+        event_id = row["event_id"]
+        if not event_id or event_id in decisions_by_id:
+            raise SnapshotError(f"Missing or duplicate event_id in policy_decision_events.csv row {idx}")
+        dec_d = source_date(row["decision_date"], "decision_date", idx)
+        trig_key = (row["trigger_prediction_id"], row["ticker"], dec_d)
+        if trig_key not in triggered_by_key:
+            raise SnapshotError(f"Forged or ungrounded decision event {event_id} on row {idx}: no matching ADWIN trigger")
+        outcome = row["decision_outcome"]
+        if outcome not in {"promoted", "retained", "insufficient_pairs", "invalid", "cooldown_suppressed"}:
+            raise SnapshotError(f"Unsupported decision_outcome '{outcome}' on row {idx}")
+        switched = source_bool(row["switched"], "switched", idx)
+        min_pairs = int(row["minimum_pairs"])
+        valid_pairs = int(row["valid_pair_count"])
+        min_rel = signed_finite(row["min_relative_improvement"], "min_relative_improvement", idx)
+        eff_raw = row["effective_from_date"].strip()
+        if outcome == "promoted":
+            if not switched or row["champion_model_id_after"] != "B3":
+                raise SnapshotError(f"Promoted decision {event_id} must switch to B3 snapshot")
+            eff_d = source_date(eff_raw, "effective_from_date", idx)
+            if eff_d <= dec_d:
+                raise SnapshotError(f"Promoted decision {event_id} violates effective_from_date > decision_date")
+            rel_imp = signed_finite(row["relative_improvement"], "relative_improvement", idx)
+            if valid_pairs < min_pairs or rel_imp < min_rel:
+                raise SnapshotError(f"Promoted decision {event_id} violates pair or improvement threshold")
+            if row["rollback_target_version_id"] != row["champion_version_id_before"] or row["rollback_target_state_sha256"] != row["champion_state_sha256_before"]:
+                raise SnapshotError(f"Promoted decision {event_id} rollback target does not match prior champion")
+            promoted_by_id[event_id] = row
+        else:
+            if switched or eff_raw:
+                raise SnapshotError(f"Non-promoted decision {event_id} must not switch or set effective_from_date")
+            if row["champion_version_id_after"] != row["champion_version_id_before"] or row["champion_model_id_after"] != row["champion_model_id_before"]:
+                raise SnapshotError(f"Non-promoted decision {event_id} mutated champion identity")
+            if outcome == "insufficient_pairs" and valid_pairs >= min_pairs:
+                raise SnapshotError(f"insufficient_pairs decision {event_id} has valid_pair_count >= minimum_pairs")
+            if outcome == "cooldown_suppressed" and (not source_bool(row["cooldown_active"], "cooldown_active", idx) or int(row["cooldown_remaining_before"]) <= 0):
+                raise SnapshotError(f"cooldown_suppressed decision {event_id} lacks active cooldown")
+        decisions_by_id[event_id] = row
+
+    if len(decisions_by_id) != len(triggered_by_key):
+        raise SnapshotError(
+            f"Decision event count ({len(decisions_by_id)}) disagrees with triggered ADWIN alerts ({len(triggered_by_key)})"
+        )
+
+    # 5. Validate policy_champion_timeline.csv (1:1 with initial cutover & promotions)
+    tl_ids: set[str] = set()
+    init_seen: dict[str, str] = {}
+    tl_promos: dict[str, dict[str, str]] = {}
+    for idx, row in enumerate(parsed["policyChampionTimeline"], start=2):
+        tid = row["timeline_event_id"]
+        if not tid or tid in tl_ids:
+            raise SnapshotError(f"Missing or duplicate timeline_event_id in policy_champion_timeline.csv row {idx}")
+        tl_ids.add(tid)
+        ticker = row["ticker"]
+        if ticker not in tickers:
+            raise SnapshotError(f"Unsupported ticker in policy_champion_timeline.csv row {idx}")
+        etype = row["event_type"]
+        if etype == "INITIAL_CHAMPION_CUTOVER":
+            if ticker in init_seen or row["to_model_id"] != str(initial_by_ticker[ticker]):
+                raise SnapshotError(f"Invalid INITIAL_CHAMPION_CUTOVER timeline entry for {ticker} row {idx}")
+            init_seen[ticker] = row["to_champion_version_id"]
+        elif etype == "PROMOTED_SNAPSHOT_ACTIVE_NEXT_SESSION":
+            ev_id = row["decision_event_id"]
+            dec = promoted_by_id.get(ev_id)
+            if dec is None or ev_id in tl_promos:
+                raise SnapshotError(f"Timeline promotion {tid} lacks a unique matching promoted decision event {ev_id}")
+            dec_d = source_date(row["decision_date"], "decision_date", idx)
+            eff_d = source_date(row["effective_from_date"], "effective_from_date", idx)
+            if eff_d <= dec_d or eff_d != dec["effective_from_date"] or row["to_champion_version_id"] != dec["champion_version_id_after"] or row["to_model_id"] != "B3":
+                raise SnapshotError(f"Timeline promotion {tid} disagrees with decision event {ev_id}")
+            tl_promos[ev_id] = row
+        else:
+            raise SnapshotError(f"Unsupported timeline event_type '{etype}' on row {idx}")
+    if set(init_seen) != tickers:
+        raise SnapshotError("policy_champion_timeline.csv must include INITIAL_CHAMPION_CUTOVER for SPY, IEF, GLD")
+    if set(tl_promos) != set(promoted_by_id):
+        raise SnapshotError("policy_champion_timeline.csv promotions do not reconcile 1:1 with promoted decisions")
+
+    # 6. Reconcile summary counts with identity & reconciliation JSON
+    if alert_count != int(identity.get("alert_count_total", -1)) or alert_count != int(reconciliation.get("total_alerts", -1)):
+        raise SnapshotError("Policy alert count disagrees with identity/reconciliation metadata")
+    if len(decisions_by_id) != int(identity.get("decision_count_total", -1)) or len(decisions_by_id) != int(reconciliation.get("total_decisions", -1)):
+        raise SnapshotError("Policy decision count disagrees with identity/reconciliation metadata")
+    if len(promoted_by_id) != int(identity.get("promotion_count_total", -1)) or len(promoted_by_id) != int(reconciliation.get("total_promotions", -1)):
+        raise SnapshotError("Policy promotion count disagrees with identity/reconciliation metadata")
+
+    return {
+        "identity": identity,
+        "eval_manifest": eval_manifest,
+        "stage05_manifest": stage05,
+        "reconciliation": reconciliation,
+        "parsed": parsed,
+        "headers": headers_by_key,
+        "counts": {
+            "policyForecastRows": len(parsed["policyForecasts"]),
+            "policyEvaluationRows": len(parsed["policyEvaluations"]),
+            "policyDetectorStreamRows": len(parsed["policyDetectorStream"]),
+            "policyDecisionEventRows": len(parsed["policyDecisionEvents"]),
+            "policyChampionTimelineRows": len(parsed["policyChampionTimeline"]),
+            "policyFailureRows": len(parsed["policyFailures"]),
+            "policyModelMetricsRows": len(parsed["policyModelMetrics"]),
+            "policyComparisonsRows": len(parsed["policyComparisons"]),
+            "policyOperationsSummaryRows": len(parsed["policyOperationsSummary"]),
+            "policyCoverageSummaryRows": len(parsed["policyCoverageSummary"]),
+            "policyAlertCount": alert_count,
+            "policyDecisionCount": len(decisions_by_id),
+            "policyPromotionCount": len(promoted_by_id),
+        },
+    }
+
+
+def prepare_policy_snapshot(
+    repo_root: Path,
+    output_root: Path,
+    bundle_source: Path,
+    *,
+    expected_zip_sha256: str | None = None,
+) -> Path:
+    """Validate and atomically publish a versioned Champion-Challenger policy snapshot sidecar."""
+    payloads, zip_sha = _load_policy_bundle_payloads(bundle_source, expected_zip_sha256=expected_zip_sha256)
+    validated = validate_policy_bundle_payloads(payloads)
+    identity = validated["identity"]
+    eval_id = str(identity["policy_evaluation_id"])
+    policy_root = (output_root.resolve() / "policy").resolve()
+    policy_root.mkdir(parents=True, exist_ok=True)
+    target = (policy_root / eval_id).resolve()
+    if target.parent != policy_root or target.name != eval_id:
+        raise SnapshotError("Policy snapshot target escaped policy output directory")
+
+    temporary = policy_root / f".{eval_id}.tmp-{uuid.uuid4().hex}"
+    temporary.mkdir()
+    try:
+        public_files: dict[str, dict[str, Any]] = {}
+        count_key_map = {
+            "policyForecasts": "policyForecastRows",
+            "policyEvaluations": "policyEvaluationRows",
+            "policyDetectorStream": "policyDetectorStreamRows",
+            "policyDecisionEvents": "policyDecisionEventRows",
+            "policyChampionTimeline": "policyChampionTimelineRows",
+            "policyFailures": "policyFailureRows",
+            "policyModelMetrics": "policyModelMetricsRows",
+            "policyComparisons": "policyComparisonsRows",
+            "policyOperationsSummary": "policyOperationsSummaryRows",
+            "policyCoverageSummary": "policyCoverageSummaryRows",
+        }
+        for key, filename in POLICY_PUBLIC_FILES.items():
+            raw = payloads[f"policy_results/{filename}"]
+            (temporary / filename).write_bytes(raw)
+            public_files[key] = {
+                "path": filename,
+                "sha256": sha256(raw),
+                "bytes": len(raw),
+                "rowCount": validated["counts"][count_key_map[key]],
+                "headers": validated["headers"][key],
+            }
+        rec_raw = payloads["policy_results/policy_reconciliation.json"]
+        (temporary / "policy_reconciliation.json").write_bytes(rec_raw)
+
+        snapshot_manifest = {
+            "schemaVersion": POLICY_SNAPSHOT_SCHEMA_VERSION,
+            "policyVersion": identity["policy_version"],
+            "policyEvaluationVersion": identity["policy_evaluation_version"],
+            "policyEvaluationId": eval_id,
+            "policyReplayExperimentId": identity["policy_replay_experiment_id"],
+            "policyConfigFingerprint": identity["policy_config_fingerprint"],
+            "replayConfigVersion": identity["replay_config_version"],
+            "checkpointVersion": identity["checkpoint_version"],
+            "sourceBundleName": bundle_source.name,
+            "sourceZipSha256": zip_sha,
+            "sourceVerificationStatus": identity["source_verification_status"],
+            "mode": "SIMULATED HISTORICAL REPLAY",
+            "exploratoryOnly": True,
+            "h1H3ConfirmatoryUnchanged": True,
+            "pointInTimeSourceAvailabilityVerified": False,
+            "championChallengerPolicy": identity["champion_challenger_policy"],
+            "initialChampion": identity["initial_champion"],
+            "initialChampionSummary": identity.get("initial_champion_summary", {}),
+            "replayWindow": identity.get("replay_window", {}),
+            "limitations": identity.get("limitations", []),
+            "createdAtUtc": identity.get("created_at_utc", "unknown"),
+            "builtFromCommit": current_commit(repo_root),
+            "expectedCounts": validated["counts"],
+            "reconciliationSha256": sha256(rec_raw),
+            "files": public_files,
+        }
+        manifest_bytes = (json.dumps(snapshot_manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        (temporary / "policy_snapshot_manifest.json").write_bytes(manifest_bytes)
+        if target.exists():
+            shutil.rmtree(target)
+        os.replace(temporary, target)
+
+        active_payload = {
+            "schemaVersion": POLICY_SNAPSHOT_SCHEMA_VERSION,
+            "activePolicyEvaluationId": eval_id,
+            "policyReplayExperimentId": identity["policy_replay_experiment_id"],
+            "manifestPath": f"{eval_id}/policy_snapshot_manifest.json",
+            "manifestSha256": sha256(manifest_bytes),
+            "mode": "SIMULATED HISTORICAL REPLAY",
+            "exploratoryOnly": True,
+        }
+        active_tmp = policy_root / f".ACTIVE.{uuid.uuid4().hex}.tmp"
+        active_tmp.write_text(json.dumps(active_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+        os.replace(active_tmp, policy_root / "ACTIVE.json")
+    except Exception:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+        raise
+    return target
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--output", type=Path, default=Path("public/snapshots"))
     parser.add_argument("--policy", type=Path, default=Path(__file__).resolve().parents[2] / "web" / "snapshot.policy.json")
+    parser.add_argument("--policy-bundle", type=Path, default=None)
+    parser.add_argument("--policy-zip-sha256", type=str, default=None)
+    parser.add_argument("--policy-only", action="store_true")
     arguments = parser.parse_args()
     repo_root = arguments.repo_root.resolve()
     output = arguments.output if arguments.output.is_absolute() else Path.cwd() / arguments.output
     try:
-        target = prepare_snapshot(repo_root, output, arguments.policy.resolve())
+        if not arguments.policy_only:
+            target = prepare_snapshot(repo_root, output, arguments.policy.resolve())
+            manifest = json.loads((target / "dashboard_snapshot_manifest.json").read_text(encoding="utf-8"))
+            print(
+                "SNAPSHOT VERIFIED: "
+                f"evaluation_id={manifest['evaluationId']} "
+                f"replay_id={manifest['replayId']} "
+                f"zip_sha256={manifest['sourceZipSha256']} "
+                f"test_pending_rows={manifest['expectedCounts']['testPendingRows']} "
+                f"output={target}"
+            )
+        policy_bundle = arguments.policy_bundle
+        policy_zip_sha = arguments.policy_zip_sha256
+        if policy_bundle is None and arguments.policy.resolve().is_file():
+            policy_doc = json.loads(arguments.policy.resolve().read_text(encoding="utf-8"))
+            sidecar = policy_doc.get("policySidecar")
+            if isinstance(sidecar, dict) and sidecar.get("zipDir") and sidecar.get("zipName"):
+                candidate_zip = repo_root / sidecar["zipDir"] / sidecar["zipName"]
+                if candidate_zip.is_file():
+                    policy_bundle = candidate_zip
+                    policy_zip_sha = sidecar.get("zipSha256")
+        if policy_bundle is not None:
+            resolved_bundle = policy_bundle if policy_bundle.is_absolute() else (Path.cwd() / policy_bundle).resolve()
+            policy_target = prepare_policy_snapshot(
+                repo_root,
+                output,
+                resolved_bundle,
+                expected_zip_sha256=policy_zip_sha,
+            )
+            p_manifest = json.loads((policy_target / "policy_snapshot_manifest.json").read_text(encoding="utf-8"))
+            print(
+                "POLICY SNAPSHOT VERIFIED: "
+                f"policy_evaluation_id={p_manifest['policyEvaluationId']} "
+                f"alerts={p_manifest['expectedCounts']['policyAlertCount']} "
+                f"promotions={p_manifest['expectedCounts']['policyPromotionCount']} "
+                f"output={policy_target}"
+            )
     except (SnapshotError, OSError, json.JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as error:
         print(f"SNAPSHOT REJECTED: {error}", file=sys.stderr)
         return 1
-    manifest = json.loads((target / "dashboard_snapshot_manifest.json").read_text(encoding="utf-8"))
-    print(
-        "SNAPSHOT VERIFIED: "
-        f"evaluation_id={manifest['evaluationId']} "
-        f"replay_id={manifest['replayId']} "
-        f"zip_sha256={manifest['sourceZipSha256']} "
-        f"test_pending_rows={manifest['expectedCounts']['testPendingRows']} "
-        f"output={target}"
-    )
     return 0
 
 

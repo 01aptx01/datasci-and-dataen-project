@@ -59,6 +59,44 @@ if snapshot_manifest.is_file():
             raise SystemExit(f"Refusing to publish a changed snapshot file: {source.name}")
         shutil.copy2(source, output_dir / source.name)
     shutil.copy2(snapshot_manifest, output_dir / snapshot_manifest.name)
+
+policy_active_path = WEB_ROOT / "public" / "snapshots" / "policy" / "ACTIVE.json"
+if policy_active_path.is_file():
+    policy_active = json.loads(policy_active_path.read_text(encoding="utf-8"))
+    policy_eval_id = str(policy_active.get("activePolicyEvaluationId", ""))
+    manifest_rel = str(policy_active.get("manifestPath", ""))
+    if not policy_eval_id or not manifest_rel.startswith(f"{policy_eval_id}/") or ".." in manifest_rel:
+        raise SystemExit("Refusing to publish policy sidecar with invalid ACTIVE.json pointer")
+    policy_src_dir = (WEB_ROOT / "public" / "snapshots" / "policy" / policy_eval_id).resolve()
+    policy_manifest_path = (WEB_ROOT / "public" / "snapshots" / "policy" / manifest_rel).resolve()
+    if policy_manifest_path.parent != policy_src_dir or not policy_manifest_path.is_file():
+        raise SystemExit("Refusing to publish missing policy snapshot manifest")
+    manifest_bytes = policy_manifest_path.read_bytes()
+    if hashlib.sha256(manifest_bytes).hexdigest() != policy_active.get("manifestSha256"):
+        raise SystemExit("Refusing to publish policy snapshot whose manifest SHA-256 differs from ACTIVE.json")
+    p_manifest = json.loads(manifest_bytes.decode("utf-8"))
+    if p_manifest.get("policyEvaluationId") != policy_eval_id or p_manifest.get("schemaVersion") != "1.2.0":
+        raise SystemExit("Refusing to publish policy snapshot with mismatched evaluation ID or schemaVersion")
+    policy_dist_root = (DIST / "snapshots" / "policy").resolve()
+    policy_dist_dir = (policy_dist_root / policy_eval_id).resolve()
+    policy_dist_dir.mkdir(parents=True, exist_ok=True)
+    for key, artifact in p_manifest.get("files", {}).items():
+        filename = str(artifact.get("path", ""))
+        src_file = (policy_src_dir / filename).resolve()
+        if src_file.parent != policy_src_dir or not src_file.is_file():
+            raise SystemExit(f"Refusing to publish missing policy snapshot file: {filename}")
+        raw = src_file.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != artifact.get("sha256") or len(raw) != artifact.get("bytes"):
+            raise SystemExit(f"Refusing to publish tampered policy snapshot file: {filename}")
+        shutil.copy2(src_file, policy_dist_dir / src_file.name)
+    rec_src = (policy_src_dir / "policy_reconciliation.json").resolve()
+    if not rec_src.is_file() or hashlib.sha256(rec_src.read_bytes()).hexdigest() != p_manifest.get("reconciliationSha256"):
+        raise SystemExit("Refusing to publish missing or tampered policy_reconciliation.json")
+    shutil.copy2(rec_src, policy_dist_dir / rec_src.name)
+    shutil.copy2(policy_manifest_path, policy_dist_dir / policy_manifest_path.name)
+    shutil.copy2(policy_active_path, policy_dist_root / "ACTIVE.json")
+    print(f"VERIFIED POLICY SIDECAR: {policy_eval_id}")
+
 diagnostic_id = publish_active_sidecar(REPO_ROOT, DIST)
 if diagnostic_id:
     print(f"VERIFIED FEATURE DRIFT SIDECAR: {diagnostic_id}")

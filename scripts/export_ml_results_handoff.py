@@ -8,8 +8,33 @@ import json
 import re
 import shutil
 import subprocess
+import sys
+import zipfile
 from pathlib import Path
 from typing import Any
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+
+POLICY_HANDOFF_SCHEMA_VERSION = "1.2.0"
+POLICY_REPLAY_EXPORT_FILES = (
+    "policy_forecasts.csv",
+    "policy_evaluations.csv",
+    "policy_detector_stream.csv",
+    "policy_decision_events.csv",
+    "policy_champion_timeline.csv",
+    "policy_failures.csv",
+)
+POLICY_EVAL_EXPORT_FILES = (
+    "policy_model_metrics.csv",
+    "policy_comparisons.csv",
+    "policy_operations_summary.csv",
+    "policy_coverage_summary.csv",
+    "policy_reconciliation.json",
+    "policy_evaluation_summary.md",
+)
 
 
 REQUIRED_OUTPUT_FILES = (
@@ -41,6 +66,16 @@ REQUIRED_OUTPUT_FILES = (
     "rolling_mae20.csv",
     "yearly_metrics.csv",
 )
+CURRENT_OUTPUT_FILES = tuple(name for name in REQUIRED_OUTPUT_FILES if name != "drift_error_timeline.csv")
+
+
+def _required_output_files(manifest: dict[str, Any]) -> tuple[str, ...]:
+    version = manifest.get("schema_version")
+    if version == "1.1.0":
+        return CURRENT_OUTPUT_FILES
+    if version in ("1.0.0", None):
+        return REQUIRED_OUTPUT_FILES
+    raise ArtifactVerificationError(f"unsupported Stage 06 schema version: {version}")
 
 _EVALUATION_CODE_FILES = (
     "__init__.py",
@@ -335,10 +370,17 @@ def verify_source_artifacts(
     output_hashes = manifest.get("outputs_sha256")
     if not isinstance(output_hashes, dict):
         raise ArtifactVerificationError("Stage 06 output hashes are missing")
-    missing = set(REQUIRED_OUTPUT_FILES) - set(output_hashes)
-    if missing:
+    required_outputs = _required_output_files(manifest)
+    if manifest.get("schema_version") == "1.1.0" and "drift_error_timeline.csv" in output_hashes:
+        raise ArtifactVerificationError("current Stage 06 must not publish the legacy B3 ADWIN timeline")
+    if manifest.get("schema_version") == "1.1.0" and (source_path / "drift_error_timeline.csv").exists():
+        raise ArtifactVerificationError("current Stage 06 must not contain a legacy B3 ADWIN timeline file")
+    missing = set(required_outputs) - set(output_hashes)
+    extra = set(output_hashes) - set(required_outputs)
+    if missing or extra:
         raise ArtifactVerificationError(
-            "Stage 06 required outputs are missing from manifest: " + ", ".join(sorted(missing))
+            "Stage 06 output set does not match the contract; missing: "
+            + ", ".join(sorted(missing)) + "; unexpected: " + ", ".join(sorted(extra))
         )
     _verify_hashes(source_path, output_hashes, "Stage 06")
 
@@ -352,6 +394,10 @@ def verify_source_artifacts(
         "final_outputs_sha256"
     ):
         raise ArtifactVerificationError("Stage 05 output hashes differ between the linked manifests")
+    if replay_manifest.get("replay_config", {}).get("replay_config_version") == "1.1.0" and any(
+        (replay_path / "outputs" / name).exists() for name in ("drift_errors.csv", "drift_alerts.csv")
+    ):
+        raise ArtifactVerificationError("current Stage 05 must not contain legacy B3 ADWIN output files")
     _verify_hashes(replay_path / "outputs", replay_hashes, "Stage 05 replay")
 
     root = Path(repo_root).resolve() if repo_root is not None else None
@@ -403,7 +449,8 @@ def export_results_bundle(
     redacted_files: list[str] = []
     repo_path = Path(repo_root).resolve() if repo_root is not None else None
 
-    names = (*REQUIRED_OUTPUT_FILES, "execution_manifest.json")
+    required_outputs = _required_output_files(manifest)
+    names = (*required_outputs, "execution_manifest.json")
     for name in names:
         origin = source_path / name
         source_hashes[name] = _sha256(origin)
@@ -434,9 +481,9 @@ def export_results_bundle(
     )
     export_hashes[replay_manifest_target.name] = _sha256(replay_manifest_target)
 
-    row_counts = _row_counts(approved_dir, REQUIRED_OUTPUT_FILES)
+    row_counts = _row_counts(approved_dir, required_outputs)
     identity = {
-        "handoff_schema_version": "1.1.0",
+        "handoff_schema_version": "1.2.0" if manifest.get("schema_version") == "1.1.0" else "1.1.0",
         "source_verification_status": "SOURCE VERIFIED",
         "evaluation_id": manifest["evaluation_id"],
         "final_replay_experiment_id": manifest["final_replay_experiment_id"],
@@ -492,15 +539,233 @@ def export_results_bundle(
     return identity
 
 
+def verify_policy_source_artifacts(
+    policy_eval_dir: str | Path,
+    policy_replay_dir: str | Path,
+    *,
+    require_strict_cutoff: bool = True,
+) -> dict[str, Any]:
+    """Verify Stage 05 policy replay and Stage 06 policy evaluation before export."""
+    from src.ml_evaluation.config import EvaluationError
+    from src.ml_evaluation.policy import POLICY_EVALUATION_VERSION, verify_policy_replay_artifacts
+
+    eval_path = Path(policy_eval_dir).resolve()
+    replay_path = Path(policy_replay_dir).resolve()
+    eval_manifest = _read_json(
+        eval_path / "policy_evaluation_manifest.json", "Stage 06 policy evaluation manifest"
+    )
+    if eval_manifest.get("policy_evaluation_version") != POLICY_EVALUATION_VERSION:
+        raise ArtifactVerificationError(
+            f"unsupported policy_evaluation_version: {eval_manifest.get('policy_evaluation_version')}"
+        )
+    if eval_manifest.get("evaluation_id") != eval_path.name:
+        raise ArtifactVerificationError("policy evaluation directory name does not match evaluation_id")
+    if eval_manifest.get("test_reuse_exploratory_only") is not True:
+        raise ArtifactVerificationError("policy evaluation manifest must record test_reuse_exploratory_only=true")
+    if eval_manifest.get("h1_h3_confirmatory_unchanged") is not True:
+        raise ArtifactVerificationError("policy evaluation manifest must preserve confirmatory H1-H3 boundary")
+    if eval_manifest.get("point_in_time_source_availability_verified") is not False:
+        raise ArtifactVerificationError("policy evaluation must not claim verified point-in-time availability")
+
+    try:
+        replay_manifest, replay_outputs, verified_replay_hashes, reconciliation = verify_policy_replay_artifacts(
+            replay_path,
+            require_strict_cutoff=require_strict_cutoff,
+        )
+    except EvaluationError as error:
+        raise ArtifactVerificationError(f"policy replay verification failed: {error}") from error
+
+    if eval_manifest.get("replay_experiment_id") != replay_manifest.get("experiment_id"):
+        raise ArtifactVerificationError("policy evaluation replay_experiment_id disagrees with Stage 05 manifest")
+    if eval_manifest.get("policy_config_fingerprint") != replay_manifest.get("policy_config_fingerprint"):
+        raise ArtifactVerificationError("policy evaluation config fingerprint disagrees with Stage 05 manifest")
+    if eval_manifest.get("replay_outputs_sha256") != verified_replay_hashes:
+        raise ArtifactVerificationError("policy evaluation replay_outputs_sha256 disagrees with Stage 05 outputs")
+
+    artifact_hashes = eval_manifest.get("artifact_sha256")
+    if not isinstance(artifact_hashes, dict) or set(POLICY_EVAL_EXPORT_FILES) != set(artifact_hashes):
+        raise ArtifactVerificationError("policy evaluation manifest artifact_sha256 is incomplete")
+    _verify_hashes(eval_path, artifact_hashes, "Stage 06 policy evaluation")
+
+    return {
+        "policy_eval_dir": eval_path,
+        "policy_replay_dir": replay_path,
+        "policy_eval_manifest": eval_manifest,
+        "policy_replay_manifest": replay_manifest,
+        "replay_outputs": replay_outputs,
+        "verified_replay_hashes": verified_replay_hashes,
+        "reconciliation": reconciliation,
+    }
+
+
+def _write_deterministic_zip(source_dir: Path, zip_path: Path) -> str:
+    if zip_path.exists():
+        raise FileExistsError(f"refusing to overwrite existing policy archive: {zip_path}")
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        files = sorted(
+            (p for p in source_dir.rglob("*") if p.is_file()),
+            key=lambda p: p.relative_to(source_dir).as_posix(),
+        )
+        for file_path in files:
+            rel = file_path.relative_to(source_dir).as_posix()
+            info = zipfile.ZipInfo(filename=rel, date_time=(2026, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(info, file_path.read_bytes())
+    return _sha256(zip_path)
+
+
+def export_policy_results_bundle(
+    policy_eval_dir: str | Path,
+    policy_replay_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    repo_root: str | Path | None = None,
+    zip_output_path: str | Path | None = None,
+    require_strict_cutoff: bool = True,
+) -> dict[str, Any]:
+    """Export a versioned (1.2.0) Champion-Challenger policy bundle separate from baseline 1.1.0."""
+    destination = Path(output_dir).resolve()
+    if destination.exists():
+        raise FileExistsError(f"refusing to overwrite existing policy handoff directory: {destination}")
+    zip_target = Path(zip_output_path).resolve() if zip_output_path is not None else None
+    if zip_target is not None and zip_target.exists():
+        raise FileExistsError(f"refusing to overwrite existing policy archive: {zip_target}")
+
+    verified = verify_policy_source_artifacts(
+        policy_eval_dir,
+        policy_replay_dir,
+        require_strict_cutoff=require_strict_cutoff,
+    )
+    eval_path: Path = verified["policy_eval_dir"]
+    replay_path: Path = verified["policy_replay_dir"]
+    eval_manifest: dict[str, Any] = verified["policy_eval_manifest"]
+    replay_manifest: dict[str, Any] = verified["policy_replay_manifest"]
+    reconciliation: dict[str, Any] = verified["reconciliation"]
+    repo_path = Path(repo_root).resolve() if repo_root is not None else None
+
+    destination.mkdir(parents=True)
+    results_dir = destination / "policy_results"
+    results_dir.mkdir()
+    export_hashes: dict[str, str] = {}
+
+    for name in POLICY_EVAL_EXPORT_FILES:
+        origin = eval_path / name
+        target = results_dir / name
+        if name.endswith(".json"):
+            payload = _read_json(origin, name)
+            target.write_text(
+                json.dumps(_redact_paths(payload, repo_path), ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+        else:
+            shutil.copy2(origin, target)
+        export_hashes[f"policy_results/{name}"] = _sha256(target)
+
+    for name in POLICY_REPLAY_EXPORT_FILES:
+        origin = replay_path / "outputs" / name
+        target = results_dir / name
+        shutil.copy2(origin, target)
+        export_hashes[f"policy_results/{name}"] = _sha256(target)
+
+    eval_manifest_target = results_dir / "policy_evaluation_manifest.json"
+    eval_manifest_target.write_text(
+        json.dumps(_redact_paths(eval_manifest, repo_path), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    export_hashes["policy_results/policy_evaluation_manifest.json"] = _sha256(eval_manifest_target)
+
+    replay_manifest_target = results_dir / "stage05_policy_manifest.json"
+    replay_manifest_target.write_text(
+        json.dumps(_redact_paths(replay_manifest, repo_path), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    export_hashes["policy_results/stage05_policy_manifest.json"] = _sha256(replay_manifest_target)
+
+    csv_files = (*POLICY_REPLAY_EXPORT_FILES, *(f for f in POLICY_EVAL_EXPORT_FILES if f.endswith(".csv")))
+    row_counts = _row_counts(results_dir, csv_files)
+
+    identity = {
+        "handoff_schema_version": POLICY_HANDOFF_SCHEMA_VERSION,
+        "source_verification_status": "SOURCE VERIFIED",
+        "policy_evaluation_version": eval_manifest["policy_evaluation_version"],
+        "policy_evaluation_id": eval_manifest["evaluation_id"],
+        "policy_replay_experiment_id": replay_manifest["experiment_id"],
+        "replay_config_version": replay_manifest["replay_config"]["replay_config_version"],
+        "checkpoint_version": replay_manifest["checkpoint_version"],
+        "policy_version": replay_manifest["champion_challenger_policy"]["policy_version"],
+        "policy_config_fingerprint": replay_manifest["policy_config_fingerprint"],
+        "champion_challenger_policy": replay_manifest["champion_challenger_policy"],
+        "initial_champion": replay_manifest["initial_champion"],
+        "initial_champion_summary": replay_manifest.get("initial_champion_summary", {}),
+        "replay_window": replay_manifest.get("replay_window", {}),
+        "created_at_utc": eval_manifest.get("created_at_utc"),
+        "source_lineage": _redact_paths(replay_manifest.get("source_lineage", {}), repo_path),
+        "test_reuse_exploratory_only": True,
+        "h1_h3_confirmatory_unchanged": True,
+        "source_point_in_time_availability_verified": False,
+        "limitations": eval_manifest.get("limitations", []),
+        "reconciliation": reconciliation,
+        "alert_count_total": reconciliation["total_alerts"],
+        "decision_count_total": reconciliation["total_decisions"],
+        "promotion_count_total": reconciliation["total_promotions"],
+        "csv_data_rows": row_counts,
+        "exported_file_sha256": export_hashes,
+    }
+    identity_path = destination / "policy_source_identity.json"
+    identity_path.write_text(
+        json.dumps(identity, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    checksum_path = destination / "CHECKSUMS.sha256"
+    checksum_targets = [
+        path for path in destination.rglob("*") if path.is_file() and path != checksum_path
+    ]
+    checksum_lines = [
+        f"{_sha256(path)}  {path.relative_to(destination).as_posix()}"
+        for path in sorted(checksum_targets, key=lambda value: value.relative_to(destination).as_posix())
+    ]
+    checksum_path.write_text("\n".join(checksum_lines) + "\n", encoding="utf-8", newline="\n")
+
+    result = dict(identity)
+    if zip_target is not None:
+        result["zip_path"] = str(zip_target)
+        result["zip_sha256"] = _write_deterministic_zip(destination, zip_target)
+    return result
+
+
 def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=("baseline", "policy"), default="baseline")
     parser.add_argument("--source-dir", required=True, type=Path)
     parser.add_argument("--replay-dir", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--zip-output", type=Path, default=None)
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
     arguments = parser.parse_args()
+    if arguments.mode == "policy":
+        identity = export_policy_results_bundle(
+            arguments.source_dir,
+            arguments.replay_dir,
+            arguments.output_dir,
+            repo_root=arguments.repo_root,
+            zip_output_path=arguments.zip_output,
+        )
+        print(
+            "POLICY SOURCE VERIFIED: "
+            f"policy_evaluation_id={identity['policy_evaluation_id']} "
+            f"alerts={identity['alert_count_total']} "
+            f"promotions={identity['promotion_count_total']} "
+            f"files={len(identity['exported_file_sha256'])}"
+        )
+        return
     identity = export_results_bundle(
         arguments.source_dir,
         arguments.replay_dir,

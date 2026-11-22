@@ -1,4 +1,4 @@
-replay_config_version: "1.0.0"
+replay_config_version: "1.1.0"
 market: XNYS
 prediction_mode: HISTORICAL_REPLAY
 forecast_horizon_trading_days: 5
@@ -12,14 +12,55 @@ processing_order:
   - predict
   - save_forecast
   - evaluate
-  - adwin_monitor
   - update_b3
   - checkpoint_commit
-adwin:
-  detector: ADWIN
-  delta: 0.002
-  policy: monitor_only
 checkpoint:
   cadence: every_xnys_session
   atomic_commit: true
   resume_policy: latest_valid_committed_checkpoint_only
+
+champion_challenger_policy:
+  replay_config_version: "2.1.0"
+  policy_version: "1.0.0"
+  policy_name: drift_triggered_champion_challenger
+  activation_split: test
+  activation_start_date: "2025-10-01"
+  candidate_order:
+    - B0
+    - B1
+    - B2
+  challenger_model: B3
+  initial_selection_source: stage04_initial_champion
+  processing_order:
+    - predict
+    - save_forecast
+    - evaluate
+    - policy_adwin_and_decision
+    - update_b3
+    - checkpoint_commit
+  adwin:
+    detector: ADWIN
+    delta: 0.002
+    policy: drift_triggered_champion_challenger
+    reset_on_promotion: true
+    trigger_directions:
+      - error_increase
+      - error_decrease
+      - shift_neutral
+    same_session_multiple_alert_policy: first_alert_triggers_decision_remaining_errors_fed_in_order
+    stale_champion_error_policy: skip_detector_and_pair_audit_only
+  comparison:
+    window_pairs: 60
+    minimum_pairs: 30
+    min_relative_improvement: 0.05
+    zero_champion_mae_policy: invalid_undefined_denominator
+  promotion:
+    snapshot_timing: pre_update_decision_time
+    effective_timing: next_session
+    cooldown_sessions: 20
+    cooldown_applies_to_outcomes:
+      - promoted
+      - retained
+      - insufficient_pairs
+      - invalid
+    cooldown_alert_policy: record_alert_without_decision

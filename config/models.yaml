@@ -43,13 +43,8 @@ online_replay:
     - predict
     - save_forecast
     - evaluate
-    - adwin_monitor
     - update_b3
     - checkpoint
   update_model: B3
   update_policy: mature_labels_only
   duplicate_updates_allowed: false
-  adwin:
-    detector: ADWIN
-    delta: 0.002
-    mode: monitor_only

@@ -8,14 +8,22 @@ import {
 } from "./data/featureDrift.js";
 import type { ModelName } from "./data/schemas.js";
 
+export type MonitoringTab = "feature" | "policy";
+
 export interface FeatureDriftViewSelection {
   ticker: DriftTicker;
   date: string;
   feature: string;
   windowSize: DriftWindowSize;
   metric: DriftMetricName;
-  tab: "feature" | "error";
+  tab: MonitoringTab;
   model: ModelName;
+}
+
+export function monitoringTabFromRoute(value: string | null): MonitoringTab | null {
+  if (value === "policy") return "policy";
+  if (value === "feature" || value === "error") return "feature";
+  return null;
 }
 
 const escapeHtml = (value: unknown): string => String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
@@ -206,13 +214,19 @@ function renderFeaturePanel(
 export function renderMonitoringFeatureDrift(
   drift: FeatureDriftState,
   selection: FeatureDriftViewSelection,
-  errorPanel: string,
+  policyPanel?: string,
 ): string {
-  const tabs = `<div class="st-fd-tabs" role="tablist" aria-label="ชนิดการติดตาม"><button id="monitor-feature-tab" type="button" role="tab" aria-selected="${selection.tab === "feature"}" aria-controls="monitor-feature-panel" tabindex="${selection.tab === "feature" ? "0" : "-1"}" data-action="monitoring-tab" data-tab="feature">Feature Drift</button><button id="monitor-error-tab" type="button" role="tab" aria-selected="${selection.tab === "error"}" aria-controls="monitor-error-panel" tabindex="${selection.tab === "error" ? "0" : "-1"}" data-action="monitoring-tab" data-tab="error">Error Drift · ADWIN</button></div>`;
+  const hasPolicyTab = policyPanel !== undefined;
+  const policyTabButton = hasPolicyTab
+    ? `<button id="monitor-policy-tab" type="button" role="tab" aria-selected="${selection.tab === "policy"}" aria-controls="monitor-policy-panel" tabindex="${selection.tab === "policy" ? "0" : "-1"}" data-action="monitoring-tab" data-tab="policy">Champion–Challenger Policy</button>`
+    : "";
+  const tabs = `<div class="st-fd-tabs" role="tablist" aria-label="ชนิดการติดตาม"><button id="monitor-feature-tab" type="button" role="tab" aria-selected="${selection.tab === "feature"}" aria-controls="monitor-feature-panel" tabindex="${selection.tab === "feature" ? "0" : "-1"}" data-action="monitoring-tab" data-tab="feature">Feature Drift</button>${policyTabButton}</div>`;
   const featureContent = drift.status === "ready" ? renderFeaturePanel(drift, selection)
     : drift.status === "loading" ? `<p>กำลังโหลดผลตรวจ Feature Drift…</p>`
       : `<p class="st-fd-empty">${drift.status === "error" ? `ผลตรวจไม่ผ่านการตรวจสอบ: ${escapeHtml(drift.message)}` : escapeHtml(drift.message)}</p>`;
   const featureTab = `<div role="tabpanel" id="monitor-feature-panel" aria-labelledby="monitor-feature-tab"${selection.tab === "feature" ? "" : " hidden"}>${featureContent}</div>`;
-  const errorTab = `<div role="tabpanel" id="monitor-error-panel" aria-labelledby="monitor-error-tab"${selection.tab === "error" ? "" : " hidden"}>${errorPanel}</div>`;
-  return `<section class="st-card st-fd-monitoring">${tabs}${featureTab}${errorTab}</section>`;
+  const policyTab = hasPolicyTab
+    ? `<div role="tabpanel" id="monitor-policy-panel" aria-labelledby="monitor-policy-tab"${selection.tab === "policy" ? "" : " hidden"}>${policyPanel}</div>`
+    : "";
+  return `<section class="st-card st-fd-monitoring">${tabs}${featureTab}${policyTab}</section>`;
 }

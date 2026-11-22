@@ -1,9 +1,11 @@
 import { filterForecastRows, loadSnapshot, selectRecordedSessions, type SnapshotState } from "./data/loadSnapshot.js";
 import { loadFeatureDrift, type DriftMetricName, type DriftTicker, type DriftWindowSize, type FeatureDriftState } from "./data/featureDrift.js";
+import { loadPolicySnapshot, type PolicySnapshotState } from "./data/policySnapshot.js";
 import { computePortfolioVolatility, portfolioRiskSourceDates, validateScenarioWeights, type PortfolioWeights } from "./data/portfolio.js";
 import { resolveAsOfLabelView, selectSameDateForecasts } from "./data/replay.js";
 import { modelId, type ForecastAuditRow, type ModelName, type Ticker } from "./data/schemas.js";
-import { renderReplayFeatureDriftCard, type FeatureDriftViewSelection } from "./featureDriftView.js";
+import { monitoringTabFromRoute, renderReplayFeatureDriftCard, type FeatureDriftViewSelection, type MonitoringTab } from "./featureDriftView.js";
+import { renderReplayPolicyCard } from "./policyView.js";
 import { renderOtherPage } from "./stitchOther.js";
 import { CANVA_PRESENTATION_URL } from "./config.js";
 
@@ -24,11 +26,12 @@ const pageLabel: Record<Page, string> = {
 interface State {
   snapshot: SnapshotState;
   featureDrift: FeatureDriftState;
+  policySnapshot: PolicySnapshotState;
   page: Page;
   forecast: { split: "test" | "validation"; ticker: Ticker; model: ModelName; status: ForecastStatusFilter; from: string; to: string; asOf: string; reveal: boolean };
   replay: { ticker: Ticker; model: ModelName; date: string; asOf: string; reveal: boolean; view: "monthly" | "daily"; month: string; scale: "five-day" | "annualized" };
   portfolio: { model: ModelName; date: string; weights: PortfolioWeights };
-  monitoring: { ticker: DriftTicker; date: string; feature: string; windowSize: DriftWindowSize; metric: DriftMetricName; tab: "feature" | "error" };
+  monitoring: { ticker: DriftTicker; date: string; feature: string; windowSize: DriftWindowSize; metric: DriftMetricName; tab: MonitoringTab };
 }
 
 function esc(value: unknown): string {
@@ -70,7 +73,8 @@ function applyRouteSelection(state: State): void {
   if (feature && isDriftFeature(feature)) state.monitoring.feature = feature;
   if (windowValue && isDriftWindow(windowValue)) state.monitoring.windowSize = Number(windowValue) as DriftWindowSize;
   if (metric && isDriftMetric(metric)) state.monitoring.metric = metric;
-  if (tab === "feature" || tab === "error") state.monitoring.tab = tab;
+  const monitoringTab = monitoringTabFromRoute(tab);
+  if (monitoringTab) state.monitoring.tab = monitoringTab;
 }
 function selectOptions(values: string[], labels: Record<string, string>, selected: string): string {
   return values.map((value) => "<option value=\"" + esc(value) + "\"" + (value === selected ? " selected" : "") + ">" + esc(labels[value] ?? value) + "</option>").join("");
@@ -225,9 +229,14 @@ function replayPage(snapshot: ReadySnapshot, state: State): string {
     : reveal.actual !== null ? "st-replay-status st-replay-evaluable" : "st-replay-status";
   const visibleForecast = row.predictionDate <= asOf ? row.predictedVolAnnualized : null;
   const datesInMonth = monthSessions.map((item) => item.predictionDate);
-  const drift = snapshot.driftTimeline.filter((item) => item.ticker === state.replay.ticker && item.predictionDate >= (datesInMonth[0] ?? row.predictionDate) && item.predictionDate <= (datesInMonth[datesInMonth.length - 1] ?? row.predictionDate));
-  const driftAlerts = drift.filter((item) => item.driftDetected || item.alertRecordPresent).length;
   const featureDriftCard = renderReplayFeatureDriftCard(state.featureDrift, row.predictionDate, state.replay.ticker, state.replay.model);
+  const policyCard = renderReplayPolicyCard(state.policySnapshot, row.predictionDate, state.replay.ticker);
+  const policyHistoryText = state.policySnapshot.status === "ready"
+    ? (() => {
+        const ops = state.policySnapshot.operationsSummary.find((item) => item.ticker === state.replay.ticker);
+        return ops ? `Policy v${state.policySnapshot.manifest.policyVersion} (${state.replay.ticker}): ${ops.promotionCount} switches · ${ops.alertCount} alerts (Simulated Replay)` : "โหลด Policy sidecar แล้ว";
+      })()
+    : "ยังไม่มีประวัติการสลับรุ่นใน snapshot นี้";
   const tickerButtons = tickers.map((ticker) => "<button class=\"st-replay-ticker" + (ticker === state.replay.ticker ? " st-active" : "") + "\" type=\"button\" data-action=\"replay-ticker\" data-ticker=\"" + ticker + "\" aria-pressed=\"" + (ticker === state.replay.ticker) + "\">" + ticker + "</button>").join("");
   return "<section class=\"st-replay-toolbar\"><div class=\"st-replay-view-toggle\" role=\"group\" aria-label=\"รูปแบบมุมมอง\">"
     + "<button class=\"st-button" + (state.replay.view === "monthly" ? " st-active" : "") + "\" type=\"button\" data-action=\"replay-view\" data-view=\"monthly\" aria-pressed=\"" + (state.replay.view === "monthly") + "\">มุมมองรายเดือน</button>"
@@ -241,12 +250,12 @@ function replayPage(snapshot: ReadySnapshot, state: State): string {
     + "<label class=\"st-field st-replay-asof-field\">ดูข้อมูล ณ วันที่<input type=\"date\" data-field=\"replay-as-of\" min=\"" + esc(sessions[0]!.predictionDate) + "\" value=\"" + esc(asOf) + "\"></label>"
     + "<button class=\"st-button st-button-quiet\" type=\"button\" data-action=\"replay-asof-target\">ถึงสิ้นสุด Target</button><button class=\"st-button st-button-primary\" type=\"button\" data-action=\"replay-toggle-reveal\" aria-pressed=\"" + state.replay.reveal + "\">" + (state.replay.reveal ? "ซ่อน Actual" : "เปิดเผย Actual") + "</button></section>" : "")
     + "<div class=\"st-replay-layout\"><section class=\"st-card st-replay-chart-panel\"><div class=\"st-replay-chart-heading\"><div><h2>ความผันผวน " + (state.replay.scale === "five-day" ? "5 วันข้างหน้า" : "รายปี") + " · " + esc(monthLabel(activeMonth)) + " (" + state.replay.ticker + ")</h2><p>Prediction " + esc(datesInMonth[0] ?? row.predictionDate) + " – " + esc(datesInMonth[datesInMonth.length - 1] ?? row.predictionDate) + " · โมเดล " + esc(modelId(state.replay.model)) + "</p></div><span>เส้นทึบ = Forecast · เส้นประ = Actual</span></div>" + replayChart(chartPoints, row.predictionDate)
-    + "<div class=\"st-replay-history\"><strong>ประวัติการสลับรุ่น</strong><span>ยังไม่มีประวัติการสลับรุ่นใน snapshot นี้</span></div></section>"
+    + "<div class=\"st-replay-history\"><strong>ประวัติการสลับรุ่น</strong><span>" + esc(policyHistoryText) + "</span></div></section>"
     + "<aside class=\"st-replay-sidebar\"><section class=\"st-card st-replay-inspector\"><div class=\"st-replay-heading\"><div><span>วันที่เลือก (" + state.replay.ticker + ")</span><h2>" + esc(row.predictionDate) + "</h2></div><span class=\"" + replayStatus + "\">" + esc(reveal.text) + "</span></div>"
     + "<div class=\"st-replay-target\"><span>ช่วงเป้าหมาย t+1…t+5</span><strong>" + esc(row.targetStartDate) + " – " + esc(row.targetEndDate) + "</strong></div>"
     + "<div class=\"st-replay-metrics\"><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Forecast</span><strong class=\"st-replay-metric-value\">" + replayRisk(visibleForecast, state.replay.scale) + "</strong></div><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Actual</span><strong class=\"st-replay-metric-value\">" + replayRisk(reveal.actual, state.replay.scale) + "</strong></div><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Abs Error</span><strong class=\"st-replay-metric-value\">" + replayRisk(reveal.error, state.replay.scale) + "</strong></div></div>"
     + "<div class=\"st-source-meta\"><span>Forecast ที่บันทึก: <strong>" + esc(modelId(state.replay.model)) + " " + esc(state.replay.model.replaceAll("_", " ")) + "</strong></span><span>สถานะ source: " + esc(row.forecastStatus) + " / " + esc(row.labelStatus) + " / " + esc(row.evaluationStatus) + "</span><span>Prediction ID <code>" + esc(row.predictionId) + "</code></span></div><p class=\"st-source-note\">" + (row.evaluationStatus === "PENDING_LABEL" ? "แถวนี้ยัง Pending จากต้นทาง จึงไม่มี Actual หรือ error ให้เปิดเผย" : "Actual แสดงจาก evaluation row ที่ตรงกับ prediction ID เมื่อ target ครบและกดเปิดเผย") + "</p></section></aside></div>"
-    + "<div class=\"st-replay-lower-grid\">" + featureDriftCard + "<section class=\"st-card\"><div class=\"st-section-heading\"><h2>Error Drift · ADWIN</h2><span>" + driftAlerts + " เหตุการณ์</span></div><p>พบ " + driftAlerts + " alerts ในช่วง " + esc(monthLabel(activeMonth)) + " · " + drift.length.toLocaleString() + " observations จาก snapshot</p></section><section class=\"st-card\"><div class=\"st-section-heading\"><h2>Online Update · " + modelId(state.replay.model) + "</h2><span>ไม่มีข้อมูลใน snapshot</span></div><p>ไม่มีบันทึก Online Update รายวันในชุดข้อมูลนี้</p></section></div>"
+    + "<div class=\"st-replay-lower-grid\">" + policyCard + featureDriftCard + "<section class=\"st-card\"><div class=\"st-section-heading\"><h2>Shadow B3 · Online Update</h2><span>อัปเดตเมื่อ label ครบกำหนด</span></div><p>โมเดลท้าชิง B3 รับ label ที่ครบ 5 วันหลังบันทึก forecast · เปรียบเทียบกับ Champion ใน Champion–Challenger Policy</p></section></div>"
     + "<details class=\"st-source-details\"><summary>เปรียบเทียบทุกโมเดลในวันเดียวกัน</summary><div class=\"st-table-wrap\"><table class=\"st-table\"><thead><tr><th>โมเดล</th><th>Forecast</th><th>Actual</th><th>Abs Error</th><th>สถานะ</th></tr></thead><tbody>" + comparisons + "</tbody></table></div></details>"
     + "<p class=\"st-source-note\">Replay เป็นการจำลองย้อนหลังจากข้อมูลที่บันทึกไว้ · Actual จะแสดงเมื่อถึง target end และกดเปิดเผย · แถว Pending จะคงซ่อน Actual เสมอ</p>";
 }
@@ -287,6 +296,10 @@ function monitoringSelection(state: State): FeatureDriftViewSelection {
     const dates = state.featureDrift.metrics.filter((row) => row.ticker === state.monitoring.ticker).map((row) => row.asOfDate).sort();
     date = dates[dates.length - 1] ?? "";
   }
+  if (!date && state.policySnapshot.status === "ready") {
+    const dates = state.policySnapshot.forecasts.filter((row) => row.ticker === state.monitoring.ticker).map((row) => row.predictionDate).sort();
+    date = dates[dates.length - 1] ?? "";
+  }
   return {
     ticker: state.monitoring.ticker,
     date,
@@ -315,7 +328,7 @@ function otherPage(snapshot: ReadySnapshot, page: Page, state: State): string {
   switch (page) {
     case "overview": return renderOtherPage(snapshot, "overview");
     case "models": return renderOtherPage(snapshot, "models");
-    case "monitoring": return renderOtherPage(snapshot, "monitoring", state.featureDrift, monitoringSelection(state));
+    case "monitoring": return renderOtherPage(snapshot, "monitoring", state.featureDrift, monitoringSelection(state), state.policySnapshot);
     case "evidence": return renderOtherPage(snapshot, "evidence");
     default: return "";
   }
@@ -372,7 +385,7 @@ function pageWeight(state: State, index: number, value: number): void {
 }
 export function startStitch(root: HTMLElement): void {
   const state: State = {
-    snapshot: { status: "loading" }, featureDrift: { status: "loading" }, page: currentPage(),
+    snapshot: { status: "loading" }, featureDrift: { status: "loading" }, policySnapshot: { status: "loading" }, page: currentPage(),
     forecast: { split: "test", ticker: "SPY", model: "ONLINE_SGD", status: "all", from: "", to: "", asOf: "", reveal: false },
     replay: { ticker: "SPY", model: "ONLINE_SGD", date: "", asOf: "", reveal: false, view: "daily", month: "", scale: "five-day" },
     portfolio: { model: "ONLINE_SGD", date: "", weights: [0.5, 0.3, 0.2] },
@@ -390,11 +403,13 @@ export function startStitch(root: HTMLElement): void {
   const refreshSources = () => {
     state.snapshot = { status: "loading" };
     state.featureDrift = { status: "loading" };
+    state.policySnapshot = { status: "loading" };
     render(root, state);
     void loadSnapshot().then((snapshot) => {
       state.snapshot = snapshot;
       if (snapshot.status !== "ready") {
         state.featureDrift = { status: "missing", message: "โหลดข้อมูล Feature Drift ไม่ได้เมื่อ Stage 06 snapshot ยังไม่พร้อม" };
+        state.policySnapshot = { status: "missing", message: "โหลดข้อมูล Champion–Challenger Policy ไม่ได้เมื่อ Stage 06 snapshot ยังไม่พร้อม" };
         render(root, state);
         return;
       }
@@ -404,6 +419,7 @@ export function startStitch(root: HTMLElement): void {
         replayId: snapshot.manifest.replayId,
         strictCutoff: snapshot.manifest.strictCutoff,
       }).then((featureDrift) => { state.featureDrift = featureDrift; render(root, state); });
+      void loadPolicySnapshot().then((policySnapshot) => { state.policySnapshot = policySnapshot; render(root, state); });
     });
   };
   root.addEventListener("click", (event) => {
@@ -414,7 +430,7 @@ export function startStitch(root: HTMLElement): void {
     }
     if (!target || state.snapshot.status !== "ready") return;
     const action = target.dataset.action;
-    if (action === "monitoring-tab" && (target.dataset.tab === "feature" || target.dataset.tab === "error")) {
+    if (action === "monitoring-tab" && (target.dataset.tab === "feature" || target.dataset.tab === "policy")) {
       state.monitoring.tab = target.dataset.tab;
     } else if (action === "monitoring-date-point" && target.dataset.date) {
       state.monitoring.date = target.dataset.date;
@@ -494,6 +510,13 @@ export function startStitch(root: HTMLElement): void {
             state.replay.date = state.monitoring.date;
             state.replay.month = monthKey(state.monitoring.date);
           }
+        } else if (state.policySnapshot.status === "ready") {
+          const dates = state.policySnapshot.forecasts.filter((row) => row.ticker === target.value).map((row) => row.predictionDate).sort();
+          if (!dates.includes(state.monitoring.date)) state.monitoring.date = dates[dates.length - 1] ?? "";
+          if (state.monitoring.date) {
+            state.replay.date = state.monitoring.date;
+            state.replay.month = monthKey(state.monitoring.date);
+          }
         }
       }
       else if (field === "monitoring-date") {
@@ -547,7 +570,15 @@ export function startStitch(root: HTMLElement): void {
     if (target?.dataset.action !== "monitoring-tab" || state.snapshot.status !== "ready") return;
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    state.monitoring.tab = event.key === "Home" ? "feature" : event.key === "End" ? "error" : target.dataset.tab === "feature" ? "error" : "feature";
+    const tabOrder: Array<State["monitoring"]["tab"]> = ["feature", "policy"];
+    const currentIdx = Math.max(tabOrder.indexOf(state.monitoring.tab), 0);
+    state.monitoring.tab = event.key === "Home"
+      ? "feature"
+      : event.key === "End"
+        ? "policy"
+        : event.key === "ArrowRight"
+          ? tabOrder[(currentIdx + 1) % tabOrder.length]!
+          : tabOrder[(currentIdx + tabOrder.length - 1) % tabOrder.length]!;
     updateMonitoringUrl(state);
     render(root, state);
     root.querySelector<HTMLElement>(`[data-action="monitoring-tab"][data-tab="${state.monitoring.tab}"]`)?.focus();
