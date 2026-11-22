@@ -278,7 +278,7 @@ def _verify_replay_artifacts(replay_dir: Path, config: EvaluationConfig) -> tupl
     if predictions.empty:
         raise EvaluationError("Final Replay contains no predictions")
     if set(predictions["model_name"].astype(str)) != set(config.model_names):
-        raise EvaluationError("Final Replay must contain the complete locked B0-B3 model suite")
+        raise EvaluationError("Final Replay must contain the complete locked B0-B4 model suite")
     if set(predictions["ticker"].astype(str)) != set(config.tickers):
         raise EvaluationError("Final Replay must contain all three approved ETFs")
     if not predictions["prediction_mode"].eq("HISTORICAL_REPLAY").all():
@@ -747,29 +747,29 @@ def _build_reference_b0_b3_metrics(audit: pd.DataFrame, config: EvaluationConfig
 
 def _paired_error_differences(
     evaluations: pd.DataFrame,
-    baseline_name: str,
-    online_name: str = "ONLINE_SGD",
+    comparator_name: str,
+    comparison_name: str = "ONLINE_SGD",
 ) -> pd.DataFrame:
-    baseline = evaluations.loc[evaluations["model_name"] == baseline_name, [
+    comparator = evaluations.loc[evaluations["model_name"] == comparator_name, [
         "prediction_date", "ticker", "target_realized_vol_5d", "absolute_error"
-    ]].rename(columns={"absolute_error": "baseline_absolute_error", "target_realized_vol_5d": "baseline_target"})
-    online = evaluations.loc[evaluations["model_name"] == online_name, [
+    ]].rename(columns={"absolute_error": "comparator_absolute_error", "target_realized_vol_5d": "comparator_target"})
+    comparison = evaluations.loc[evaluations["model_name"] == comparison_name, [
         "prediction_date", "ticker", "target_realized_vol_5d", "absolute_error"
-    ]].rename(columns={"absolute_error": "online_absolute_error", "target_realized_vol_5d": "online_target"})
-    paired = baseline.merge(
-        online,
+    ]].rename(columns={"absolute_error": "comparison_absolute_error", "target_realized_vol_5d": "comparison_target"})
+    paired = comparator.merge(
+        comparison,
         on=["prediction_date", "ticker"],
         how="inner",
         validate="one_to_one",
     )
     if not np.allclose(
-        paired["baseline_target"].to_numpy(dtype=float),
-        paired["online_target"].to_numpy(dtype=float),
+        paired["comparator_target"].to_numpy(dtype=float),
+        paired["comparison_target"].to_numpy(dtype=float),
         atol=1e-12,
         rtol=0.0,
     ):
         raise EvaluationError("paired model rows do not share the same realized target")
-    paired["difference"] = paired["baseline_absolute_error"] - paired["online_absolute_error"]
+    paired["difference"] = paired["comparator_absolute_error"] - paired["comparison_absolute_error"]
     return paired.loc[:, ["prediction_date", "ticker", "difference"]].sort_values(
         ["prediction_date", "ticker"], kind="stable"
     ).reset_index(drop=True)
@@ -886,7 +886,7 @@ def _build_b4_comparisons(audit: pd.DataFrame, config: EvaluationConfig) -> pd.D
     )
     rows: list[dict[str, Any]] = []
     for comparison_id, comparator in specs:
-        differences = _paired_error_differences(test_evaluable, comparator, online_name=b4_name)
+        differences = _paired_error_differences(test_evaluable, comparator, comparison_name=b4_name)
         pair_source = test_evaluable.loc[test_evaluable["model_name"].isin((comparator, b4_name))]
         pair = pair_source.pivot(
             index=["prediction_date", "ticker"],
@@ -1699,6 +1699,9 @@ def run_final_evaluation(
             failures,
             cutoff=effective_config.data_cutoff,
             model_names=effective_config.model_names,
+            validation_start_date=effective_config.validation_start_date,
+            test_end_date=effective_config.test_end_date,
+            tickers=effective_config.tickers,
         )
         _validate_joined_windows(audit)
         if audit.empty or not audit["split"].isin(("validation", "test")).all():

@@ -18,6 +18,7 @@ MODEL_NAMES = (
     "ONLINE_SGD",
     "HAR_X_OLS",
 )
+EVALUATION_CONFIG_VERSION = "1.1.0"
 
 
 class EvaluationError(ValueError):
@@ -26,7 +27,7 @@ class EvaluationError(ValueError):
 
 @dataclass(frozen=True)
 class EvaluationConfig:
-    evaluation_config_version: str = "1.1.0"
+    evaluation_config_version: str = EVALUATION_CONFIG_VERSION
     market: str = "XNYS"
     data_cutoff: date = date(2026, 9, 25)
     test_start_date: date = date(2025, 10, 1)
@@ -79,7 +80,7 @@ class EvaluationConfig:
             expected.test_start_date,
             expected.test_end_date,
         )
-        if self.evaluation_config_version != "1.1.0":
+        if self.evaluation_config_version != EVALUATION_CONFIG_VERSION:
             raise EvaluationError("unsupported evaluation_config_version")
         if self.market != "XNYS" or locked_dates != expected_dates:
             raise EvaluationError("market, split dates, and data cutoff are locked by the approved contract")

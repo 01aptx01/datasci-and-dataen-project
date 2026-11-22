@@ -22,6 +22,11 @@ sgd:
   scaler: RobustScaler
   scaler_fit_scope: train_only_per_etf
 
+b4:
+  estimator: LinearRegression
+  fit_intercept: true
+  ill_conditioned_threshold: 100000000.0
+
 search_grid:
   eta0: [0.0001, 0.001, 0.01]
   alpha: [0.00001, 0.0001, 0.001]

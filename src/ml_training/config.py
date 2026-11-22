@@ -49,6 +49,9 @@ class TrainingConfig:
     eta0_values: tuple[float, ...] = (0.0001, 0.001, 0.01)
     alpha_values: tuple[float, ...] = (1e-5, 1e-4, 1e-3)
     initial_max_iter_values: tuple[int, ...] = (20, 50, 100)
+    b4_estimator: str = "LinearRegression"
+    b4_fit_intercept: bool = True
+    b4_ill_conditioned_threshold: float = 1e8
     loss: str = "squared_error"
     penalty: str = "l2"
     learning_rate: str = "constant"
@@ -71,6 +74,8 @@ class TrainingConfig:
     def __post_init__(self) -> None:
         if self.training_config_version not in SUPPORTED_TRAINING_CONFIG_VERSIONS:
             raise TrainingError("unsupported training_config_version")
+        if not isinstance(self.b4_fit_intercept, bool):
+            raise TrainingError("b4_fit_intercept must be a boolean")
         if tuple(self.core_features) != tuple(CORE_FEATURE_COLUMNS):
             raise TrainingError("core_features must match the locked eight-feature order")
         if tuple(self.eta0_values) != (0.0001, 0.001, 0.01):
@@ -96,6 +101,9 @@ class TrainingConfig:
             "label_maturity_rule": (
                 "is_label_mature and target_obs_count == 5 and target_end_date <= replay_date"
             ),
+            "b4_ill_conditioned_threshold": 1e8,
+            "b4_estimator": "LinearRegression",
+            "b4_fit_intercept": True,
         }
         for name, expected in locked.items():
             if getattr(self, name) != expected:
@@ -129,6 +137,7 @@ class TrainingConfig:
             raise TrainingError("ML Training config must be a YAML mapping")
         try:
             sgd = raw["sgd"]
+            b4 = raw.get("b4", {})
             search = raw["search_grid"]
             selection = raw["selection"]
             replay = raw["replay"]
@@ -152,6 +161,11 @@ class TrainingConfig:
                 eta0_values=tuple(float(value) for value in search["eta0"]),
                 alpha_values=tuple(float(value) for value in search["alpha"]),
                 initial_max_iter_values=tuple(int(value) for value in search["initial_max_iter"]),
+                b4_estimator=str(b4.get("estimator", "LinearRegression")),
+                b4_fit_intercept=b4.get("fit_intercept", True),
+                b4_ill_conditioned_threshold=float(
+                    b4.get("ill_conditioned_threshold", 1e8)
+                ),
                 loss=sgd["loss"],
                 penalty=sgd["penalty"],
                 learning_rate=sgd["learning_rate"],
@@ -189,6 +203,11 @@ class TrainingConfig:
                 "early_stopping": self.early_stopping,
                 "scaler": self.scaler,
                 "scaler_fit_scope": self.scaler_fit_scope,
+            },
+            "b4": {
+                "estimator": self.b4_estimator,
+                "fit_intercept": self.b4_fit_intercept,
+                "ill_conditioned_threshold": self.b4_ill_conditioned_threshold,
             },
             "search_grid": {
                 "eta0": list(self.eta0_values),

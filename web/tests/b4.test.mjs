@@ -62,6 +62,14 @@ test("parseB4ComparisonRow validates retrospective B4 comparison schema", () => 
     direction_definition: "comparator_mae_minus_b4_mae (positive means HAR_X_OLS lower error)",
     evaluation_scope: "retrospective_test_non_hypothesis", pairing_policy: "equal ETF weight over per-ETF paired anchors",
   }), /DeltaMAE does not match/);
+  assert.throws(() => parseB4ComparisonRow({
+    comparison_id: "B4_VS_B2", b4_model: "HAR_X_OLS", comparator_model: "STATIC_SGD", split: "test",
+    ticker: "MACRO", paired_n: "729", expected_eligible_anchor_count: "744", paired_coverage: "0.9798387096774194",
+    b4_mae: "0", comparator_mae: "0", delta_mae_comparator_minus_b4: "0",
+    relative_improvement_pct: "0", b4_rmse: "", comparator_rmse: "", common_all_five_n: "729", common_b0_b3_n: "729",
+    direction_definition: "comparator_mae_minus_b4_mae (positive means HAR_X_OLS lower error)",
+    evaluation_scope: "retrospective_test_non_hypothesis", pairing_policy: "equal ETF weight over per-ETF paired anchors",
+  }), /relative improvement is undefined/);
 });
 
 test("B4 1.1.0 snapshot loads all 5 models, pending rows, and B4 comparisons", async () => {

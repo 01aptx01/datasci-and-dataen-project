@@ -1046,6 +1046,7 @@ export function parseB4ComparisonRow(record: Record<string, string>): B4Comparis
   if (row.pairedN === 0 || row.expectedEligibleAnchorCount === 0 || row.pairedN > row.expectedEligibleAnchorCount) throw new Error("B4 comparison counts are inconsistent");
   if (Math.abs(row.pairedCoverage - row.pairedN / row.expectedEligibleAnchorCount) > 1e-12) throw new Error("B4 comparison coverage does not match paired counts");
   if (Math.abs(row.deltaMaeComparatorMinusB4 - (row.comparatorMae - row.b4Mae)) > 1e-12) throw new Error("B4 comparison DeltaMAE does not match model MAEs");
+  if (row.comparatorMae === 0) throw new Error("B4 comparison relative improvement is undefined when comparator MAE is zero");
   const expectedRelativeImprovement = (row.deltaMaeComparatorMinusB4 / row.comparatorMae) * 100;
   if (Math.abs(row.relativeImprovementPct - expectedRelativeImprovement) > 1e-9) throw new Error("B4 comparison relative improvement does not match model MAEs");
   if ((ticker === "MACRO") !== (row.b4Rmse === null && row.comparatorRmse === null)) throw new Error("Macro B4 RMSE must remain blank while ETF RMSE must be present");

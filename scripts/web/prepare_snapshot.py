@@ -463,7 +463,7 @@ def validate_b4_comparisons(
         "B4_VS_B1": "ROLLING_20D_BASELINE",
     }
     expected_scopes = {(comparison_id, ticker) for comparison_id in comparator_by_id for ticker in (*tickers, "MACRO")}
-    row_by_scope: dict[tuple[str, str], dict[str, str]] = {}
+    row_by_scope: dict[tuple[str, str], tuple[int, dict[str, str]]] = {}
     for row_number, row in enumerate(comparison_rows, start=2):
         scope = (row["comparison_id"], row["ticker"])
         if scope not in expected_scopes or scope in row_by_scope:
@@ -479,7 +479,7 @@ def validate_b4_comparisons(
             or row["pairing_policy"] != expected_pairing
         ):
             raise SnapshotError(f"B4 comparison identity or semantics are inconsistent on row {row_number}")
-        row_by_scope[scope] = row
+        row_by_scope[scope] = (row_number, row)
     if set(row_by_scope) != expected_scopes:
         raise SnapshotError("b4_comparisons.csv does not contain the complete comparison scope")
 
@@ -537,8 +537,7 @@ def validate_b4_comparisons(
         }
         summaries["MACRO"] = macro
         for ticker, summary in summaries.items():
-            row_number = 2 + next(index for index, row in enumerate(comparison_rows) if row is row_by_scope[(comparison_id, ticker)])
-            row = row_by_scope[(comparison_id, ticker)]
+            row_number, row = row_by_scope[(comparison_id, ticker)]
             paired_n = int(row["paired_n"])
             expected_n = int(row["expected_eligible_anchor_count"])
             if paired_n != int(summary["paired_n"]) or expected_n != int(summary["expected_n"]):

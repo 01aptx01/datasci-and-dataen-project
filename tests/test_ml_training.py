@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -168,8 +169,23 @@ def test_training_config_locks_grid_and_deterministic_selection_rules() -> None:
     assert {item.alpha for item in config.grid} == {1e-5, 1e-4, 1e-3}
     assert {item.max_iter for item in config.grid} == {20, 50, 100}
     assert config.coverage_policy == "all_expected_paired_anchors_required"
+    assert config.b4_estimator == "LinearRegression"
+    assert config.b4_fit_intercept is True
+    assert config.b4_ill_conditioned_threshold == 1e8
     assert config.tie_break_policy == "grid_order_with_absolute_tolerance"
     assert config.tie_tolerance == 1e-12
+
+
+def test_b4_fit_intercept_config_requires_a_boolean(tmp_path: Path) -> None:
+    config_text = Path("config/ml_training.yaml").read_text(encoding="utf-8")
+    invalid_path = tmp_path / "invalid_b4_config.yaml"
+    invalid_path.write_text(
+        config_text.replace("fit_intercept: true", 'fit_intercept: "false"', 1),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TrainingError, match="b4_fit_intercept must be a boolean"):
+        TrainingConfig.from_yaml(invalid_path)
 
 
 def test_training_config_accepts_legacy_version_but_requires_current_version_for_b4(
@@ -186,7 +202,20 @@ def test_training_config_accepts_legacy_version_but_requires_current_version_for
     assert legacy_config.training_config_version == "1.0.0"
     prepared, labels = _synthetic_prepared_b4()
     with pytest.raises(TrainingError, match="1.0.0 predates B4"):
+        fit_b4_ols(prepared, "SPY", legacy_config)
+    with pytest.raises(TrainingError, match="1.0.0 predates B4"):
         run_training_selection(prepared, labels, config=legacy_config, include_b4=True)
+
+    current_config = TrainingConfig.from_yaml()
+    artifact = fit_b4_ols(prepared, "SPY", current_config)
+    legacy_evaluation_config = replace(current_config, training_config_version="1.0.0")
+    summary, _ = evaluate_b4_validation(
+        prepared,
+        "SPY",
+        artifact,
+        legacy_evaluation_config,
+    )
+    assert summary["valid_count"] == summary["expected_anchor_count"]
 
 
 def test_b0_uses_frozen_train_mean_and_b1_reads_same_day_rv20() -> None:

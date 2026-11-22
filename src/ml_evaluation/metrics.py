@@ -9,6 +9,7 @@ import pandas as pd
 
 from src.ml_evaluation.config import MODEL_NAMES, EvaluationError
 from src.ml_dataset.dataset import DatasetConfig
+from src.features.pipeline import SUPPORTED_TICKERS
 
 
 def _as_date(value: object, field: str) -> date:
@@ -52,6 +53,9 @@ def build_forecast_audit(
     *,
     cutoff: date,
     model_names: Sequence[str] = MODEL_NAMES,
+    validation_start_date: date | None = None,
+    test_end_date: date | None = None,
+    tickers: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """Join eligible anchors to immutable forecasts and cutoff-aware labels."""
     required_expected = {"prediction_date", "ticker", "split"}
@@ -84,17 +88,26 @@ def build_forecast_audit(
         if not required.issubset(frame.columns):
             raise EvaluationError(f"{label} missing columns: {sorted(required - set(frame.columns))}")
 
-    dataset = DatasetConfig()
+    if validation_start_date is None or test_end_date is None:
+        dataset_config = DatasetConfig()
+        validation_start_date = (
+            dataset_config.validation_start_date
+            if validation_start_date is None
+            else validation_start_date
+        )
+        test_end_date = dataset_config.test_end_date if test_end_date is None else test_end_date
+    allowed_tickers = SUPPORTED_TICKERS if tickers is None else tickers
+
     expected = expected_anchors.loc[:, ["prediction_date", "ticker", "split"]].copy()
     expected["prediction_date"] = expected["prediction_date"].map(lambda value: _as_date(value, "expected date"))
     expected["ticker"] = expected["ticker"].astype(str)
     expected = expected.loc[
         expected["split"].isin(("validation", "test"))
-        & expected["prediction_date"].between(dataset.validation_start_date, dataset.test_end_date)
+        & expected["prediction_date"].between(validation_start_date, test_end_date)
     ].copy()
     if expected.duplicated(["prediction_date", "ticker", "split"]).any():
         raise EvaluationError("expected anchors must be unique by date, ticker, and split")
-    if not set(expected["ticker"]).issubset(dataset.tickers if hasattr(dataset, "tickers") else ("SPY", "IEF", "GLD")):
+    if not set(expected["ticker"]).issubset(allowed_tickers):
         raise EvaluationError("expected anchors contain an unsupported ticker")
 
     label_frame = labels.loc[:, sorted(required_labels)].copy()
@@ -119,7 +132,7 @@ def build_forecast_audit(
     ).any():
         raise EvaluationError("predictions must be unique by prediction ID and date/ticker/model")
     if set(prediction_frame["model_name"]) - set(model_names):
-        raise EvaluationError("predictions include a model outside the locked B0-B3 suite")
+        raise EvaluationError("predictions include a model outside the configured model suite")
     prediction_frame["target_start_date"] = prediction_frame["target_start_date"].map(
         lambda value: None if pd.isna(value) else _as_date(value, "prediction target start")
     )
@@ -142,7 +155,7 @@ def build_forecast_audit(
         if failure_frame.duplicated(["prediction_date", "ticker", "model_name"]).any():
             raise EvaluationError("forecast failures must be unique by date, ticker, and model")
         if set(failure_frame["model_name"]) - set(model_names):
-            raise EvaluationError("forecast failures include a model outside the locked B0-B3 suite")
+            raise EvaluationError("forecast failures include a model outside the configured model suite")
 
     expected["_join"] = 1
     model_frame = pd.DataFrame({"model_name": tuple(model_names), "_join": 1})

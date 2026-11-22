@@ -26,7 +26,6 @@ from src.features.pipeline import CORE_FEATURE_COLUMNS, SUPPORTED_TICKERS
 B4_MODEL_ID = "B4"
 B4_MODEL_NAME = "HAR_X_OLS"
 B4_MODEL_VERSION = "b4_ols_v1.0.0"
-B4_ILL_CONDITIONED_THRESHOLD = 1e8
 from src.ml_dataset.dataset import PreparedDataset
 from src.ml_training.config import (
     LEGACY_TRAINING_CONFIG_VERSION,
@@ -85,6 +84,14 @@ def _market_date(value: Any, name: str) -> date:
     if pd.isna(stamp):
         raise TrainingError(f"{name} must be a valid market date")
     return stamp.date()
+
+
+def _require_b4_training_config(config: TrainingConfig) -> None:
+    if config.training_config_version == LEGACY_TRAINING_CONFIG_VERSION:
+        raise TrainingError(
+            f"training_config_version {LEGACY_TRAINING_CONFIG_VERSION} predates B4; "
+            "use version 1.1.0 to train B4"
+        )
 
 
 def _boolean_values(values: pd.Series) -> pd.Series:
@@ -655,6 +662,7 @@ def fit_b4_ols(
 ) -> dict[str, Any]:
     """Fit frozen B4 HAR-X OLS with intercept on the exact B2 Train sample and RobustScaler."""
     effective_config = config or TrainingConfig.from_yaml()
+    _require_b4_training_config(effective_config)
     if ticker not in SUPPORTED_TICKERS:
         raise TrainingError(f"unsupported ETF: {ticker}")
     train_X, train_y, _, _ = _training_rows(prepared, ticker, effective_config)
@@ -693,12 +701,13 @@ def fit_b4_ols(
     singular_values = np.linalg.svd(design, compute_uv=False)
     cond = float(singular_values[0] / singular_values[-1]) if singular_values[-1] > 0 else float("inf")
     warnings: list[str] = []
-    if not math.isfinite(cond) or cond > B4_ILL_CONDITIONED_THRESHOLD:
+    threshold = effective_config.b4_ill_conditioned_threshold
+    if not math.isfinite(cond) or cond > threshold:
         warnings.append(
-            f"design_matrix_ill_conditioned:cond={cond:.6e}>threshold={B4_ILL_CONDITIONED_THRESHOLD:.1e}"
+            f"design_matrix_ill_conditioned:cond={cond:.6e}>threshold={threshold:.1e}"
         )
 
-    model = LinearRegression(fit_intercept=True)
+    model = LinearRegression(fit_intercept=effective_config.b4_fit_intercept)
     model.fit(scaled_train, y_arr)
     if (
         not np.isfinite(model.intercept_)
@@ -1063,13 +1072,8 @@ def run_training_selection(
 ) -> TrainingSelectionResult:
     """Run the locked 81-candidate Validation search and save clean initial model pairs."""
     effective_config = config or TrainingConfig.from_yaml()
-    if (
-        include_b4
-        and effective_config.training_config_version == LEGACY_TRAINING_CONFIG_VERSION
-    ):
-        raise TrainingError(
-            "training_config_version 1.0.0 predates B4; use version 1.1.0 to train B4"
-        )
+    if include_b4:
+        _require_b4_training_config(effective_config)
     if len(effective_config.grid) != 27:
         raise TrainingError("Stage 04 must evaluate exactly 27 candidates per ETF")
     runs: list[CandidateRun] = []
