@@ -4,3 +4,4 @@ public/snapshots/
 coverage/
 playwright-report/
 test-results/
+.playwright-cli/

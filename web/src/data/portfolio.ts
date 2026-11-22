@@ -1,8 +1,33 @@
-export type CovarianceMatrix3 = [[number, number, number], [number, number, number], [number, number, number]];
+import type { ModelName, PortfolioRiskRow } from "./schemas.js";
+
 export type PortfolioWeights = [number, number, number];
 
 const tolerance = 1e-10;
 const weightSumTolerance = 1e-8;
+const weightValidationTolerance = 1e-8;
+
+type ScenarioWeightsValidation =
+  | { status: "valid"; weights: PortfolioWeights }
+  | { status: "invalid"; message: string };
+
+export function validateScenarioWeights(value: unknown): ScenarioWeightsValidation {
+  if (!Array.isArray(value) || value.length !== 3 || value.some((weight) => typeof weight !== "number" || !Number.isFinite(weight))) {
+    return { status: "invalid", message: "น้ำหนักต้องมีตัวเลขจำกัดสามค่า" };
+  }
+  const weights: PortfolioWeights = [value[0], value[1], value[2]];
+  if (weights.some((weight) => weight < 0 || weight > 1)) return { status: "invalid", message: "น้ำหนักแต่ละสินทรัพย์ต้องอยู่ระหว่าง 0 ถึง 1" };
+  if (Math.abs(weights.reduce((sum, weight) => sum + weight, 0) - 1) > weightValidationTolerance) {
+    return { status: "invalid", message: "น้ำหนักรวมต้องเท่ากับ 100%" };
+  }
+  return { status: "valid", weights };
+}
+
+export function portfolioRiskSourceDates(rows: PortfolioRiskRow[], modelName: ModelName): string[] {
+  return [...new Set(rows
+    .filter((row) => row.split === "test" && row.modelName === modelName)
+    .map((row) => row.predictionDate))]
+    .sort((left, right) => left.localeCompare(right));
+}
 
 export function minimumEigenvalueSymmetric3(matrix: number[][]): number {
   if (matrix.length !== 3 || matrix.some((row) => row.length !== 3)) throw new Error("Matrix must be 3 by 3");
@@ -59,30 +84,4 @@ export function computePortfolioVolatility(covariance: number[][], weights: numb
   const variance = weights.reduce((outer, weight, row) => outer + weight * weights.reduce((inner, other, column) => inner + other * covariance[row][column], 0), 0);
   if (!Number.isFinite(variance) || variance < -psdTolerance) throw new Error("Portfolio variance is invalid for the selected weights");
   return Math.sqrt(Math.max(0, variance));
-}
-
-export function correlationFromCovariance(covariance: number[][], first: number, second: number): number | null {
-  if (first === second || covariance.length !== 3 || covariance.some((row) => row.length !== 3)) return null;
-  const varianceFirst = covariance[first]?.[first];
-  const varianceSecond = covariance[second]?.[second];
-  const covariancePair = covariance[first]?.[second];
-  if (![varianceFirst, varianceSecond, covariancePair].every((value) => typeof value === "number" && Number.isFinite(value)) || varianceFirst! <= 0 || varianceSecond! <= 0) return null;
-  const result = covariancePair! / Math.sqrt(varianceFirst! * varianceSecond!);
-  return Number.isFinite(result) ? result : null;
-}
-
-export interface PortfolioRiskContributions {
-  volatility: number;
-  absoluteContributions: [number, number, number] | null;
-  relativeContributions: [number, number, number] | null;
-}
-
-export function computePortfolioRiskContributions(covariance: number[][], weights: number[]): PortfolioRiskContributions {
-  const volatility = computePortfolioVolatility(covariance, weights);
-  if (volatility === 0) return { volatility, absoluteContributions: null, relativeContributions: null };
-
-  const marginalContributions = covariance.map((row) => row.reduce((sum, value, index) => sum + value * weights[index], 0));
-  const absoluteContributions = weights.map((weight, index) => weight * marginalContributions[index] / volatility) as [number, number, number];
-  const relativeContributions = absoluteContributions.map((value) => value / volatility) as [number, number, number];
-  return { volatility, absoluteContributions, relativeContributions };
 }

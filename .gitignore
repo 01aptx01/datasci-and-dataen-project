@@ -49,3 +49,5 @@ Thumbs.db
 
 superpowers/
 internal-docs/
+.impeccable/
+.playwright-cli/

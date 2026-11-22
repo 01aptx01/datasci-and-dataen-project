@@ -741,7 +741,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--output", type=Path, default=Path("public/snapshots"))
-    parser.add_argument("--policy", type=Path, default=Path(__file__).resolve().parents[1] / "snapshot.policy.json")
+    parser.add_argument("--policy", type=Path, default=Path(__file__).resolve().parents[2] / "web" / "snapshot.policy.json")
     arguments = parser.parse_args()
     repo_root = arguments.repo_root.resolve()
     output = arguments.output if arguments.output.is_absolute() else Path.cwd() / arguments.output
