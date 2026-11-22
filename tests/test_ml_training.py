@@ -163,7 +163,7 @@ def _synthetic_prepared() -> tuple[PreparedDataset, pd.DataFrame]:
 def test_training_config_locks_grid_and_deterministic_selection_rules() -> None:
     config = TrainingConfig.from_yaml()
 
-    assert config.training_config_version == "1.1.0"
+    assert config.training_config_version == "1.2.0"
     assert len(config.grid) == 27
     assert {item.eta0 for item in config.grid} == {0.0001, 0.001, 0.01}
     assert {item.alpha for item in config.grid} == {1e-5, 1e-4, 1e-3}
@@ -174,6 +174,47 @@ def test_training_config_locks_grid_and_deterministic_selection_rules() -> None:
     assert config.b4_ill_conditioned_threshold == 1e8
     assert config.tie_break_policy == "grid_order_with_absolute_tolerance"
     assert config.tie_tolerance == 1e-12
+    assert config.initial_champion is not None
+    assert config.initial_champion.policy_version == "1.0.0"
+    assert config.initial_champion.candidate_models == ("B0", "B1", "B2")
+    assert config.initial_champion.tie_break_order == ("B0", "B1", "B2")
+    assert config.initial_champion.scoring_split == "validation"
+    assert config.initial_champion.cutover_date == date(2025, 10, 1)
+    assert config.initial_champion.minimum_paired_coverage == 1.0
+    assert config.initial_champion.minimum_cutover_anchors == 1
+    assert config.initial_champion.tie_tolerance == 1e-12
+    assert len(config.fingerprint()) == 64
+    assert len(config.initial_champion.fingerprint()) == 64
+
+
+def test_initial_champion_config_rejects_excluded_models_and_contract_overrides(
+    tmp_path: Path,
+) -> None:
+    config_text = Path("config/ml_training.yaml").read_text(encoding="utf-8")
+
+    bad_candidates = tmp_path / "bad_candidates.yaml"
+    bad_candidates.write_text(
+        config_text.replace("candidate_models: [B0, B1, B2]", "candidate_models: [B0, B1, B2, B3]", 1),
+        encoding="utf-8",
+    )
+    with pytest.raises(TrainingError, match="B3 and B4 are excluded"):
+        TrainingConfig.from_yaml(bad_candidates)
+
+    bad_split = tmp_path / "bad_split.yaml"
+    bad_split.write_text(
+        config_text.replace("  scoring_split: validation", "  scoring_split: test", 1),
+        encoding="utf-8",
+    )
+    with pytest.raises(TrainingError, match="Validation only"):
+        TrainingConfig.from_yaml(bad_split)
+
+    missing_section = tmp_path / "missing_section.yaml"
+    missing_section.write_text(
+        config_text.split("initial_champion:", maxsplit=1)[0],
+        encoding="utf-8",
+    )
+    with pytest.raises(TrainingError, match="requires an initial_champion section"):
+        TrainingConfig.from_yaml(missing_section)
 
 
 def test_b4_fit_intercept_config_requires_a_boolean(tmp_path: Path) -> None:
@@ -194,12 +235,21 @@ def test_training_config_accepts_legacy_version_but_requires_current_version_for
     config_text = Path("config/ml_training.yaml").read_text(encoding="utf-8")
     legacy_path = tmp_path / "legacy_ml_training.yaml"
     legacy_path.write_text(
-        config_text.replace('training_config_version: "1.1.0"', 'training_config_version: "1.0.0"', 1),
+        config_text.replace('training_config_version: "1.2.0"', 'training_config_version: "1.0.0"', 1),
         encoding="utf-8",
     )
     legacy_config = TrainingConfig.from_yaml(legacy_path)
 
     assert legacy_config.training_config_version == "1.0.0"
+
+    b4_path = tmp_path / "b4_ml_training.yaml"
+    b4_path.write_text(
+        config_text.replace('training_config_version: "1.2.0"', 'training_config_version: "1.1.0"', 1),
+        encoding="utf-8",
+    )
+    b4_config = TrainingConfig.from_yaml(b4_path)
+    assert b4_config.training_config_version == "1.1.0"
+
     prepared, labels = _synthetic_prepared_b4()
     with pytest.raises(TrainingError, match="1.0.0 predates B4"):
         fit_b4_ols(prepared, "SPY", legacy_config)
