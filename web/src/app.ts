@@ -1,10 +1,12 @@
 import { filterForecastRows, loadSnapshot, selectRecordedSessions, type ForecastFilter, type SnapshotState } from "./data/loadSnapshot.js";
 import { modelId, modelLabel, type CoverageRow, type DriftTimelineRow, type ForecastAuditRow, type H1ScatterRow, type ModelMetricRow, type ModelName, type PortfolioRiskRow, type RollingMae20Row, type Ticker } from "./data/schemas.js";
-import { computePortfolioVolatility, correlationFromCovariance } from "./data/portfolio.js";
+import type { PortfolioWeights } from "./data/portfolio.js";
+import { createDefaultFinancialScenarioState, parseFinancialDecisionParams, serializeFinancialDecisionHash, validateScenarioWeights, type FinancialScenarioState } from "./data/decisionLab.js";
 import { buildExportMetadata, buildForecastCsv } from "./data/export.js";
 import { resolveAsOfLabelView, selectSameDateForecasts } from "./data/replay.js";
 import { calculateDescriptiveRangeMetrics } from "./data/rangeMetrics.js";
 import { defaultExperimentSelection, isIsoCalendarDate, parseExperimentSelection, parseHashRoute, serializeSelectionHash, validateExperimentSelection, type ExperimentSelection, type SelectionSource } from "./data/selection.js";
+import { renderFinancialDecisionLab } from "./ui/financialDecisionLab.js";
 
 interface RouteDefinition {
   path: string;
@@ -28,7 +30,6 @@ const routes: RouteDefinition[] = [
 const modelNames: ModelName[] = ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"];
 const tickerNames: Ticker[] = ["SPY", "IEF", "GLD"];
 const metricTickerNames: (Ticker | "MACRO")[] = ["MACRO", "SPY", "IEF", "GLD"];
-const portfolioDefaultWeights: [number, number, number] = [0.5, 0.3, 0.2];
 const tickerLabel: Record<Ticker, string> = { SPY: "SPY · US equities", IEF: "IEF · Treasury bonds", GLD: "GLD · Gold" };
 const modelColors: Record<ModelName, string> = {
   CONSTANT_BASELINE: "#8798ad",
@@ -88,7 +89,9 @@ interface ViewState {
   forecastStatus: ForecastFilter["status"];
   forecastFrom: string;
   forecastTo: string;
-  portfolioWeights: [number, number, number];
+  financialDecision: FinancialScenarioState;
+  riskBudgetDraft: string;
+  riskBudgetError: string;
   driftFrom: string;
   driftTo: string;
   researchTicker: Ticker;
@@ -132,6 +135,17 @@ function applyLocationSelection(state: ViewState, hash: string): void {
   state.selection = null;
   state.selectionError = "";
   if (state.snapshot.status !== "ready") return;
+
+  if (state.routePath === "/portfolio") {
+    const decision = parseFinancialDecisionParams(route.params);
+    if (decision.status === "invalid") {
+      state.selectionError = decision.message;
+      return;
+    }
+    state.financialDecision = decision.status === "valid" ? decision.state : createDefaultFinancialScenarioState();
+    state.riskBudgetDraft = state.financialDecision.budgetAnnualizedDecimal === null ? "" : String(state.financialDecision.budgetAnnualizedDecimal * 100);
+    state.riskBudgetError = "";
+  }
 
   const parsed = parseExperimentSelection(route.params);
   let candidate: ExperimentSelection | null;
@@ -193,7 +207,11 @@ function selectionUnavailable(state: ViewState): string {
 }
 
 function routeHash(path: string, state: ViewState): string {
-  return state.selection ? serializeSelectionHash(path, state.selection) : `#${path}`;
+  if (!state.selection) return `#${path}`;
+  const selectionHash = serializeSelectionHash(path, state.selection);
+  if (path !== "/portfolio") return selectionHash;
+  const decision = validateFinancialDecisionState(state.financialDecision);
+  return serializeFinancialDecisionHash(selectionHash, decision ? state.financialDecision : createDefaultFinancialScenarioState());
 }
 
 function navigateRoute(state: ViewState, path: string): void {
@@ -202,7 +220,11 @@ function navigateRoute(state: ViewState, path: string): void {
 }
 
 function publishSelection(root: HTMLElement, state: ViewState, selection: ExperimentSelection, historyMode: "push" | "replace" = "push"): void {
-  const hash = serializeSelectionHash(state.routePath, selection);
+  let hash = serializeSelectionHash(state.routePath, selection);
+  if (state.routePath === "/portfolio") {
+    const decision = validateFinancialDecisionState(state.financialDecision);
+    hash = serializeFinancialDecisionHash(hash, decision ? state.financialDecision : createDefaultFinancialScenarioState());
+  }
   if (historyMode === "replace") {
     state.selection = selection;
     state.selectionError = "";
@@ -231,6 +253,26 @@ function selectionContextSummary(state: ViewState): string {
   const selection = state.selection;
   if (!selection || state.snapshot.status !== "ready") return "";
   return `<section class="selection-context" aria-label="Shared experiment selection"><div><span class="section-overline">ONE VERIFIED SESSION</span><strong>${escapeHtml(selection.predictionDate)} · ${selection.split.toUpperCase()} · ${escapeHtml(selection.ticker)} · ${modelId(selection.modelName)}</strong></div><small>Eval ${escapeHtml(selection.evaluationId.slice(0, 12))}… · Replay ${escapeHtml(selection.replayId.slice(0, 12))}…</small></section>`;
+}
+
+function validateFinancialDecisionState(state: FinancialScenarioState): boolean {
+  return validateScenarioWeights(state.scenarioA).status === "valid" &&
+    validateScenarioWeights(state.scenarioB).status === "valid" &&
+    (state.budgetAnnualizedDecimal === null || (Number.isFinite(state.budgetAnnualizedDecimal) && state.budgetAnnualizedDecimal >= 0)) &&
+    ["risk", "drivers", "scenarios"].includes(state.activeTab) &&
+    ["A", "B"].includes(state.activeScenario);
+}
+
+function publishFinancialDecision(root: HTMLElement, state: ViewState): void {
+  if (!state.selection || state.routePath !== "/portfolio" || !validateFinancialDecisionState(state.financialDecision)) {
+    render(root, state);
+    return;
+  }
+  const baseHash = serializeSelectionHash("/portfolio", state.selection);
+  const hash = serializeFinancialDecisionHash(baseHash, state.financialDecision);
+  state.riskBudgetError = "";
+  if (hash === window.location.hash) render(root, state);
+  else window.location.hash = hash;
 }
 
 function icon(name: string, size = 20): string {
@@ -385,7 +427,9 @@ function applyGuidedTourSelection(state: ViewState): void {
     state.driftTo = record?.predictionDate ?? "";
   }
   if (state.guidedStep === 5) {
-    state.portfolioWeights = [...portfolioDefaultWeights];
+    state.financialDecision = createDefaultFinancialScenarioState();
+    state.riskBudgetDraft = "";
+    state.riskBudgetError = "";
   }
 }
 
@@ -708,67 +752,27 @@ function portfolioPage(state: ViewState): string {
   if (snapshot.status !== "ready") return snapshot.status === "error" ? errorState(snapshot.message) : emptyState("Portfolio source ยังโหลดไม่ได้", "ต้องตรวจสอบ portfolio_risk.csv และ stored covariance ให้ครบก่อน");
   const selection = state.selection;
   if (!selection) return selectionUnavailable(state);
-  const testRows = snapshot.portfolioRisk.filter((row) => row.split === "test" && row.status === "OK");
-  const dates = [...new Set(testRows.filter((item) => item.modelName === selection.modelName && selectedPortfolioRow(snapshot, item.predictionDate, item.modelName)).map((item) => item.predictionDate))].sort((left, right) => right.localeCompare(left));
-  const date = selection.predictionDate;
-  const row = selectedPortfolioRow(snapshot, date, selection.modelName);
-  if (!row || !row.covariance || row.portfolioVol === null) return selectionUnavailable({ ...state, selectionError: `ไม่มี portfolio row สถานะ OK สำหรับ ${date} · ${modelId(selection.modelName)}` });
-  const availableModels = modelNames.filter((model) => selectedPortfolioRow(snapshot, date, model) !== undefined);
-  let whatIfValue: number | null = null;
-  let defaultRiskValue: number | null = null;
-  let validationMessage = "";
-  try { defaultRiskValue = computePortfolioVolatility(row.covariance, portfolioDefaultWeights); }
-  catch (error) { validationMessage = error instanceof Error ? error.message : "Stored covariance is invalid"; }
-  try { whatIfValue = computePortfolioVolatility(row.covariance, state.portfolioWeights); }
-  catch (error) { validationMessage = error instanceof Error ? error.message : "Weights are invalid"; }
-  const names = ["SPY", "IEF", "GLD"] as const;
-  const weightInputs = names.map((ticker, index) => {
-    const weight = state.portfolioWeights[index];
-    const validSliderWeight = Number.isFinite(weight) && weight >= 0 && weight <= 1;
-    const safeSliderWeight = Number.isFinite(weight) ? Math.min(1, Math.max(0, weight)) : 0;
-    return `<div class="weight-field"><label class="field-label" for="portfolio-weight-${index}">${ticker} weight</label><div class="weight-slider-row"><input type="range" min="0" max="1" step="0.01" data-field="portfolio-weight-slider" data-index="${index}" value="${safeSliderWeight}" aria-label="${ticker} portfolio weight slider" aria-valuetext="${Math.round(safeSliderWeight * 100)}% of portfolio" /><output data-portfolio-weight-percent="${index}">${validSliderWeight ? `${Math.round(weight * 100)}%` : "Invalid"}</output></div><input id="portfolio-weight-${index}" type="number" min="0" max="1" step="0.01" data-field="portfolio-weight" data-index="${index}" value="${Number.isFinite(weight) ? escapeHtml(String(weight)) : ""}" aria-label="${ticker} portfolio weight" /></div>`;
-  }).join("");
-  const forecastCards = names.map((ticker, index) => `<div class="portfolio-input-row"><span>${ticker}</span><strong>${formatVol(row.forecastVols[index], state.unit)}</strong><small>${row.forecastStatuses[index]}</small></div>`).join("");
-  const storedWeights = row.sourceWeights.map((weight, index) => `${names[index]} ${Math.round(weight * 100)}%`).join(" · ");
-  const allocationColors = ["#2e62a5", "#518d7f", "#c38a36"];
-  const allocationSegments = names.map((_, index) => {
-    const value = state.portfolioWeights[index];
-    const width = Number.isFinite(value) ? Math.min(1, Math.max(0, value)) * 100 : 0;
-    return `<span class="portfolio-allocation-segment" data-allocation-segment="${index}" style="width:${width}%;background:${allocationColors[index]}"></span>`;
-  }).join("");
-  const allocationLegend = names.map((ticker, index) => `<span class="portfolio-allocation-item"><i style="background:${allocationColors[index]}"></i><strong>${ticker}</strong><output data-allocation-label="${index}">${Math.round(state.portfolioWeights[index] * 100)}%</output></span>`).join("");
-  const difference = whatIfValue === null || defaultRiskValue === null ? null : whatIfValue - defaultRiskValue;
-  const differenceClass = difference === null ? "" : difference < -1e-12 ? "portfolio-delta-lower" : difference > 1e-12 ? "portfolio-delta-higher" : "portfolio-delta-same";
-  const differenceText = difference === null ? "—" : `${difference > 0 ? "+" : ""}${formatVol(difference, state.unit)}`;
-  const riskScale = Math.max(defaultRiskValue ?? 0, whatIfValue ?? 0, Number.EPSILON);
-  const defaultBarWidth = (defaultRiskValue ?? 0) / riskScale * 100;
-  const whatIfBarWidth = (whatIfValue ?? 0) / riskScale * 100;
-  const correlationPairs = [[0, 1], [0, 2], [1, 2]] as const;
-  const correlationCards = correlationPairs.map(([first, second]) => {
-    const value = correlationFromCovariance(row.covariance!, first, second);
-    return `<article class="portfolio-correlation-card"><span>${names[first]} ↔ ${names[second]}</span><strong>${value === null ? "—" : value.toFixed(3)}</strong><small>Correlation proxy · stored covariance</small></article>`;
-  }).join("");
-  return `<div class="page-stack">${selectionContextSummary(state)}
-    <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">STORED COVARIANCE · LOCAL WHAT-IF</span><h2 class="analysis-title">Portfolio Lab</h2><p>คำนวณ √(wᵀΣw) จาก covariance ที่บันทึกไว้ในแถวเดียวกับวันที่และ model ที่เลือกเท่านั้น</p></div><span class="readonly-pill">${icon("lock", 14)} No inference</span></div>
-      <div class="inline-controls"><label class="field-label">Recorded date<select data-field="portfolio-date">${dates.map((value) => `<option value="${value}" ${value === date ? "selected" : ""}>${value}</option>`).join("")}</select></label><label class="field-label">Model<select data-field="portfolio-model">${availableModels.map((model) => `<option value="${model}" ${model === selection.modelName ? "selected" : ""}>${modelId(model)} · ${escapeHtml(modelLabel(model))}</option>`).join("")}</select></label></div>
-      <div class="portfolio-preset-row"><span>ลองสัดส่วน</span><button type="button" class="portfolio-preset-button" data-action="portfolio-default-weights">Default · 50/30/20</button><button type="button" class="portfolio-preset-button" data-action="portfolio-weights-60-20-20">60/20/20</button><button type="button" class="portfolio-preset-button" data-action="portfolio-equal-weights">เท่ากัน · 33/33/33</button><button type="button" class="portfolio-preset-button" data-action="portfolio-source-weights">Source · ${row.sourceWeights.map((weight) => Math.round(weight * 100)).join("/")}</button><button type="button" class="portfolio-reset-button" data-action="portfolio-reset">คืนค่า 50/30/20</button></div>
-      <div class="portfolio-controls">
-        <div class="portfolio-allocation-wrap" data-portfolio-allocation ${validationMessage ? "hidden" : ""}><div class="portfolio-allocation-heading"><strong>สัดส่วนพอร์ต</strong><span>รวม 100%</span></div><div class="portfolio-allocation-bar" role="img" aria-label="Current portfolio allocation">${allocationSegments}</div><div class="portfolio-allocation-legend">${allocationLegend}</div></div>
-        <div class="weight-control-grid">${weightInputs}</div>
-        <p class="field-help ${validationMessage ? "weight-error" : ""}" role="${validationMessage ? "alert" : "status"}" aria-live="polite" data-portfolio-weight-status>${validationMessage ? `No result · ${escapeHtml(validationMessage)}` : `Weight total ${(state.portfolioWeights.reduce((sum, value) => sum + value, 0) * 100).toFixed(1)}% · ปรับ slider หรือตัวเลขได้`}</p>
-        <div class="portfolio-results">
-          <article class="portfolio-result-card"><span>ค่าที่บันทึกใน Stage 06</span><strong>${formatVol(row.portfolioVol, state.unit)}</strong><small>Weights · ${escapeHtml(storedWeights)}</small></article>
-          <article class="portfolio-result-card"><span>Default · 50/30/20</span><strong data-portfolio-default>${defaultRiskValue === null ? "—" : formatVol(defaultRiskValue, state.unit)}</strong><small>คำนวณจาก covariance แถวนี้</small></article>
-          <article class="portfolio-result-card portfolio-whatif-card"><span>สัดส่วนปัจจุบัน</span><strong data-portfolio-whatif>${whatIfValue === null ? "—" : formatVol(whatIfValue, state.unit)}</strong><small>คำนวณจาก forecast/covariance เดิม</small></article>
-          <article class="portfolio-result-card portfolio-difference-card"><span>เปลี่ยนจาก Default</span><strong class="${differenceClass}" data-portfolio-delta>${differenceText}</strong><small>หน่วยเดียวกับ annualized volatility</small></article>
-        </div>
-      </div>
-      <div class="portfolio-risk-compare" data-portfolio-risk-comparison><div class="portfolio-subheading"><strong>เปรียบเทียบความเสี่ยงพอร์ต</strong><span>ตัวเลขถูกคำนวณใหม่เฉพาะจากสัดส่วน · ไม่มีการ fit model</span></div><div class="portfolio-risk-row"><span>Default · 50/30/20</span><div class="portfolio-risk-track"><i data-risk-bar-default style="width:${defaultBarWidth}%"></i></div><strong data-risk-label-default>${defaultRiskValue === null ? "—" : formatVol(defaultRiskValue, state.unit)}</strong></div><div class="portfolio-risk-row"><span>สัดส่วนปัจจุบัน</span><div class="portfolio-risk-track"><i class="portfolio-risk-current" data-risk-bar-current style="width:${whatIfBarWidth}%"></i></div><strong data-risk-label-current>${whatIfValue === null ? "—" : formatVol(whatIfValue, state.unit)}</strong></div><p>การเปลี่ยนน้ำหนักเปลี่ยนสัดส่วนความเสี่ยงของพอร์ต ขณะที่ forecast และ covariance ของวันเดิมคงที่</p></div>
-      <div class="portfolio-input-section"><div class="portfolio-subheading"><strong>Forecast volatility ของแต่ละสินทรัพย์</strong><span>จากแถวเดียวกันใน snapshot</span></div><div class="portfolio-input-grid">${forecastCards}</div><div class="portfolio-correlation-grid">${correlationCards}</div></div>
-      <div class="portfolio-explainer"><strong>ทำไมน้ำหนักถึงเปลี่ยนความเสี่ยงพอร์ต?</strong><p>ผลลัพธ์ใช้ความผันผวนของ SPY, IEF และ GLD ร่วมกับ covariance ของแถวที่เลือก จึงรวมผลจากการเคลื่อนไหวร่วมกันของสินทรัพย์ด้วย การปรับน้ำหนักไม่เปลี่ยน forecast หรือ model</p></div>
-      <p class="chart-note">Covariance and forecast inputs come from the same source row: ${escapeHtml(row.predictionDate)} · ${modelId(row.modelName)}. Changing weights performs a local calculation and leaves the frozen snapshot identity unchanged.</p><div class="session-actions"><span>Portfolio ใช้ covariance ของ SPY, IEF และ GLD ทั้งชุด</span><button class="button button-secondary" type="button" data-route="/forecasts">ดู session เดียวกันใน Replay →</button></div>${sourceFooter("portfolio_risk.csv", "Test", `${row.predictionDate} · ${modelId(row.modelName)}`, 1, `annualized volatility (${state.unit})`, snapshot.manifest.evaluationId)}</section>
-    <section class="limitation-card"><span class="limitation-mark">i</span><p>Portfolio risk is a historical source calculation, not a live portfolio estimate or investment recommendation.</p></section>
-  </div>`;
+  const row = selectedPortfolioRow(snapshot, selection.predictionDate, selection.modelName);
+  if (!row || row.covariance === null || row.portfolioVol === null || !row.correlationReady || row.missingInputs.length > 0) return selectionUnavailable({ ...state, selectionError: `ไม่มีแถว portfolio ที่ครบและตรวจแล้วสำหรับ ${selection.predictionDate} · ${modelId(selection.modelName)}` });
+  const validRows = snapshot.portfolioRisk.filter((item) => item.split === "test" && item.status === "OK" && item.covariance !== null && item.correlationReady && item.missingInputs.length === 0);
+  const availableDates = [...new Set(validRows.filter((item) => item.modelName === selection.modelName).map((item) => item.predictionDate))].sort((left, right) => right.localeCompare(left));
+  const availableModels = modelNames.filter((model) => selectedPortfolioRow(snapshot, selection.predictionDate, model) !== undefined);
+  return `${selectionContextSummary(state)}${renderFinancialDecisionLab({
+    rows: snapshot.portfolioRisk,
+    selectedRow: row,
+    selection,
+    decision: state.financialDecision,
+    availableDates,
+    availableModels,
+    modelMetrics: snapshot.modelMetrics,
+    coverage: snapshot.coverage,
+    unit: state.unit,
+    budgetDraft: state.riskBudgetDraft,
+    budgetError: state.riskBudgetError,
+    evaluationId: snapshot.manifest.evaluationId,
+    strictCutoff: snapshot.manifest.strictCutoff,
+    pointInTimeSourceAvailabilityVerified: snapshot.manifest.pointInTimeSourceAvailabilityVerified,
+  })}${sourceFooter("portfolio_risk.csv", "Test", `${row.predictionDate} · ${modelId(row.modelName)} · ${state.financialDecision.activeScenario}`, 1, `annualized volatility (${state.unit})`, snapshot.manifest.evaluationId)}`;
 }
 
 function rollingMaeChart(rows: RollingMae20Row[], state: ViewState): string {
@@ -983,73 +987,6 @@ function render(root: HTMLElement, state: ViewState): void {
   document.title = `${route?.label ?? "Overview"} · Adaptive Portfolio Risk Lab`;
 }
 
-function updatePortfolioWeightPreview(root: HTMLElement, state: ViewState, changedIndex?: number, changedControl?: "number" | "slider"): void {
-  if (state.snapshot.status !== "ready" || state.routePath !== "/portfolio" || !state.selection || state.selectionError) return;
-  const sliders = root.querySelectorAll<HTMLInputElement>('input[data-field="portfolio-weight-slider"]');
-  const numbers = root.querySelectorAll<HTMLInputElement>('input[data-field="portfolio-weight"]');
-  const percentages = root.querySelectorAll<HTMLOutputElement>("output[data-portfolio-weight-percent]");
-  state.portfolioWeights.forEach((weight, index) => {
-    const valid = Number.isFinite(weight) && weight >= 0 && weight <= 1;
-    if (valid) sliders[index].value = String(weight);
-    sliders[index].setAttribute("aria-valuetext", `${Math.round(Number(sliders[index].value) * 100)}% of portfolio`);
-    percentages[index].textContent = valid ? `${Math.round(weight * 100)}%` : "Invalid";
-    if (changedControl === "slider" && changedIndex === index || changedControl !== "number" || changedIndex !== index) {
-      numbers[index].value = Number.isFinite(weight) ? String(weight) : "";
-    }
-  });
-  const status = root.querySelector<HTMLElement>("[data-portfolio-weight-status]");
-  const result = root.querySelector<HTMLElement>("[data-portfolio-whatif]");
-  const defaultResult = root.querySelector<HTMLElement>("[data-portfolio-default]");
-  const difference = root.querySelector<HTMLElement>("[data-portfolio-delta]");
-  const allocation = root.querySelector<HTMLElement>("[data-portfolio-allocation]");
-  if (!status || !result) return;
-  const allocationLabels = root.querySelectorAll<HTMLOutputElement>("[data-allocation-label]");
-  const allocationSegments = root.querySelectorAll<HTMLElement>("[data-allocation-segment]");
-  state.portfolioWeights.forEach((weight, index) => {
-    const safeWeight = Number.isFinite(weight) ? Math.min(1, Math.max(0, weight)) : 0;
-    if (allocationLabels[index]) allocationLabels[index].textContent = Number.isFinite(weight) ? `${Math.round(weight * 100)}%` : "Invalid";
-    if (allocationSegments[index]) allocationSegments[index].style.width = `${safeWeight * 100}%`;
-  });
-  const total = state.portfolioWeights.reduce((sum, weight) => sum + weight, 0);
-  try {
-    const row = selectedPortfolioRow(state.snapshot, state.selection.predictionDate, state.selection.modelName);
-    if (!row?.covariance) throw new Error("No verified covariance row is selected");
-    const defaultRisk = computePortfolioVolatility(row.covariance, portfolioDefaultWeights);
-    const value = computePortfolioVolatility(row.covariance, state.portfolioWeights);
-    status.textContent = `Weight total ${(total * 100).toFixed(1)}%`;
-    status.classList.remove("weight-error");
-    status.setAttribute("role", "status");
-    if (defaultResult) defaultResult.textContent = formatVol(defaultRisk, state.unit);
-    result.textContent = formatVol(value, state.unit);
-    if (difference) {
-      const delta = value - defaultRisk;
-      difference.textContent = `${delta > 0 ? "+" : ""}${formatVol(delta, state.unit)}`;
-      difference.classList.remove("portfolio-delta-lower", "portfolio-delta-higher", "portfolio-delta-same");
-      difference.classList.add(Math.abs(delta) <= 1e-12 ? "portfolio-delta-same" : delta < 0 ? "portfolio-delta-lower" : "portfolio-delta-higher");
-    }
-    const scale = Math.max(defaultRisk, value, Number.EPSILON);
-    const defaultBar = root.querySelector<HTMLElement>("[data-risk-bar-default]");
-    const currentBar = root.querySelector<HTMLElement>("[data-risk-bar-current]");
-    const defaultLabel = root.querySelector<HTMLElement>("[data-risk-label-default]");
-    const currentLabel = root.querySelector<HTMLElement>("[data-risk-label-current]");
-    if (defaultBar) defaultBar.style.width = `${defaultRisk / scale * 100}%`;
-    if (currentBar) currentBar.style.width = `${value / scale * 100}%`;
-    if (defaultLabel) defaultLabel.textContent = formatVol(defaultRisk, state.unit);
-    if (currentLabel) currentLabel.textContent = formatVol(value, state.unit);
-    if (allocation) allocation.hidden = false;
-  } catch (error) {
-    status.textContent = `No result · ${error instanceof Error ? error.message : "Weights are invalid"}`;
-    status.classList.add("weight-error");
-    status.setAttribute("role", "alert");
-    result.textContent = "—";
-    if (difference) {
-      difference.textContent = "—";
-      difference.classList.remove("portfolio-delta-lower", "portfolio-delta-higher", "portfolio-delta-same");
-    }
-    if (allocation) allocation.hidden = true;
-  }
-}
-
 async function reload(root: HTMLElement, state: ViewState): Promise<void> {
   state.snapshot = { status: "loading" };
   state.attempt += 1;
@@ -1125,7 +1062,9 @@ export function startApp(root: HTMLElement): void {
     forecastStatus: "all",
     forecastFrom: "",
     forecastTo: "",
-    portfolioWeights: [0.5, 0.3, 0.2],
+    financialDecision: createDefaultFinancialScenarioState(),
+    riskBudgetDraft: "",
+    riskBudgetError: "",
     driftFrom: "",
     driftTo: "",
     researchTicker: "SPY",
@@ -1241,18 +1180,38 @@ export function startApp(root: HTMLElement): void {
         }
         break;
       }
-      case "portfolio-source-weights": {
-        if (state.snapshot.status === "ready" && state.selection) {
-          const row = selectedPortfolioRow(state.snapshot, state.selection.predictionDate, state.selection.modelName);
-          if (row) state.portfolioWeights = [row.sourceWeights[0], row.sourceWeights[1], row.sourceWeights[2]];
+      case "portfolio-tab": {
+        const tab = button.dataset.tab;
+        if (tab === "risk" || tab === "drivers" || tab === "scenarios") {
+          state.financialDecision.activeTab = tab;
+          publishFinancialDecision(root, state);
         }
-        render(root, state);
         break;
       }
-      case "portfolio-default-weights":
-      case "portfolio-reset": state.portfolioWeights = [...portfolioDefaultWeights]; render(root, state); break;
-      case "portfolio-weights-60-20-20": state.portfolioWeights = [0.6, 0.2, 0.2]; render(root, state); break;
-      case "portfolio-equal-weights": state.portfolioWeights = [1 / 3, 1 / 3, 1 / 3]; render(root, state); break;
+      case "portfolio-active-scenario": {
+        const scenario = button.dataset.scenario;
+        if (scenario === "A" || scenario === "B") {
+          state.financialDecision.activeScenario = scenario;
+          publishFinancialDecision(root, state);
+        }
+        break;
+      }
+      case "portfolio-weight-preset": {
+        const scenario = button.dataset.scenario;
+        const preset = button.dataset.preset;
+        if ((scenario === "A" || scenario === "B") && ["default", "example", "equal"].includes(preset ?? "")) {
+          const key = scenario === "A" ? "scenarioA" : "scenarioB";
+          state.financialDecision[key] = preset === "example" ? [0.6, 0.2, 0.2] : preset === "equal" ? [1 / 3, 1 / 3, 1 / 3] : [0.5, 0.3, 0.2];
+          publishFinancialDecision(root, state);
+        }
+        break;
+      }
+      case "portfolio-clear-budget":
+        state.financialDecision.budgetAnnualizedDecimal = null;
+        state.riskBudgetDraft = "";
+        state.riskBudgetError = "";
+        publishFinancialDecision(root, state);
+        break;
       case "open-session": {
         const predictionId = button.dataset.predictionId;
         if (state.snapshot.status === "ready" && predictionId) {
@@ -1376,13 +1335,46 @@ export function startApp(root: HTMLElement): void {
       }
       if (target.dataset.field === "drift-from") state.driftFrom = target.value;
       if (target.dataset.field === "drift-to") state.driftTo = target.value;
-      if (target.dataset.field === "portfolio-weight" || target.dataset.field === "portfolio-weight-slider") {
+      if (target.dataset.field === "scenario-weight" || target.dataset.field === "scenario-weight-slider") {
+        const scenario = target.dataset.scenario;
         const index = Number(target.dataset.index);
-        if (Number.isInteger(index) && index >= 0 && index < 3) {
-          state.portfolioWeights[index] = target.value.trim() ? Number(target.value) : Number.NaN;
-          updatePortfolioWeightPreview(root, state, index, target.dataset.field === "portfolio-weight-slider" ? "slider" : "number");
+        if ((scenario === "A" || scenario === "B") && Number.isInteger(index) && index >= 0 && index < 3) {
+          const key = scenario === "A" ? "scenarioA" : "scenarioB";
+          const next = [...state.financialDecision[key]] as PortfolioWeights;
+          next[index] = target.value.trim() ? Number(target.value) / 100 : Number.NaN;
+          state.financialDecision[key] = next;
+          const validation = validateScenarioWeights(next);
+          const output = root.querySelector<HTMLElement>(`[data-scenario-total="${scenario}"]`);
+          if (output) {
+            const total = next.reduce((sum, weight) => sum + (Number.isFinite(weight) ? weight : 0), 0);
+            output.textContent = `รวม ${(total * 100).toFixed(2)}%${validation.status === "invalid" ? ` · ${validation.message}` : " · น้ำหนักครบ 100%"}`;
+            output.classList.toggle("weight-error", validation.status === "invalid");
+            output.setAttribute("role", validation.status === "invalid" ? "alert" : "status");
+          }
+          if (validation.status === "valid") publishFinancialDecision(root, state);
+          else render(root, state);
           return;
         }
+      }
+      if (target.dataset.field === "risk-budget") {
+        state.riskBudgetDraft = target.value;
+        const raw = target.value.trim();
+        if (raw === "") {
+          state.financialDecision.budgetAnnualizedDecimal = null;
+          state.riskBudgetError = "";
+          publishFinancialDecision(root, state);
+          return;
+        }
+        const percentValue = Number(raw);
+        if (!Number.isFinite(percentValue) || percentValue < 0) {
+          state.riskBudgetError = "กรอกเปอร์เซ็นต์รายปีเป็นตัวเลขที่ไม่ติดลบ หรือเว้นว่าง";
+          render(root, state);
+          return;
+        }
+        state.financialDecision.budgetAnnualizedDecimal = percentValue / 100;
+        state.riskBudgetError = "";
+        publishFinancialDecision(root, state);
+        return;
       }
     }
     render(root, state);
@@ -1408,11 +1400,29 @@ export function startApp(root: HTMLElement): void {
       target.setAttribute("aria-valuetext", `${selected.predictionDate} · วันที่ ${index + 1} จาก ${available.length}`);
       return;
     }
-    if (target.dataset.field !== "portfolio-weight" && target.dataset.field !== "portfolio-weight-slider") return;
+    if (target.dataset.field === "risk-budget") {
+      state.riskBudgetDraft = target.value;
+      return;
+    }
+    if (target.dataset.field !== "scenario-weight" && target.dataset.field !== "scenario-weight-slider") return;
+    const scenario = target.dataset.scenario;
     const index = Number(target.dataset.index);
-    if (!Number.isInteger(index) || index < 0 || index > 2) return;
-    state.portfolioWeights[index] = target.value.trim() ? Number(target.value) : Number.NaN;
-    updatePortfolioWeightPreview(root, state, index, target.dataset.field === "portfolio-weight-slider" ? "slider" : "number");
+    if ((scenario !== "A" && scenario !== "B") || !Number.isInteger(index) || index < 0 || index > 2) return;
+    const key = scenario === "A" ? "scenarioA" : "scenarioB";
+    const next = [...state.financialDecision[key]] as PortfolioWeights;
+    next[index] = target.value.trim() ? Number(target.value) / 100 : Number.NaN;
+    state.financialDecision[key] = next;
+    const pairedField = target.dataset.field === "scenario-weight" ? "scenario-weight-slider" : "scenario-weight";
+    const pairedInput = root.querySelector<HTMLInputElement>(`[data-field="${pairedField}"][data-scenario="${scenario}"][data-index="${index}"]`);
+    if (pairedInput) pairedInput.value = target.dataset.field === "scenario-weight-slider" ? target.value : Number.isFinite(next[index]) ? String(next[index]! * 100) : "0";
+    const validation = validateScenarioWeights(next);
+    const output = root.querySelector<HTMLElement>(`[data-scenario-total="${scenario}"]`);
+    if (output) {
+      const total = next.reduce((sum, weight) => sum + (Number.isFinite(weight) ? weight : 0), 0);
+      output.textContent = `รวม ${(total * 100).toFixed(2)}%${validation.status === "invalid" ? ` · ${validation.message}` : " · น้ำหนักครบ 100%"}`;
+      output.classList.toggle("weight-error", validation.status === "invalid");
+      output.setAttribute("role", validation.status === "invalid" ? "alert" : "status");
+    }
   });
   if (!window.location.hash) window.location.hash = "/overview";
   render(root, state);

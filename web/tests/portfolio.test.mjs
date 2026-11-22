@@ -25,6 +25,11 @@ test("portfolio what-if rejects weights outside the stored allocation domain", (
   assert.throws(() => computePortfolioVolatility(covariance, [0.5, Number.NaN, 0.5]), /finite/);
 });
 
+test("portfolio weights use the source contract's 1e-8 sum tolerance", () => {
+  assert.ok(Number.isFinite(computePortfolioVolatility(covariance, [0.500000004, 0.3, 0.2])));
+  assert.throws(() => computePortfolioVolatility(covariance, [0.50000002, 0.3, 0.2]), /sum to 1/);
+});
+
 test("portfolio what-if rejects incomplete or malformed covariance matrices", () => {
   assert.throws(() => computePortfolioVolatility([[1, 0], [0, 1]], [0.5, 0.3, 0.2]), /3 by 3/);
   assert.throws(() => computePortfolioVolatility([[1, 1, 0], [0, 1, 0], [0, 0, 1]], [0.5, 0.3, 0.2]), /symmetric/);
