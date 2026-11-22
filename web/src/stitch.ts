@@ -295,16 +295,9 @@ function portfolioPage(snapshot: ReadySnapshot, state: State): string {
   const target = targetFor(date);
   const targetText = target ? target.targetStartDate + " – " + target.targetEndDate : "ไม่มีข้อมูลช่วงเป้าหมาย";
   const datesHtml = dates.map((item) => "<option value=\"" + esc(item) + "\"" + (item === date ? " selected" : "") + ">" + esc(item) + (targetFor(item) ? " (เป้าหมาย " + esc(targetFor(item)?.targetStartDate) + " – " + esc(targetFor(item)?.targetEndDate) + ")" : "") + "</option>").join("");
-  const bestMacroMetric = [...snapshot.modelMetrics]
-    .filter((metric) => metric.ticker === "MACRO")
-    .sort((left, right) => left.mae - right.mae)[0];
-  const modelNote = bestMacroMetric
-    ? state.portfolio.model === bestMacroMetric.modelName
-      ? "Macro MAE ต่ำสุด · Test"
-      : "Macro MAE ต่ำสุด: " + modelId(bestMacroMetric.modelName) + " · Test"
-    : "ไม่มีผล Macro MAE";
   const portfolioModelLabels = Object.fromEntries(models.map((model) => [model, modelLabel[model].replace(" · ", " ")])) as Record<string, string>;
-  return "<section class=\"st-portfolio-toolbar\"><label class=\"st-field\">วันที่พยากรณ์<select data-field=\"portfolio-date\">" + datesHtml + "</select></label><label class=\"st-field st-portfolio-model-field\">โมเดล<span class=\"st-portfolio-model-chip\"><span class=\"st-portfolio-model-sparkle\" aria-hidden=\"true\">✧</span><select data-field=\"portfolio-model\" aria-label=\"โมเดลที่เลือก\">" + selectOptions(models, portfolioModelLabels, state.portfolio.model) + "</select><span class=\"st-portfolio-model-note\">" + esc(modelNote) + "</span></span></label><span class=\"st-portfolio-source-status\">" + (row?.status === "OK" ? "ข้อมูลต้นทางพร้อม" : "ข้อมูลต้นทางไม่ครบ") + "</span></section>"
+  return "<section class=\"st-portfolio-toolbar\"><label class=\"st-field\">วันที่พยากรณ์<select data-field=\"portfolio-date\">" + datesHtml + "</select></label><label class=\"st-field st-portfolio-model-field\">โมเดล<span class=\"st-portfolio-model-chip\"><span class=\"st-portfolio-model-sparkle\" aria-hidden=\"true\">✧</span><select data-field=\"portfolio-model\" aria-label=\"โมเดลที่เลือก\">" + selectOptions(models, portfolioModelLabels, state.portfolio.model) + "</select></span></label><span class=\"st-portfolio-source-status\">" + (row?.status === "OK" ? "ข้อมูลต้นทางพร้อม" : "ข้อมูลต้นทางไม่ครบ") + "</span></section>"
+
     + "<div class=\"st-portfolio-layout\"><section class=\"st-card st-portfolio-editor\"><div class=\"st-section-heading\"><div><h2>ปรับน้ำหนักพอร์ต</h2><p>เลื่อนแถบหรือพิมพ์สัดส่วน SPY, IEF และ GLD รวมกันได้ 100%</p></div><button class=\"st-button st-button-quiet st-portfolio-reset\" type=\"button\" data-action=\"portfolio-reset\">↻ ค่าตั้งต้น</button></div>"
     + "<div class=\"st-portfolio-weights\">" + weightRows + "</div><div class=\"st-portfolio-total\"><span>น้ำหนักรวมพอร์ต</span><strong class=\"" + (sumOk ? "st-weight-valid" : "st-weight-invalid") + "\">" + (Number.isFinite(total) ? (total * 100).toFixed(0) : "—") + "% " + (sumOk ? "✓" : "· ต้องรวม 100%") + "</strong></div></section>"
     + "<section class=\"st-card st-portfolio-result\"><div class=\"st-section-heading\"><div><h2>ความผันผวนพอร์ต <span class=\"st-portfolio-horizon\">5 วันซื้อขายถัดไป</span></h2><p>ช่วงเป้าหมาย: " + esc(targetText) + " · โมเดล " + esc(modelId(state.portfolio.model)) + "</p></div><span class=\"st-readonly-tag\">คำนวณจาก covariance</span></div>"
@@ -420,10 +413,12 @@ export function startStitch(root: HTMLElement): void {
     portfolio: { model: "ONLINE_SGD", date: "", weights: [0.5, 0.3, 0.2] },
     monitoring: { ticker: "SPY", date: "", feature: "ret_1d_t", windowSize: 60, metric: "wasserstein_normalized", tab: "feature" },
   };
+  let portfolioModelChosen = new URLSearchParams(window.location.hash.split("?")[1] ?? "").has("model");
   applyRouteSelection(state);
   const updatePage = () => {
     const previousPage = state.page;
     state.page = currentPage();
+    if (new URLSearchParams(window.location.hash.split("?")[1] ?? "").has("model")) portfolioModelChosen = true;
     applyRouteSelection(state);
     render(root, state);
     if (state.page !== previousPage) window.scrollTo(0, 0);
@@ -448,7 +443,18 @@ export function startStitch(root: HTMLElement): void {
         replayId: snapshot.manifest.replayId,
         strictCutoff: snapshot.manifest.strictCutoff,
       }).then((featureDrift) => { state.featureDrift = featureDrift; render(root, state); });
-      void loadPolicySnapshot().then((policySnapshot) => { state.policySnapshot = policySnapshot; render(root, state); });
+      void loadPolicySnapshot().then((policySnapshot) => {
+        state.policySnapshot = policySnapshot;
+        if (!portfolioModelChosen && policySnapshot.status === "ready") {
+          const dates = portfolioRiskSourceDates(snapshot.portfolioRisk, state.portfolio.model);
+          const date = dates.includes(state.portfolio.date) ? state.portfolio.date : dates[dates.length - 1] ?? "";
+          const champions = tickers.map((ticker) => policySnapshot.championTimeline.filter((entry) => entry.ticker === ticker && entry.effectiveFromDate <= date).sort((a, b) => a.effectiveFromDate.localeCompare(b.effectiveFromDate) || a.versionSeq - b.versionSeq).at(-1)?.toModelId);
+          const mapping: Record<string, ModelName> = { B0: "CONSTANT_BASELINE", B1: "ROLLING_20D_BASELINE", B2: "STATIC_SGD", B3: "ONLINE_SGD", B4: "HAR_X_OLS" };
+          const champion = champions[0];
+          if (champion && champions.every((model) => model === champion) && mapping[champion] && portfolioRiskSourceDates(snapshot.portfolioRisk, mapping[champion]).includes(date)) state.portfolio.model = mapping[champion];
+        }
+        render(root, state);
+      });
     });
   };
   root.addEventListener("click", (event) => {
@@ -566,6 +572,7 @@ export function startStitch(root: HTMLElement): void {
       else if (field === "monitoring-window" && isDriftWindow(target.value)) state.monitoring.windowSize = Number(target.value) as DriftWindowSize;
       else if (field === "monitoring-metric" && isDriftMetric(target.value)) state.monitoring.metric = target.value;
       else if (field === "portfolio-model" && isModel(target.value)) {
+        portfolioModelChosen = true;
         state.portfolio.model = target.value;
         state.portfolio.date = "";
       }

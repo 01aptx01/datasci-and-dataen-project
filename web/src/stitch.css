@@ -2860,3 +2860,8 @@ body { margin: 0; }
 .st-replay-comparison > summary { cursor: pointer; color: var(--st-ink); font-weight: 700; }
 .st-replay-comparison > .st-table-wrap { margin-top: 16px; }
 .st-replay-explanation { margin: 0; padding: 0 4px; color: var(--st-ink-soft); font-size: 12px; line-height: 1.7; }
+@media (min-width: 901px) {
+  .st-portfolio-toolbar { grid-template-columns: minmax(300px, 1fr) max-content auto; }
+  .st-portfolio-toolbar .st-portfolio-model-field { grid-template-columns: max-content max-content; }
+  .st-portfolio-model-chip { width: fit-content; }
+}
