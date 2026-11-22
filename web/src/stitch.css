@@ -2818,3 +2818,9 @@ body { margin: 0; }
 @media (min-width: 1200px) {
   .st-header { padding-inline: max(24px, calc((100% - 1392px) / 2)); }
 }
+.st-slider-wrap { grid-column: 1 / -1; position: relative; padding-top: 22px; }
+.st-slider-value { position: absolute; top: 0; left: clamp(20px, var(--value), calc(100% - 20px)); transform: translateX(-50%); padding: 1px 6px; border-radius: 5px; background: #2456c6; color: white; font-size: 11px; font-weight: 700; line-height: 18px; }
+.st-covariance-table { table-layout: fixed; font-variant-numeric: tabular-nums; }
+.st-app .st-covariance-table th, .st-app .st-covariance-table td { text-align: center; padding: 12px; }
+.st-app .st-covariance-table tbody tr:nth-child(even) { background: #f7f9fc; }
+.st-app .st-covariance-table tbody th { background: #edf2fa; }

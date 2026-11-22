@@ -272,14 +272,17 @@ function portfolioPage(snapshot: ReadySnapshot, state: State): string {
   const weightRows = tickers.map((ticker, index) => {
     const weight = weights[index];
     const numeric = Number.isFinite(weight) ? Math.round(weight * 100) : "";
-    return "<div class=\"st-portfolio-weight-row " + colors[index] + "\"><div class=\"st-portfolio-weight-heading\"><span class=\"st-portfolio-ticker\"><i></i><strong>" + ticker + "</strong><small>" + labels[index] + "</small></span><label class=\"st-portfolio-weight-value\"><input type=\"number\" min=\"0\" max=\"100\" step=\"1\" inputmode=\"numeric\" data-field=\"portfolio-weight\" data-index=\"" + index + "\" value=\"" + numeric + "\" aria-label=\"น้ำหนัก " + ticker + " เป็นเปอร์เซ็นต์\"><span>%</span></label></div><input class=\"st-portfolio-slider\" type=\"range\" min=\"0\" max=\"100\" step=\"1\" data-field=\"portfolio-weight\" data-index=\"" + index + "\" value=\"" + (Number.isFinite(weight) ? numeric : 0) + "\" aria-label=\"ปรับน้ำหนัก " + ticker + "\" aria-valuetext=\"" + (Number.isFinite(weight) ? numeric + "%" : "ค่าว่าง") + "\"></div>";
+    return "<div class=\"st-portfolio-weight-row " + colors[index] + "\"><div class=\"st-portfolio-weight-heading\"><span class=\"st-portfolio-ticker\"><i></i><strong>" + ticker + "</strong><small>" + labels[index] + "</small></span><label class=\"st-portfolio-weight-value\"><input type=\"number\" min=\"0\" max=\"100\" step=\"1\" inputmode=\"numeric\" data-field=\"portfolio-weight\" data-index=\"" + index + "\" value=\"" + numeric + "\" aria-label=\"น้ำหนัก " + ticker + " เป็นเปอร์เซ็นต์\"><span>%</span></label></div><div class=\"st-slider-wrap\"><output class=\"st-slider-value\" style=\"--value:" + (Number.isFinite(weight) ? numeric : 0) + "%\">" + numeric + "%</output><input class=\"st-portfolio-slider\" type=\"range\" min=\"0\" max=\"100\" step=\"1\" data-field=\"portfolio-weight\" data-index=\"" + index + "\" value=\"" + (Number.isFinite(weight) ? numeric : 0) + "\" aria-label=\"ปรับน้ำหนัก " + ticker + "\" aria-valuetext=\"" + (Number.isFinite(weight) ? numeric + "%" : "ค่าว่าง") + "\"></div></div>";
   }).join("");
   const assetCards = tickers.map((ticker, index) => "<article class=\"st-portfolio-etf-card " + colors[index] + "\"><div class=\"st-portfolio-etf-heading\"><span><i></i><strong>" + ticker + "</strong></span><small>" + (Number.isFinite(weights[index]) ? (weights[index] * 100).toFixed(0) : "—") + "%</small></div><strong class=\"st-portfolio-etf-risk\">" + risk(row?.forecastStatuses[index] === "VALID" ? row.forecastVols[index] : null) + "</strong><span>ความผันผวนบนสินทรัพย์รายปี</span></article>").join("");
-  const matrix = row?.covariance ? "<div class=\"st-table-wrap\"><table class=\"st-table st-covariance-table\"><thead><tr><th>Σ</th><th>SPY</th><th>IEF</th><th>GLD</th></tr></thead><tbody>" + row.covariance.map((values, index) => "<tr><th>" + tickers[index] + "</th>" + values.map((value) => "<td>" + value.toExponential(3) + "</td>").join("") + "</tr>").join("") + "</tbody></table></div>" : "<div class=\"st-empty\"><strong>ไม่มี covariance ที่ใช้คำนวณได้</strong><span>" + esc(row?.missingInputs.join(" · ") ?? "ไม่มี source row") + "</span></div>";
+  const matrix = row?.covariance ? "<div class=\"st-table-wrap\"><table class=\"st-table st-covariance-table\"><thead><tr><th>Σ</th><th>SPY</th><th>IEF</th><th>GLD</th></tr></thead><tbody>" + row.covariance.map((values, index) => "<tr><th>" + tickers[index] + "</th>" + values.map((value) => "<td>" + value.toFixed(6) + "</td>").join("") + "</tr>").join("") + "</tbody></table></div>" : "<div class=\"st-empty\"><strong>ไม่มี covariance ที่ใช้คำนวณได้</strong><span>" + esc(row?.missingInputs.join(" · ") ?? "ไม่มี source row") + "</span></div>";
   const total = weights.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
   const sumOk = valid.status === "valid";
   const query = new URLSearchParams({ date, model: state.portfolio.model, ticker: "SPY" }).toString();
-  const datesHtml = dates.map((item) => "<option value=\"" + esc(item) + "\"" + (item === date ? " selected" : "") + ">" + esc(item) + "</option>").join("");
+  const targetFor = (item: string) => snapshot.sessions.find((forecast) => forecast.predictionDate === item && forecast.modelName === state.portfolio.model && forecast.ticker === "SPY");
+  const target = targetFor(date);
+  const targetText = target ? target.targetStartDate + " – " + target.targetEndDate : "ไม่มีข้อมูลช่วงเป้าหมาย";
+  const datesHtml = dates.map((item) => "<option value=\"" + esc(item) + "\"" + (item === date ? " selected" : "") + ">" + esc(item) + (targetFor(item) ? " (เป้าหมาย " + esc(targetFor(item)?.targetStartDate) + " – " + esc(targetFor(item)?.targetEndDate) + ")" : "") + "</option>").join("");
   const bestMacroMetric = [...snapshot.modelMetrics]
     .filter((metric) => metric.ticker === "MACRO")
     .sort((left, right) => left.mae - right.mae)[0];
@@ -292,7 +295,7 @@ function portfolioPage(snapshot: ReadySnapshot, state: State): string {
   return "<section class=\"st-portfolio-toolbar\"><label class=\"st-field\">วันที่พยากรณ์<select data-field=\"portfolio-date\">" + datesHtml + "</select></label><label class=\"st-field st-portfolio-model-field\">โมเดล<span class=\"st-portfolio-model-chip\"><span class=\"st-portfolio-model-sparkle\" aria-hidden=\"true\">✧</span><select data-field=\"portfolio-model\" aria-label=\"โมเดลที่เลือก\">" + selectOptions(models, portfolioModelLabels, state.portfolio.model) + "</select><span class=\"st-portfolio-model-note\">" + esc(modelNote) + "</span></span></label><span class=\"st-portfolio-source-status\">" + (row?.status === "OK" ? "ข้อมูลต้นทางพร้อม" : "ข้อมูลต้นทางไม่ครบ") + "</span></section>"
     + "<div class=\"st-portfolio-layout\"><section class=\"st-card st-portfolio-editor\"><div class=\"st-section-heading\"><div><h2>ปรับน้ำหนักพอร์ต</h2><p>เลื่อนแถบหรือพิมพ์สัดส่วน SPY, IEF และ GLD รวมกันได้ 100%</p></div><button class=\"st-button st-button-quiet st-portfolio-reset\" type=\"button\" data-action=\"portfolio-reset\">↻ ค่าตั้งต้น</button></div>"
     + "<div class=\"st-portfolio-weights\">" + weightRows + "</div><div class=\"st-portfolio-total\"><span>น้ำหนักรวมพอร์ต</span><strong class=\"" + (sumOk ? "st-weight-valid" : "st-weight-invalid") + "\">" + (Number.isFinite(total) ? (total * 100).toFixed(0) : "—") + "% " + (sumOk ? "✓" : "· ต้องรวม 100%") + "</strong></div></section>"
-    + "<section class=\"st-card st-portfolio-result\"><div class=\"st-section-heading\"><div><h2>ความผันผวนพอร์ต <span class=\"st-portfolio-horizon\">5 วันซื้อขายถัดไป</span></h2><p>วันพยากรณ์: " + esc(row?.predictionDate ?? date) + " · โมเดล " + esc(modelId(state.portfolio.model)) + "</p></div><span class=\"st-readonly-tag\">คำนวณจาก covariance</span></div>"
+    + "<section class=\"st-card st-portfolio-result\"><div class=\"st-section-heading\"><div><h2>ความผันผวนพอร์ต <span class=\"st-portfolio-horizon\">5 วันซื้อขายถัดไป</span></h2><p>ช่วงเป้าหมาย: " + esc(targetText) + " · โมเดล " + esc(modelId(state.portfolio.model)) + "</p></div><span class=\"st-readonly-tag\">คำนวณจาก covariance</span></div>"
     + "<div class=\"st-portfolio-risk-card\"><div><strong>" + risk(portfolioVol) + "</strong><span>ต่อปี</span><p>" + (sumOk ? "ความเสี่ยงพอร์ตจากน้ำหนักที่เลือก" : "ปรับน้ำหนักให้รวมกันเท่ากับ 100% เพื่อคำนวณ") + "</p></div><span class=\"st-portfolio-ready\">" + (portfolioVol !== null ? "✓ พร้อมใช้งาน" : "ตรวจน้ำหนักและข้อมูล") + "</span></div>"
     + "<div class=\"st-portfolio-etf-title\"><strong>ความผันผวนรายตัวของ ETF ที่ประกอบเป็นพอร์ต</strong><span>รายปี</span></div><div class=\"st-portfolio-etf-grid\">" + assetCards + "</div>"
     + "<div class=\"st-portfolio-footer\"><span>ส่งต่อวันที่และโมเดลที่เลือกไปดูกราฟและผลย้อนหลัง</span><a class=\"st-button st-button-primary st-portfolio-replay-link\" href=\"#/replay?" + esc(query) + "\">▷ ดูค่าพยากรณ์วันนี้ใน Replay</a></div></section></div>"
@@ -486,6 +489,15 @@ export function startStitch(root: HTMLElement): void {
     }
     if (action === "monitoring-tab" || action === "monitoring-date-point") updateMonitoringUrl(state);
     render(root, state);
+  });
+  root.addEventListener("input", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || target.type !== "range" || target.dataset.field !== "portfolio-weight") return;
+    const wrapper = target.closest(".st-portfolio-weight-row");
+    const output = wrapper?.querySelector<HTMLOutputElement>(".st-slider-value");
+    const number = wrapper?.querySelector<HTMLInputElement>('input[type="number"]');
+    if (output) { output.value = target.value + "%"; output.style.setProperty("--value", target.value + "%"); }
+    if (number) number.value = target.value;
   });
   root.addEventListener("change", (event) => {
     const target = event.target;
