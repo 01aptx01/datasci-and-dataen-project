@@ -15,6 +15,7 @@ import {
   parseHypothesisResultRow,
   parseBootstrapDiagnosticRow,
   parseHighVolatilityMetricRow,
+  parseB4ComparisonRow,
   parsePolicy,
   parseSnapshotManifest,
   type EvaluationRow,
@@ -25,6 +26,7 @@ import {
   type ModelName,
   type ModelMetricRow,
   type PairComparisonRow,
+  type B4ComparisonRow,
   type CoverageRow,
   type PortfolioRiskRow,
   type RollingMae20Row,
@@ -58,6 +60,8 @@ export type SnapshotState =
       hypothesisResults: HypothesisResultRow[];
       bootstrapDiagnostics: BootstrapDiagnosticRow[];
       highVolatilityMetrics: HighVolatilityMetricRow[];
+      b4Comparisons?: B4ComparisonRow[];
+      referenceB0B3Metrics?: ModelMetricRow[];
     }
   | { status: "missing"; message: string }
   | { status: "error"; message: string };
@@ -183,10 +187,14 @@ export async function verifySnapshotFileBytes(
   policy: SnapshotPolicy,
   files: Record<string, Uint8Array | undefined>,
 ): Promise<void> {
-  const artifacts = (Object.keys(policy.publicOutputs) as (keyof SnapshotPolicy["publicOutputs"])[]).map((key) => ({
-    artifact: manifest.files[key],
-    expected: policy.memberSha256[policy.members[key]],
-  }));
+  const artifacts = (Object.keys(policy.publicOutputs) as (keyof SnapshotPolicy["publicOutputs"])[]).map((key) => {
+    const memberKey = policy.members[key];
+    if (!memberKey) throw new SnapshotLoadError(`Snapshot policy missing member path for ${key}`, "integrity");
+    return {
+      artifact: manifest.files[key],
+      expected: policy.memberSha256[memberKey],
+    };
+  });
   requireSnapshotFiles(files, artifacts.map(({ artifact }) => artifact.path));
   for (const { artifact, expected } of artifacts) {
     const bytes = files[artifact.path];
@@ -334,7 +342,7 @@ function validateAdditionalSources(
   const bootstrapByScope = keyed(bootstrap, (row) => `${row.hypothesisId}:${row.blockLength}`, "bootstrap_diagnostics.csv");
   if (bootstrapByScope.size !== 4 || !["H2", "H3"].every((hypothesis) => [5, 20].every((blockLength) => bootstrapByScope.has(`${hypothesis}:${blockLength}`)))) throw new SnapshotLoadError("bootstrap_diagnostics.csv does not contain the pinned sensitivity rows", "integrity");
   const highVolByScope = keyed(highVolatility, (row) => `${row.split}:${row.ticker}:${row.modelName}`, "high_volatility_metrics.csv");
-  if (highVolByScope.size !== 12 || highVolatility.some((row) => row.split === "test" && row.ticker === "IEF" && (row.highVolAnchorCount !== 0 || row.highVolCommonEvaluableN !== 0 || row.mae !== null || row.rmse !== null))) throw new SnapshotLoadError("High-volatility subset counts do not match the pinned source; IEF Test must remain insufficient evidence", "integrity");
+  if (highVolByScope.size !== manifest.expectedCounts.highVolatilityMetricsRows || highVolatility.some((row) => row.split === "test" && row.ticker === "IEF" && (row.highVolAnchorCount !== 0 || row.highVolCommonEvaluableN !== 0 || row.mae !== null || row.rmse !== null))) throw new SnapshotLoadError("High-volatility subset counts do not match the pinned source; IEF Test must remain insufficient evidence", "integrity");
   void rollingByScope;
   void portfolioByScope;
 }
@@ -380,9 +388,21 @@ export async function loadSnapshot(fetcher: typeof fetch = fetch, baseHref: stri
     const hypothesisResults = parseHypothesisResults(content.hypothesisResults, policy);
     const bootstrapDiagnostics = parseBootstrapDiagnostics(content.bootstrapDiagnostics, policy);
     const highVolatilityMetrics = parseHighVolatilityMetrics(content.highVolatilityMetrics, policy);
+    const b4Comparisons = content.b4Comparisons && policy.expectedHeaders.b4Comparisons
+      ? parseRows(content.b4Comparisons, policy.expectedHeaders.b4Comparisons, "b4_comparisons.csv", parseB4ComparisonRow)
+      : undefined;
+    const referenceB0B3Metrics = content.referenceB0B3Metrics && policy.expectedHeaders.referenceB0B3Metrics
+      ? parseRows(content.referenceB0B3Metrics, policy.expectedHeaders.referenceB0B3Metrics, "reference_b0_b3_metrics.csv", parseModelMetricRow)
+      : undefined;
     verifyCounts(auditRows, evaluationRows, manifest);
     if (modelMetrics.length !== manifest.expectedCounts.modelMetricsRows || pairComparisons.length !== manifest.expectedCounts.pairComparisonsRows || coverage.length !== manifest.expectedCounts.coverageRows) {
       throw new SnapshotLoadError("D3 source row counts do not match the verified manifest", "integrity");
+    }
+    if (b4Comparisons && manifest.expectedCounts.b4ComparisonsRows !== undefined && b4Comparisons.length !== manifest.expectedCounts.b4ComparisonsRows) {
+      throw new SnapshotLoadError("b4_comparisons.csv row count does not match the verified manifest", "integrity");
+    }
+    if (referenceB0B3Metrics && manifest.expectedCounts.referenceB0B3MetricsRows !== undefined && referenceB0B3Metrics.length !== manifest.expectedCounts.referenceB0B3MetricsRows) {
+      throw new SnapshotLoadError("reference_b0_b3_metrics.csv row count does not match the verified manifest", "integrity");
     }
     if (new Set(modelMetrics.map((row) => `${row.ticker}:${row.modelName}`)).size !== modelMetrics.length || new Set(pairComparisons.map((row) => `${row.comparisonId}:${row.ticker}`)).size !== pairComparisons.length || new Set(coverage.map((row) => `${row.split}:${row.ticker}:${row.modelName}`)).size !== coverage.length) {
       throw new SnapshotLoadError("A D3 source CSV contains duplicate scope rows", "integrity");
@@ -392,6 +412,8 @@ export async function loadSnapshot(fetcher: typeof fetch = fetch, baseHref: stri
       status: "ready", policy, manifest, sessions: auditRows.filter((row) => row.split === "test"), forecasts: auditRows,
       evaluations: validateEvaluationJoin(auditRows, evaluationRows), modelMetrics, pairComparisons, coverage,
       portfolioRisk, rollingMae20, driftTimeline, h1Scatter, h1Results, h1Sensitivity, hypothesisResults, bootstrapDiagnostics, highVolatilityMetrics,
+      ...(b4Comparisons ? { b4Comparisons } : {}),
+      ...(referenceB0B3Metrics ? { referenceB0B3Metrics } : {}),
     };
   } catch (error) {
     if (error instanceof SnapshotLoadError && error.kind === "missing") return { status: "missing", message: error.message };

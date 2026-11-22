@@ -10,9 +10,9 @@ type ReadySnapshot = Extract<SnapshotState, { status: "ready" }>;
 type ForecastStatusFilter = "all" | "mature" | "pending" | "invalid";
 const pages: Page[] = ["overview", "forecasts", "replay", "portfolio", "models", "monitoring", "evidence"];
 const tickers: Ticker[] = ["SPY", "IEF", "GLD"];
-const models: ModelName[] = ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"];
+const models: ModelName[] = ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS"];
 const tickerLabel: Record<Ticker, string> = { SPY: "SPY · หุ้นสหรัฐ", IEF: "IEF · Treasury", GLD: "GLD · ทองคำ" };
-const modelLabel: Record<ModelName, string> = { CONSTANT_BASELINE: "B0 · Constant baseline", ROLLING_20D_BASELINE: "B1 · Rolling 20D", STATIC_SGD: "B2 · Static SGD", ONLINE_SGD: "B3 · Online SGD" };
+const modelLabel: Record<ModelName, string> = { CONSTANT_BASELINE: "B0 · Constant baseline", ROLLING_20D_BASELINE: "B1 · Rolling 20D", STATIC_SGD: "B2 · Static SGD", ONLINE_SGD: "B3 · Online SGD", HAR_X_OLS: "B4 · HAR-X (OLS)" };
 const pageLabel: Record<Page, string> = {
   overview: "ภาพรวม", forecasts: "พยากรณ์", replay: "เล่นย้อนหลัง", portfolio: "ทดลองพอร์ต",
   models: "โมเดล", monitoring: "ติดตาม", evidence: "หลักฐาน",

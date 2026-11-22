@@ -100,7 +100,7 @@ def validate_status_row(row: dict[str, str], row_number: int) -> None:
         raise SnapshotError(f"Unexpected split on forecast audit row {row_number}: {split}")
     if row["ticker"] not in {"SPY", "IEF", "GLD"}:
         raise SnapshotError(f"Unexpected ticker on forecast audit row {row_number}")
-    if row["model_name"] not in {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"}:
+    if row["model_name"] not in {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS"}:
         raise SnapshotError(f"Unexpected model on forecast audit row {row_number}")
     actual = number_or_none(row["target_realized_vol_5d"], "target_realized_vol_5d", row_number)
     error = number_or_none(row["absolute_error"], "absolute_error", row_number)
@@ -179,7 +179,7 @@ def validate_d4_d5_sources(
     audit_rows: list[dict[str, str]], evaluation_rows: list[dict[str, str]],
     sources: dict[str, list[dict[str, str]]], policy: dict[str, Any],
 ) -> None:
-    models = {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"}
+    models = {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS"}
     tickers = {"SPY", "IEF", "GLD"}
     audit_by_scope = {(row["split"], row["prediction_date"], row["ticker"], row["model_name"]): row for row in audit_rows}
     portfolio_keys: set[tuple[str, str, str]] = set()
@@ -399,7 +399,7 @@ def validate_json_identity(
 
 def verify_archive(repo_root: Path, policy: dict[str, Any]) -> tuple[dict[str, bytes], dict[str, Any], dict[str, Any], dict[str, Any]]:
     source = policy["source"]
-    downloads = repo_root / "docs" / "ml-results" / "downloads"
+    downloads = repo_root / source.get("zipDir", "docs/ml-results/downloads")
     zip_path = downloads / source["zipName"]
     if not zip_path.is_file():
         raise SnapshotError(f"Handoff ZIP is missing: {zip_path}")
@@ -435,7 +435,7 @@ def verify_archive(repo_root: Path, policy: dict[str, Any]) -> tuple[dict[str, b
             "sourceIdentity", "executionManifest", "stage05Manifest", "forecastAudit", "evaluation",
             "modelMetrics", "pairComparisons", "coverage", "portfolioRisk", "rollingMae20", "driftErrorTimeline",
             "h1ScatterData", "h1Results", "h1Sensitivity", "hypothesisResults", "bootstrapDiagnostics", "highVolatilityMetrics",
-        )]
+        )] + [member_names[k] for k in ("b4Comparisons", "referenceB0B3Metrics") if k in member_names]
         for name in required:
             if name not in internal_member_checksums:
                 raise SnapshotError(f"Required handoff member is missing: {name}")
@@ -464,10 +464,13 @@ def validate_handoff_csvs(payloads: dict[str, bytes], policy: dict[str, Any]) ->
     if len(model_metric_rows) != counts["modelMetricsRows"] or len(pair_rows) != counts["pairComparisonsRows"] or len(coverage_rows) != counts["coverageRows"]:
         raise SnapshotError("D3 model or coverage CSV row counts do not match the pinned review snapshot")
 
-    additional_keys = (
+    additional_keys = [
         "portfolioRisk", "rollingMae20", "driftErrorTimeline", "h1ScatterData", "h1Results", "h1Sensitivity",
         "hypothesisResults", "bootstrapDiagnostics", "highVolatilityMetrics",
-    )
+    ]
+    for optional_key in ("b4Comparisons", "referenceB0B3Metrics"):
+        if optional_key in members:
+            additional_keys.append(optional_key)
     additional_rows: dict[str, list[dict[str, str]]] = {}
     additional_headers: dict[str, list[str]] = {}
     for key in additional_keys:
@@ -479,7 +482,7 @@ def validate_handoff_csvs(payloads: dict[str, bytes], policy: dict[str, Any]) ->
 
     validate_d4_d5_sources(audit_rows, evaluation_rows, additional_rows, policy)
 
-    models = {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"}
+    models = {"CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD", "HAR_X_OLS"}
     tickers = {"SPY", "IEF", "GLD"}
     macro_tickers = tickers | {"MACRO"}
     metric_keys: set[tuple[str, str, str]] = set()
@@ -652,6 +655,7 @@ def safe_replace_generated_directory(target: Path, expected_evaluation_id: str, 
         "forecast_audit.csv", "evaluation.csv", "model_metrics.csv", "pair_comparisons.csv", "coverage.csv",
         "portfolio_risk.csv", "rolling_mae20.csv", "drift_error_timeline.csv", "H1_scatter_data.csv", "H1_results.csv",
         "H1_sensitivity.csv", "hypothesis_results.csv", "bootstrap_diagnostics.csv", "high_volatility_metrics.csv",
+        "b4_comparisons.csv", "reference_b0_b3_metrics.csv",
     }
     artifact_names = {artifact.get("path") for artifact in public_outputs.values()}
     expected_names = artifact_names | {"dashboard_snapshot_manifest.json"}
@@ -687,6 +691,7 @@ def prepare_snapshot(repo_root: Path, output_root: Path, policy_path: Path) -> P
             "portfolioRisk": "portfolioRiskRows", "rollingMae20": "rollingMae20Rows", "driftErrorTimeline": "driftErrorTimelineRows",
             "h1ScatterData": "h1ScatterDataRows", "h1Results": "h1ResultsRows", "h1Sensitivity": "h1SensitivityRows",
             "hypothesisResults": "hypothesisResultsRows", "bootstrapDiagnostics": "bootstrapDiagnosticsRows", "highVolatilityMetrics": "highVolatilityMetricsRows",
+            "b4Comparisons": "b4ComparisonsRows", "referenceB0B3Metrics": "referenceB0B3MetricsRows",
         }
         for key, filename in policy["publicOutputs"].items():
             member_key = key
@@ -701,7 +706,7 @@ def prepare_snapshot(repo_root: Path, output_root: Path, policy_path: Path) -> P
             }
 
         manifest = {
-            "schemaVersion": "1.0.0",
+            "schemaVersion": policy.get("schemaVersion", "1.1.0" if "b4Comparisons" in policy["publicOutputs"] else "1.0.0"),
             "sourceRepository": policy["source"]["repository"],
             "sourceHandoffCommit": policy["source"]["handoffCommit"],
             "sourceMainCommitAtStart": policy["source"]["mainCommitAtStart"],

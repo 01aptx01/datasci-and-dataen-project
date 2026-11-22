@@ -129,9 +129,28 @@
 
 ## Session 5 — Handoff และ Dashboard
 
-- [ ] Export/prepare ตรวจห้าโมเดล, artifact identity, row counts และ checksum
+- [x] Export/prepare ตรวจห้าโมเดล, artifact identity, row counts และ checksum
 - [ ] Build/test ผ่าน และตรวจ Forecast, Replay, Comparison, Portfolio กับข้อมูล B4
 - [ ] ตรวจ pending, forecast ไม่ครบ และ drift ของ B3 บันทึกระดับข้อมูลที่ใช้ตรวจ
+
+### หลักฐาน Session 5
+- **สถานะ**: `BLOCKED` (โค้ด, export, prepare, typecheck, build และ 32/32 Node tests ผ่านหมดแล้ว เหลือเฉพาะการตรวจหน้าเว็บจริงใน Chrome เพราะ `DevToolsActivePort` ยังไม่เปิด)
+- **โค้ดและ Policy ที่อัปเดต**:
+  - [export_ml_results_handoff.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/scripts/export_ml_results_handoff.py) & [test_ml_results_handoff_export.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/tests/test_ml_results_handoff_export.py): เพิ่ม `HAR_X_OLS`, `b4_comparisons.csv`, `reference_b0_b3_metrics.csv`, `handoff_schema_version="1.1.0"`
+  - [prepare_snapshot.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/scripts/web/prepare_snapshot.py): รองรับทั้ง `1.0.0` (4 โมเดล) และ `1.1.0` (5 โมเดล + `b4Comparisons` + `referenceB0B3Metrics`)
+  - [snapshot.b4.policy.json](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/snapshot.b4.policy.json): policy `1.1.0` สำหรับ B4 snapshot (แยกจาก [snapshot.policy.json](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/snapshot.policy.json) `1.0.0` เดิม)
+  - Web TypeScript & Tests: [schemas.ts](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/src/data/schemas.ts), [loadSnapshot.ts](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/src/data/loadSnapshot.ts), [replay.ts](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/src/data/replay.ts), [stitch.ts](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/src/stitch.ts), [stitchOther.ts](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/src/stitchOther.ts), [b4.test.mjs](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/tests/b4.test.mjs)
+- **คำสั่งและผลตรวจ**:
+  - Export unit tests: `.venv\Scripts\python.exe -m pytest tests\test_ml_results_handoff_export.py -v` → **5 passed**
+  - Export B4 ZIP (`repo_root=None` ใน Session 5; หมายเหตุเรื่อง Git HEAD บน Windows: `git show HEAD:src/ml_evaluation/*.py` เป็น LF ส่วน working tree บน Windows เป็น CRLF จึงต้องจัดการ line-ending/Linux-parity ใน Session 6): `data/processed/handoff_b4/ml-results-handoff-b4-b90df6ae.zip` (`sha256=9818537d1ecf2843ce8c0a00764245d7ffb546fa3baf42fab77ae7af07c6b34c`)
+  - Prepare B4 snapshot + Tampered Rejection:
+    - `.venv\Scripts\python.exe scripts\web\prepare_snapshot.py --repo-root . --policy web\snapshot.b4.policy.json --output web\public\snapshots` → `SNAPSHOT VERIFIED` (`test_pending_rows=75`)
+    - Tampered `zipSha256` → `rc=1` (`SNAPSHOT REJECTED: SHA256SUMS.txt does not match the pinned ZIP identity`)
+    - Tampered `evaluationId` → `rc=1` (`SNAPSHOT REJECTED: Evaluation ID does not match the pinned review snapshot`)
+  - Web Build & Automated Tests: `cd web && npm test` → **32/32 passed** (รวม `1.0.0` baseline 29 tests + `1.1.0` B4 snapshot 3 tests)
+  - Preview server: `npm run preview` เปิดอยู่ที่ `http://localhost:4173` (stage `web/dist` ด้วย B4 snapshot `b90df6ae...`)
+- **เกณฑ์ที่ยังไม่ผ่านและสิ่งที่ขาด**:
+  - Live browser UI inspection บน `http://localhost:4173` ถูก **BLOCKED**: browser subagent เชื่อมต่อ Chrome ไม่ได้ (`DevToolsActivePort` missing at `C:\Users\teera\AppData\Local\Google\Chrome\User Data\DevToolsActivePort`). ต้องเปิด remote debugging ใน Chrome (`chrome://inspect/#remote-debugging`) แล้วตรวจหน้า Forecast, Replay, Portfolio, Models และ Monitoring กับ B4 ก่อนปรับเป็น PASS.
 
 ## Session 6 — รันจริง
 

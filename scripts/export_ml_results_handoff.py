@@ -22,6 +22,7 @@ REQUIRED_OUTPUT_FILES = (
     "H1_scatter_plot_spec.json",
     "H1_sensitivity.csv",
     "ML_dataset_preparation_report.json",
+    "b4_comparisons.csv",
     "bootstrap_diagnostics.csv",
     "coverage.csv",
     "drift_error_timeline.csv",
@@ -36,6 +37,7 @@ REQUIRED_OUTPUT_FILES = (
     "monthly_metrics.csv",
     "pair_comparisons.csv",
     "portfolio_risk.csv",
+    "reference_b0_b3_metrics.csv",
     "rolling_mae20.csv",
     "yearly_metrics.csv",
 )
@@ -54,6 +56,7 @@ _EXPECTED_MODELS = [
     "ROLLING_20D_BASELINE",
     "STATIC_SGD",
     "ONLINE_SGD",
+    "HAR_X_OLS",
 ]
 _ABSOLUTE_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+|/(?!/)[^/])")
 
@@ -415,7 +418,7 @@ def export_results_bundle(
 
     row_counts = _row_counts(approved_dir, REQUIRED_OUTPUT_FILES)
     identity = {
-        "handoff_schema_version": "1.0.0",
+        "handoff_schema_version": "1.1.0",
         "source_verification_status": "SOURCE VERIFIED",
         "evaluation_id": manifest["evaluation_id"],
         "final_replay_experiment_id": manifest["final_replay_experiment_id"],
