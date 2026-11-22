@@ -7,6 +7,7 @@ import { resolveAsOfLabelView, selectSameDateForecasts } from "./data/replay.js"
 import { calculateDescriptiveRangeMetrics } from "./data/rangeMetrics.js";
 import { defaultExperimentSelection, isIsoCalendarDate, parseExperimentSelection, parseHashRoute, serializeSelectionHash, validateExperimentSelection, type ExperimentSelection, type SelectionSource } from "./data/selection.js";
 import { renderFinancialDecisionLab } from "./ui/financialDecisionLab.js";
+import { renderSessionChart } from "./ui/sessionChart.js";
 
 interface RouteDefinition {
   path: string;
@@ -236,7 +237,10 @@ function publishSelection(root: HTMLElement, state: ViewState, selection: Experi
     applyLocationSelection(state, hash);
     render(root, state);
   } else {
-    window.location.hash = hash;
+    state.selection = selection;
+    state.selectionError = "";
+    window.history.pushState(window.history.state, "", `${window.location.pathname}${window.location.search}${hash}`);
+    render(root, state);
   }
 }
 
@@ -252,7 +256,8 @@ function publishRangeSelection(root: HTMLElement, state: ViewState): void {
 function selectionContextSummary(state: ViewState): string {
   const selection = state.selection;
   if (!selection || state.snapshot.status !== "ready") return "";
-  return `<section class="selection-context" aria-label="Shared experiment selection"><div><span class="section-overline">ONE VERIFIED SESSION</span><strong>${escapeHtml(selection.predictionDate)} · ${selection.split.toUpperCase()} · ${escapeHtml(selection.ticker)} · ${modelId(selection.modelName)}</strong></div><small>Eval ${escapeHtml(selection.evaluationId.slice(0, 12))}… · Replay ${escapeHtml(selection.replayId.slice(0, 12))}…</small></section>`;
+  const view = selection.view === "as-of" ? `As-of ${selection.asOfDate ?? selection.predictionDate}` : "Retrospective";
+  return `<section class="selection-context" aria-label="Shared experiment selection"><div><span class="section-overline">ONE VERIFIED SESSION</span><strong>${escapeHtml(selection.predictionDate)} · ${selection.split.toUpperCase()} · ${escapeHtml(selection.ticker)} · ${modelId(selection.modelName)} · ${escapeHtml(view)}</strong></div><small>Eval ${escapeHtml(selection.evaluationId.slice(0, 12))}… · Replay ${escapeHtml(selection.replayId.slice(0, 12))}…</small></section>`;
 }
 
 function validateFinancialDecisionState(state: FinancialScenarioState): boolean {
@@ -263,16 +268,19 @@ function validateFinancialDecisionState(state: FinancialScenarioState): boolean 
     ["A", "B"].includes(state.activeScenario);
 }
 
-function publishFinancialDecision(root: HTMLElement, state: ViewState): void {
+function publishFinancialDecision(root: HTMLElement, state: ViewState, focusFallback: HTMLElement | null = null): void {
   if (!state.selection || state.routePath !== "/portfolio" || !validateFinancialDecisionState(state.financialDecision)) {
-    render(root, state);
+    render(root, state, focusFallback);
     return;
   }
   const baseHash = serializeSelectionHash("/portfolio", state.selection);
   const hash = serializeFinancialDecisionHash(baseHash, state.financialDecision);
   state.riskBudgetError = "";
-  if (hash === window.location.hash) render(root, state);
-  else window.location.hash = hash;
+  if (hash === window.location.hash) render(root, state, focusFallback);
+  else {
+    window.history.pushState(window.history.state, "", `${window.location.pathname}${window.location.search}${hash}`);
+    render(root, state, focusFallback);
+  }
 }
 
 function icon(name: string, size = 20): string {
@@ -330,6 +338,10 @@ function metricName(metric: MetricName): string {
 
 function sourceFooter(filename: string, split: string, selection: string, n: number, units: string, evaluationId: string): string {
   return `<div class="data-source-footer"><span>Source <code>${escapeHtml(filename)}</code></span><span>Split <strong>${escapeHtml(split)}</strong></span><span>Selection <strong>${escapeHtml(selection)}</strong></span><span>N <strong>${n.toLocaleString()}</strong></span><span>Units <strong>${escapeHtml(units)}</strong></span><span>Evaluation <code>${escapeHtml(evaluationId.slice(0, 12))}…</code></span></div>`;
+}
+
+function copyValueButton(value: string, label: string): string {
+  return `<button class="copy-value-button" type="button" data-action="copy-source-value" data-copy-value="${escapeHtml(value)}" data-copy-label="${escapeHtml(label)}" aria-label="คัดลอก ${escapeHtml(label)}"><span data-copy-status>คัดลอก</span></button>`;
 }
 
 function chartDataTable(caption: string, headers: string[], rows: string[]): string {
@@ -595,37 +607,39 @@ function sessionCard(state: ViewState): string {
     const forecast = comparison.forecastStatus === "VALID" ? comparison.predictedVolAnnualized : null;
     return `<tr><th scope="row"><span class="model-chip" style="--model-color:${modelColors[comparison.modelName]}">${modelId(comparison.modelName)}</span></th><td>${formatVol(forecast, state.unit)}</td><td>${comparisonView.status === "revealed" ? formatVol(comparisonView.actual, state.unit) : "—"}</td><td>${comparisonView.status === "revealed" ? formatVol(comparisonView.absoluteError, state.unit) : "—"}</td><td><span class="status-chip ${comparison.evaluationStatus === "PENDING_LABEL" ? "status-pending" : comparison.evaluationStatus === "EVALUABLE" ? "status-evaluable" : "status-neutral"}">${escapeHtml(comparison.evaluationStatus)}</span></td><td><button class="table-link" type="button" data-action="open-session" data-prediction-id="${escapeHtml(comparison.predictionId)}">ดูแถวนี้</button></td></tr>`;
   });
+  const chartPoints = available.map((session) => {
+    const sessionEvaluation = snapshot.evaluations.get(session.predictionId);
+    const sessionAsOf = selection.view === "retrospective" ? session.targetEndDate : asOfDate;
+    const sessionView = resolveAsOfLabelView(session, sessionAsOf, true, sessionEvaluation);
+    return {
+      predictionDate: session.predictionDate,
+      predictionId: session.predictionId,
+      forecast: session.forecastStatus === "VALID" ? session.predictedVolAnnualized : null,
+      actual: sessionView.status === "revealed" ? sessionView.actual : null,
+      status: session.evaluationStatus === "PENDING_LABEL" ? "PENDING_LABEL" : sessionView.status === "revealed" ? "EVALUABLE" : sessionView.status,
+    };
+  });
   const portfolioReady = selection.split === "test" && selectedPortfolioRow(snapshot, row.predictionDate, selection.modelName) !== undefined;
-  const reducedMotion = typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const noForecastWarning = !validForecast ? '<p class="error-inline">ไม่มีค่าพยากรณ์ที่ใช้แสดงได้ตามสถานะใน source row</p>' : "";
   return `
     <section class="session-card" aria-labelledby="session-title">
       <div class="session-head"><div><div class="eyebrow"><span class="eyebrow-dot"></span> DAILY REPLAY · SAVED ${selection.split.toUpperCase()} RECORDS</div><h2 id="session-title">ไล่ดู forecast รายวัน</h2><p>กำลังเปิดดู prediction ที่บันทึกไว้เท่านั้น · ไม่เรียก inference, train หรือ replay ใหม่ · วันที่เลือกได้มาจาก XNYS records ใน snapshot</p></div><span class="readonly-pill">${icon("lock", 14)} ดูอย่างเดียว</span></div>
-      <div class="session-filters"><label class="field-label">สินทรัพย์<select data-field="ticker">${tickerOptions}</select></label><label class="field-label">โมเดล<select data-field="model">${modelOptions}</select></label></div>
-      <div class="session-navigation" aria-label="Recorded forecast timeline">
-        <div class="session-step-row">
+      <div class="session-step-row" role="group" aria-label="Recorded forecast timeline">
           <button class="session-step-button" type="button" data-action="previous" aria-label="วันก่อนหน้า" ${index === 0 ? "disabled" : ""}>${icon("arrowLeft")}<span>วันก่อนหน้า</span></button>
-          <div class="session-date" aria-live="polite"><span>วันทำนาย · XNYS</span><strong data-session-current-date>${escapeHtml(row.predictionDate)}</strong><small data-session-position>วันที่ ${index + 1} จาก ${available.length}</small></div>
+          <div class="session-date" aria-live="polite"><span>วันทำนาย · XNYS</span><strong data-session-current-date>${escapeHtml(row.predictionDate)}</strong><small data-session-position>วันที่ ${index + 1} จาก ${available.length}</small><small class="session-step-context">${escapeHtml(selection.ticker)} · ${modelId(selection.modelName)} · ${selection.view === "as-of" ? `As-of ${escapeHtml(asOfDate)}` : "ย้อนหลัง"}</small></div>
           <button class="session-step-button" type="button" data-action="next" aria-label="วันถัดไป" ${index >= available.length - 1 ? "disabled" : ""}><span>วันถัดไป</span>${icon("arrowRight")}</button>
-        </div>
-        <div class="session-timeline">
-          <label for="session-index">เลือกวันจากรายการที่บันทึกไว้ · ${available.length.toLocaleString()} วันทำการ</label>
-          <div class="session-date-controls"><button class="session-boundary-button" type="button" data-action="first" ${index === 0 ? "disabled" : ""}>วันแรก</button><select id="session-date-select" data-field="session-date" aria-label="เลือกวันทำนายที่บันทึกไว้">${available.map((session, itemIndex) => `<option value="${escapeHtml(session.predictionDate)}" ${itemIndex === index ? "selected" : ""}>${escapeHtml(session.predictionDate)} · ${itemIndex + 1}/${available.length}</option>`).join("")}</select><button class="session-boundary-button" type="button" data-action="last" ${index >= available.length - 1 ? "disabled" : ""}>วันล่าสุด</button></div>
-          <input id="session-index" class="session-timeline-slider" type="range" min="0" max="${available.length - 1}" step="1" value="${index}" data-field="session-index" aria-label="เลื่อนไปยังวันพยากรณ์ที่บันทึกไว้" aria-valuetext="${escapeHtml(row.predictionDate)} · วันที่ ${index + 1} จาก ${available.length}" />
-          <div class="session-timeline-meta"><span>เริ่ม ${escapeHtml(available[0].predictionDate)}</span><span>สิ้นสุด ${escapeHtml(available[available.length - 1].predictionDate)}</span></div>
-        </div>
-      <div class="session-asof-row"><label class="field-label" for="session-asof-select">As-of · วันที่จำลองว่าข้อมูลครบถึง<select id="session-asof-select" data-field="session-as-of" aria-describedby="session-asof-note">${asOfDates.map((date) => `<option value="${escapeHtml(date)}" ${date === asOfDate ? "selected" : ""}>${escapeHtml(date)}</option>`).join("")}</select></label><button class="button button-secondary maturity-reveal-button" type="button" data-action="toggle-session-view" aria-pressed="${selection.view === "retrospective"}">${selection.view === "retrospective" ? "กำลังดูย้อนหลัง · เปลี่ยนเป็น As-of" : "กำลังดู As-of · ดูผลย้อนหลัง"}</button></div>
-        <p id="session-asof-note" class="asof-caveat">As-of นี้เป็นตัวช่วยสอนตามกฎวันสิ้นสุด target ไม่ใช่การยืนยันว่าข้อมูลตลาดพร้อมใช้จริง ณ วันนั้น และไม่เปลี่ยน source status</p>
-        <div class="session-play-row"><button class="button button-secondary session-play-button" type="button" data-action="toggle-session-play" aria-pressed="${state.sessionPlaying}" ${available.length < 2 || reducedMotion ? "disabled" : ""} ${reducedMotion ? 'title="ใช้ปุ่มวันก่อนหน้า/วันถัดไปได้เมื่อเปิด reduced motion"' : ""}>${state.sessionPlaying ? "หยุดเล่น" : "เล่นวันต่อเนื่อง"}</button><label class="field-label session-speed-control">ความเร็ว<select data-field="session-speed"><option value="1600" ${state.sessionSpeedMs === 1600 ? "selected" : ""}>ช้า · 1.6 วินาที</option><option value="900" ${state.sessionSpeedMs === 900 ? "selected" : ""}>ปกติ · 0.9 วินาที</option><option value="450" ${state.sessionSpeedMs === 450 ? "selected" : ""}>เร็ว · 0.45 วินาที</option></select></label><span class="session-play-note">${reducedMotion ? "ระบบตั้งค่า reduced motion · ใช้ตัวเลื่อนหรือปุ่มวันแทน" : state.sessionPlaying ? "กำลังไล่ saved predictions · ไม่มีการรันโมเดล" : "เล่นเฉพาะ observation ที่บันทึกไว้ · ไม่มี model inference"}</span></div>
       </div>
-      <div class="session-status-row"><span class="status-chip ${statusClass}" ${pending ? `title="${pendingTooltip}" aria-label="${pendingTooltip}"` : ""}>${escapeHtml(statusLabel)}</span><span class="status-chip status-outline">Forecast · ${escapeHtml(row.forecastStatus)}</span><span class="session-horizon">ช่วงเป้าหมาย ${escapeHtml(row.targetStartDatePrediction)} → ${escapeHtml(row.targetEndDatePrediction)}</span></div>
-      <div class="asof-overlay ${overlayClass}" role="status" aria-live="polite"><strong>${escapeHtml(maturityHeading)}</strong><span>${escapeHtml(overlayMessage[labelView.status])}</span></div>
-      <div class="session-values"><div class="session-value-card"><span>Forecast RV5</span><strong>${validForecast ? format(row.predictedVolAnnualized) : "—"}</strong><small>Annualized volatility · forecast_audit.csv</small></div><div class="session-value-card${revealed ? "" : " muted-value"}"><span>Actual RV5</span><strong>${revealed ? format(labelView.actual) : "—"}</strong><small>${actualLabel}</small></div><div class="session-value-card${revealed ? "" : " muted-value"}"><span>Absolute error</span><strong>${revealed ? format(labelView.absoluteError) : "—"}</strong><small>${errorLabel}</small></div></div>
-      ${pending ? '<p class="pending-note"><span>i</span> Source บันทึกแถวนี้เป็น Pending ณ cutoff จึงไม่แสดง Actual/Error แม้เลื่อน as-of ไปภายหลัง</p>' : ""}${noForecastWarning}
-      <section class="same-date-comparison"><div class="section-card-heading"><div><span class="section-overline">SAME XNYS DATE · SAME ASSET</span><h3>เทียบ forecast ทั้ง 4 โมเดล · ${escapeHtml(row.predictionDate)} · ${selection.ticker}</h3></div><span class="pill pill-neutral">${comparisonRows.length}/4 source rows</span></div><p>ค่าทั้งหมดผูกกับวันและสินทรัพย์เดียวกัน สถานะ source ของแต่ละโมเดลยังคงเดิม</p><div class="table-scroll"><table class="data-table"><caption class="visually-hidden">B0 to B3 recorded forecasts for ${selection.ticker} on ${row.predictionDate}</caption><thead><tr><th scope="col">Model</th><th scope="col">Forecast RV5</th><th scope="col">Actual · หลัง maturity</th><th scope="col">Absolute error</th><th scope="col">Source status</th><th scope="col">Record</th></tr></thead><tbody>${comparisonTableRows.join("")}</tbody></table></div></section>
-      <details class="session-source-details"><summary>เปิด Source record และหลักฐานของแถวที่เลือก</summary><div class="session-source-grid"><span>Prediction ID</span><code>${escapeHtml(row.predictionId)}</code><span>Prediction date</span><strong>${escapeHtml(row.predictionDate)} · XNYS</strong><span>Target window</span><strong>${escapeHtml(row.targetStartDate)} → ${escapeHtml(row.targetEndDate)}</strong><span>Forecast / label / evaluation</span><strong>${escapeHtml(row.forecastStatus)} · ${escapeHtml(row.labelStatus)} · ${escapeHtml(row.evaluationStatus)}</strong><span>Source files</span><strong>forecast_audit.csv${evaluation ? " · evaluation.csv" : ""}</strong><span>Evaluation ID</span><code>${escapeHtml(snapshot.manifest.evaluationId)}</code><span>Replay ID</span><code>${escapeHtml(snapshot.manifest.replayId)}</code></div><small>As-of eligibility is an instructional overlay. Snapshot status and the official evaluation remain unchanged.</small></details>
+      <details class="session-settings" id="session-settings" data-persist-open><summary>ตัวเลือกเพิ่มเติม · สินทรัพย์ ${escapeHtml(selection.ticker)} · โมเดล ${modelId(selection.modelName)} · As-of</summary><div class="session-settings-panel"><div class="session-filters"><label class="field-label">สินทรัพย์<select data-field="ticker">${tickerOptions}</select></label><label class="field-label">โมเดล<select data-field="model">${modelOptions}</select></label></div><div class="session-asof-row"><label class="field-label" for="session-asof-select">As-of · วันที่จำลองว่าข้อมูลครบถึง<select id="session-asof-select" data-field="session-as-of" aria-describedby="session-asof-note">${asOfDates.map((date) => `<option value="${escapeHtml(date)}" ${date === asOfDate ? "selected" : ""}>${escapeHtml(date)}</option>`).join("")}</select></label><button class="button button-secondary maturity-reveal-button" type="button" data-action="toggle-session-view" aria-pressed="${selection.view === "retrospective"}">${selection.view === "retrospective" ? "กำลังดูย้อนหลัง · เปลี่ยนเป็น As-of" : "กำลังดู As-of · ดูผลย้อนหลัง"}</button></div><p id="session-asof-note" class="asof-caveat">As-of เป็นตัวช่วยสอนตามกฎวันสิ้นสุด target ไม่ยืนยันว่าข้อมูลตลาดพร้อมใช้จริง และไม่เปลี่ยน source status</p></div></details>
+      <div class="session-evidence-grid"><div class="session-main-evidence">
+        <div class="session-status-row"><span class="status-chip ${statusClass}" ${pending ? `title="${pendingTooltip}" aria-label="${pendingTooltip}"` : ""}>${escapeHtml(statusLabel)}</span><span class="status-chip status-outline">Forecast · ${escapeHtml(row.forecastStatus)}</span><span class="session-horizon">ช่วงเป้าหมาย ${escapeHtml(row.targetStartDatePrediction)} → ${escapeHtml(row.targetEndDatePrediction)}</span></div>
+        <div class="asof-overlay ${overlayClass}" role="status" aria-live="polite"><strong>${escapeHtml(maturityHeading)}</strong><span>${escapeHtml(overlayMessage[labelView.status])}</span></div>
+        <div class="session-values"><div class="session-value-card"><span>Forecast RV5</span><strong>${validForecast ? format(row.predictedVolAnnualized) : "—"}</strong><small>Annualized volatility · forecast_audit.csv</small></div><div class="session-value-card${revealed ? "" : " muted-value"}"><span>Actual RV5</span><strong>${revealed ? format(labelView.actual) : "—"}</strong><small>${actualLabel}</small></div><div class="session-value-card${revealed ? "" : " muted-value"}"><span>Absolute error</span><strong>${revealed ? format(labelView.absoluteError) : "—"}</strong><small>${errorLabel}</small></div></div>
+        ${pending ? '<p class="pending-note"><span>i</span> Source บันทึกแถวนี้เป็น Pending ณ cutoff จึงไม่แสดง Actual/Error แม้เลื่อน as-of ไปภายหลัง</p>' : ""}${noForecastWarning}
+        <section class="session-chart-panel" aria-labelledby="session-chart-heading"><div class="session-chart-heading"><div><span class="section-overline">SAVED XNYS SESSIONS · ${escapeHtml(selection.ticker)} · ${modelId(selection.modelName)}</span><h3 id="session-chart-heading">Forecast และ Actual ของ session ที่บันทึกไว้</h3><p>Actual แสดงเมื่อ target ครบและ source เป็น Evaluable; จุดที่เลือกในกราฟตรงกับวันด้านบน</p></div><span class="pill pill-neutral">${available.length.toLocaleString()} วัน</span></div><div class="session-timeline"><label for="session-index">เลือกวันใกล้กราฟ · ${available.length.toLocaleString()} วันทำการ</label><div class="session-date-controls"><button class="session-boundary-button" type="button" data-action="first" ${index === 0 ? "disabled" : ""}>วันแรก</button><select id="session-date-select" data-field="session-date" aria-label="เลือกวันทำนายที่บันทึกไว้">${available.map((session, itemIndex) => `<option value="${escapeHtml(session.predictionDate)}" ${itemIndex === index ? "selected" : ""}>${escapeHtml(session.predictionDate)} · ${itemIndex + 1}/${available.length}</option>`).join("")}</select><button class="session-boundary-button" type="button" data-action="last" ${index >= available.length - 1 ? "disabled" : ""}>วันล่าสุด</button></div><input id="session-index" class="session-timeline-slider" type="range" min="0" max="${available.length - 1}" step="1" value="${index}" data-field="session-index" aria-label="เลื่อนไปยังวันพยากรณ์ที่บันทึกไว้" aria-valuetext="${escapeHtml(row.predictionDate)} · วันที่ ${index + 1} จาก ${available.length}" /><div class="session-timeline-meta"><span>เริ่ม ${escapeHtml(available[0].predictionDate)}</span><span>สิ้นสุด ${escapeHtml(available[available.length - 1].predictionDate)}</span></div></div><div class="session-play-row"><button class="button button-secondary session-play-button" type="button" data-action="toggle-session-play" aria-pressed="${state.sessionPlaying}" ${available.length < 2 ? "disabled" : ""}>${state.sessionPlaying ? "หยุดเล่น" : "เล่นวันต่อเนื่อง"}</button><label class="field-label session-speed-control">ความเร็ว<select data-field="session-speed"><option value="1600" ${state.sessionSpeedMs === 1600 ? "selected" : ""}>ช้า · 1.6 วินาที</option><option value="900" ${state.sessionSpeedMs === 900 ? "selected" : ""}>ปกติ · 0.9 วินาที</option><option value="450" ${state.sessionSpeedMs === 450 ? "selected" : ""}>เร็ว · 0.45 วินาที</option></select></label><span class="session-play-note">${state.sessionPlaying ? "กำลังไล่ saved predictions · ไม่มีการรันโมเดล" : "เริ่มเล่นด้วยตนเอง · เล่นเฉพาะ observation ที่บันทึกไว้ · ไม่มี model inference"}</span></div>${renderSessionChart(chartPoints, row.predictionDate, state.unit)}</section>
+      </div><aside class="session-inspector" aria-label="รายละเอียดของ session ที่เลือก"><section class="same-date-comparison"><div class="section-card-heading"><div><span class="section-overline">SAME XNYS DATE · SAME ASSET</span><h3>เทียบ forecast ทั้ง 4 โมเดล · ${escapeHtml(row.predictionDate)} · ${selection.ticker}</h3></div><span class="pill pill-neutral">${comparisonRows.length}/4 source rows</span></div><p>ค่าทั้งหมดผูกกับวันและสินทรัพย์เดียวกัน สถานะ source ของแต่ละโมเดลยังคงเดิม</p><div class="table-scroll"><table class="data-table"><caption class="visually-hidden">B0 to B3 recorded forecasts for ${selection.ticker} on ${row.predictionDate}</caption><thead><tr><th scope="col">Model</th><th scope="col">Forecast RV5</th><th scope="col">Actual · หลัง maturity</th><th scope="col">Absolute error</th><th scope="col">Source status</th><th scope="col">Record</th></tr></thead><tbody>${comparisonTableRows.join("")}</tbody></table></div></section>
+      <details class="session-source-details" id="session-source-details" data-persist-open><summary>เปิด Source record และหลักฐานของแถวที่เลือก</summary><div class="session-source-grid"><span>Prediction ID</span><code>${escapeHtml(row.predictionId)}</code><span>Prediction date</span><strong>${escapeHtml(row.predictionDate)} · XNYS</strong><span>Target window</span><strong>${escapeHtml(row.targetStartDate)} → ${escapeHtml(row.targetEndDate)}</strong><span>Forecast / label / evaluation</span><strong>${escapeHtml(row.forecastStatus)} · ${escapeHtml(row.labelStatus)} · ${escapeHtml(row.evaluationStatus)}</strong><span>Source files</span><strong>forecast_audit.csv${evaluation ? " · evaluation.csv" : ""}</strong><span>Evaluation ID</span><code>${escapeHtml(snapshot.manifest.evaluationId)}</code><span>Replay ID</span><code>${escapeHtml(snapshot.manifest.replayId)}</code></div><small>As-of eligibility is an instructional overlay. Snapshot status and the official evaluation remain unchanged.</small></details>
       <div class="session-footer"><span>Prediction ID <code>${escapeHtml(row.predictionId)}</code></span><span>${escapeHtml(tickerLabel[selection.ticker])} · ${modelId(selection.modelName)}</span></div>
-      <div class="session-actions"><span>เปลี่ยนเฉพาะการเลือก observation ที่บันทึกไว้</span><button class="button button-secondary" type="button" data-action="open-portfolio" ${portfolioReady ? "" : "disabled"}>ใช้วันและโมเดลนี้ใน Portfolio →</button></div>${!portfolioReady ? `<p class="chart-note">ไม่มี portfolio row สถานะ OK สำหรับ ${escapeHtml(row.predictionDate)} · ${modelId(selection.modelName)} จึงยังเปิด what-if วันนี้ไม่ได้</p>` : ""}
+      <div class="session-actions"><span>เปลี่ยนเฉพาะการเลือก observation ที่บันทึกไว้</span><button class="button button-secondary" type="button" data-action="open-portfolio" ${portfolioReady ? "" : "disabled"}>ใช้วันและโมเดลนี้ใน Portfolio →</button></div>${!portfolioReady ? '<p class="chart-note">ไม่มี portfolio row สถานะ OK สำหรับ ' + escapeHtml(row.predictionDate) + ' · ' + modelId(selection.modelName) + ' จึงยังเปิด what-if วันนี้ไม่ได้</p>' : ""}</aside></div>
     </section>`;
 }
 
@@ -654,17 +668,11 @@ function toggleSessionPlayback(root: HTMLElement, state: ViewState): void {
   if (state.snapshot.status !== "ready" || !state.selection || state.routePath !== "/forecasts") return;
   const available = selectionSessions(state.snapshot, state.selection);
   if (available.length < 2) return;
-  if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const currentIndex = available.findIndex((row) => row.predictionDate === state.selection?.predictionDate);
   if (currentIndex >= available.length - 1) setSessionIndex(root, state, 0, "replace");
   state.sessionPlaying = true;
   state.sessionTimer = window.setInterval(() => {
     if (!root.isConnected || document.hidden || state.routePath !== "/forecasts" || state.snapshot.status !== "ready" || !state.selection || state.selectionError) {
-      stopSessionPlayback(state);
-      render(root, state);
-      return;
-    }
-    if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       stopSessionPlayback(state);
       render(root, state);
       return;
@@ -826,8 +834,11 @@ function driftPage(state: ViewState): string {
     '</ol><p class="flow-evidence-limit">ใน handoff snapshot นี้มี rolling MAE และ ADWIN observation แต่ไม่มี event-level update/checkpoint log จึงยืนยันสถานะจริงรายวันของขั้น 05–06 ไม่ได้</p></section>';
   const filters = `<div class="forecast-filters"><label class="field-label">Asset · shared session<select data-field="ticker">${tickerNames.map((ticker) => `<option value="${ticker}" ${ticker === selection.ticker ? "selected" : ""}>${ticker}</option>`).join("")}</select></label><label class="field-label">Rolling model · shared session<select data-field="model">${modelNames.map((model) => `<option value="${model}" ${model === selection.modelName ? "selected" : ""}>${modelId(model)} · ${escapeHtml(modelLabel(model))}</option>`).join("")}</select></label><label class="field-label">From<input type="date" data-field="drift-from" value="${escapeHtml(state.driftFrom)}"></label><label class="field-label">To<input type="date" data-field="drift-to" value="${escapeHtml(state.driftTo)}"></label><label class="field-label">Inspect saved B3 date<select data-field="drift-observation">${timeline.map((row) => `<option value="${escapeHtml(row.predictionId)}" ${row.predictionDate === selection.predictionDate ? "selected" : ""}>${escapeHtml(row.predictionDate)}</option>`).join("")}</select><small>เลือก observation จาก B3 Test timeline · จะเปลี่ยน session ร่วมกัน</small></label></div>`;
   const inspector = selectedObservation ? `<section class="drift-inspector" aria-label="รายละเอียด ADWIN observation"><div class="drift-inspector-heading"><div><span class="section-overline">SOURCE ROW INSPECTOR · TEST B3</span><h3>${escapeHtml(selectedObservation.predictionDate)} · ${selectedObservation.ticker}</h3><p>รายละเอียดจากแถวที่เลือกใน drift_error_timeline.csv</p></div><span class="pill ${selectedObservation.driftDetected || selectedObservation.alertRecordPresent ? "pill-pending" : "pill-neutral"}">${selectedObservation.driftDetected || selectedObservation.alertRecordPresent ? "Recorded alert" : "No alert recorded"}</span></div><div class="drift-inspector-grid"><div><small>Absolute error · evaluation</small><strong>${formatVol(selectedObservation.absoluteErrorEvaluation, state.unit)}</strong></div><div><small>Absolute error · ADWIN</small><strong>${formatVol(selectedObservation.absoluteErrorAdwin, state.unit)}</strong></div><div><small>Drift detected</small><strong>${selectedObservation.driftDetected ? "Yes" : "No"}</strong></div><div><small>Alert record present</small><strong>${selectedObservation.alertRecordPresent ? "Yes" : "No"}</strong></div><div><small>ADWIN delta</small><strong>${selectedObservation.adwinDelta}</strong></div><div><small>ADWIN width</small><strong>${selectedObservation.adwinWidth.toLocaleString()}</strong></div><div><small>ADWIN estimation</small><strong>${formatVol(selectedObservation.adwinEstimation, state.unit)}</strong></div></div><div class="drift-source-ids"><span>Prediction ID <code>${escapeHtml(selectedObservation.predictionId)}</code></span><span>Evaluation ID <code>${escapeHtml(snapshot.manifest.evaluationId)}</code></span><span>Replay ID <code>${escapeHtml(snapshot.manifest.replayId)}</code></span></div><p class="drift-history-limitation">Snapshot นี้ไม่มี event-level model update/checkpoint log จึงไม่สามารถยืนยันได้ว่าจุดนี้ทำให้เกิดการอัปเดตโมเดลหรือเป็น drift event นอกเหนือจาก flag ที่บันทึกไว้</p></section>` : emptyState(supportsAdwin ? "ไม่มี ADWIN observation ตรงกับ session นี้" : "ADWIN ใช้ได้เฉพาะกับ B3 · ONLINE_SGD", supportsAdwin ? `ไม่พบ source row สำหรับ ${selection.ticker} · ${selection.predictionDate} ภายในช่วงวันที่ที่เลือก` : "เปลี่ยน shared model เป็น B3 เพื่อดู timeline ที่ Stage 06 บันทึกไว้");
-  return `<div class="page-stack">${selectionContextSummary(state)}${conceptualFlow}<section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">FIXED 20 XNYS SESSIONS · SOURCE VALUES</span><h2 class="analysis-title">Rolling MAE20</h2><p>ทุกจุดอ่านจาก rolling_mae20.csv; N และ coverage ใช้ค่าที่บันทึกในแต่ละ window</p></div></div>${filters}${rollingMaeChart(rolling, state)}${sourceFooter("rolling_mae20.csv", "Test", `${selection.ticker} · ${modelId(selection.modelName)}`, rolling.length, `annualized decimal · 20 XNYS sessions`, snapshot.manifest.evaluationId)}</section>
-    <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">RECORDED ADWIN · TEST B3 ONLY</span><h3>Error timeline</h3><p>แสดงเฉพาะ error และ flag ที่บันทึกไว้ใน Stage 06; ไม่มี client-side alert rule</p></div><span class="pill pill-neutral">${alertSummary}</span></div>${adwinTimelineChart(timeline, selection.ticker, state.unit, selectedObservation?.predictionId ?? "")}${inspector}${sourceFooter("drift_error_timeline.csv", "Test · B3", selection.ticker, timeline.length, `absolute error (${state.unit})`, snapshot.manifest.evaluationId)}<div class="session-actions"><span>ตรวจ source ที่วันเดียวกันใน Replay</span><button class="button button-secondary" type="button" data-route="/forecasts">เปิด Replay →</button></div></section><section class="limitation-card"><span class="limitation-mark">i</span><p>ไม่มี event-level update/checkpoint history ใน handoff snapshot; จุดที่เลือกจึงแสดงเฉพาะ observation และ flag ที่บันทึกไว้</p></section></div>`;
+  return `<div class="page-stack">${selectionContextSummary(state)}<section class="analysis-card drift-workbench">
+    <div class="section-card-heading"><div><span class="section-overline">DRIFT OBSERVATIONS · FROZEN TEST</span><h2 class="analysis-title">ดู error และ monitor ในวันเดียวกัน</h2><p>เลือก asset, model และช่วงวันที่ครั้งเดียว แล้วเทียบ rolling MAE20 กับ ADWIN ที่บันทึกไว้</p></div><span class="pill pill-neutral">${alertSummary}</span></div>
+    ${filters}<div class="drift-panels"><section class="drift-panel"><div class="section-card-heading"><div><span class="section-overline">FIXED 20 XNYS SESSIONS · SOURCE VALUES</span><h3>Rolling MAE20</h3><p>ทุกจุดอ่านจาก rolling_mae20.csv; N และ coverage ใช้ค่าที่บันทึกในแต่ละ window</p></div></div>${rollingMaeChart(rolling, state)}${sourceFooter("rolling_mae20.csv", "Test", `${selection.ticker} · ${modelId(selection.modelName)}`, rolling.length, `annualized decimal · 20 XNYS sessions`, snapshot.manifest.evaluationId)}</section>
+    <section class="drift-panel"><div class="section-card-heading"><div><span class="section-overline">RECORDED ADWIN · TEST B3 ONLY</span><h3>Error timeline</h3><p>แสดงเฉพาะ error และ flag จาก Stage 06; ไม่มี client-side alert rule</p></div></div><div class="drift-adwin-layout"><div>${adwinTimelineChart(timeline, selection.ticker, state.unit, selectedObservation?.predictionId ?? "")}</div>${inspector}</div>${sourceFooter("drift_error_timeline.csv", "Test · B3", selection.ticker, timeline.length, `absolute error (${state.unit})`, snapshot.manifest.evaluationId)}<div class="session-actions"><span>ตรวจ source ที่วันเดียวกันใน Replay</span><button class="button button-secondary" type="button" data-route="/forecasts">เปิด Replay →</button></div></section></div>
+  </section>${conceptualFlow}<section class="limitation-card"><span class="limitation-mark">i</span><p>handoff snapshot ไม่มี event-level update/checkpoint history จุดที่เลือกจึงบอกได้เฉพาะ observation และ flag ที่บันทึกไว้</p></section></div>`;
 }
 
 function scatterChart(rows: H1ScatterRow[], ticker: Ticker): string {
@@ -854,11 +865,14 @@ function researchPage(state: ViewState): string {
   const highVol = snapshot.highVolatilityMetrics.filter((row) => row.split === "test" && row.ticker === state.researchTicker).sort((left, right) => modelNames.indexOf(left.modelName) - modelNames.indexOf(right.modelName));
   const h1Result = h1Rows[0];
   const h1Table = h1Result ? `<div class="table-scroll"><table class="data-table"><caption class="visually-hidden">H1 Train primary HAC lag 5 result for ${state.researchTicker}</caption><thead><tr><th scope="col">Split</th><th scope="col">N</th><th scope="col">Beta</th><th scope="col">95% CI</th><th scope="col">HAC lag</th><th scope="col">Adjusted p</th><th scope="col">Decision</th></tr></thead><tbody><tr><th scope="row">Train</th><td>${h1Result.n.toLocaleString()}</td><td>${h1Result.beta.toFixed(6)}</td><td>[${h1Result.ci95.map((value) => value.toFixed(6)).join(", ")}]</td><td>${h1Result.hacLag}</td><td>${h1Result.pHolm.toExponential(3)}</td><td>${escapeHtml(h1Result.decision)}</td></tr></tbody></table></div><p class="chart-note">${escapeHtml(h1Result.interpretation)}</p>` : emptyState("H1 primary result unavailable", "No verified H1_results.csv row matches this ticker.");
-  const h2h3Table = `<div class="table-scroll"><table class="data-table research-results-table"><caption class="visually-hidden">H2 and H3 Test hypothesis results from source</caption><thead><tr><th scope="col">Hypothesis</th><th scope="col">Split</th><th scope="col">Effect ΔMAE</th><th scope="col">95% CI</th><th scope="col">Paired N</th><th scope="col">Adjusted p</th><th scope="col">Decision</th><th scope="col">Method</th></tr></thead><tbody>${macroHypotheses.map((row) => `<tr><th scope="row">${row.hypothesisId} · MACRO</th><td>${escapeHtml(row.datasetSplit)}</td><td>${formatVol(row.effectSize, state.unit)}</td><td>[${row.confidenceInterval95.map((value) => formatVol(value, state.unit)).join(", ")}]</td><td>${row.nPaired.toLocaleString()}</td><td>${row.adjustedPValue.toExponential(3)}</td><td>${escapeHtml(row.decision)}</td><td>${escapeHtml(row.method)}</td></tr>`).join("")}</tbody></table></div>`;
+  const hypothesisComparisons: Record<string, string> = { H2: "B3 เทียบ B2", H3: "B3 เทียบ B1" };
+  const h2h3Cards = macroHypotheses.length
+    ? `<div class="research-hypothesis-list">${macroHypotheses.map((row) => `<article class="research-hypothesis-card"><div class="section-card-heading"><div><span class="section-overline">${row.hypothesisId} · ${escapeHtml(row.datasetSplit.toUpperCase())} · MACRO</span><h4>คำถาม · ${hypothesisComparisons[row.hypothesisId] ?? row.hypothesisId}</h4></div><span class="pill pill-neutral">${escapeHtml(row.decision)}</span></div><dl class="research-result-grid"><div><dt>Effect · ΔMAE (${state.unit})</dt><dd>${formatVol(row.effectSize, state.unit)}</dd></div><div><dt>95% confidence interval</dt><dd>[${row.confidenceInterval95.map((value) => formatVol(value, state.unit)).join(", ")}]</dd></div><div><dt>Paired N</dt><dd>${row.nPaired.toLocaleString()} / ${row.nExpected.toLocaleString()}</dd></div><div><dt>Adjusted p</dt><dd>${row.adjustedPValue.toExponential(3)}</dd></div><div><dt>Method · source</dt><dd>${escapeHtml(row.method)}</dd></div><div><dt>Statistical status</dt><dd>${escapeHtml(row.statisticalStatus)}</dd></div></dl><p class="research-interpretation"><strong>ผลตาม source:</strong> ${escapeHtml(row.interpretation)}</p></article>`).join("")}</div>`
+    : emptyState("H2/H3 results unavailable", "No verified Test hypothesis rows are available in the pinned snapshot.");
   const bootstrapTable = `<div class="table-scroll"><table class="data-table"><caption class="visually-hidden">Bootstrap sensitivity diagnostics from source</caption><thead><tr><th scope="col">Hypothesis</th><th scope="col">Block length</th><th scope="col">Replicates</th><th scope="col">SE</th><th scope="col">95% CI</th><th scope="col">p (raw)</th><th scope="col">N by ETF</th></tr></thead><tbody>${bootstrapRows.map((row) => `<tr><th scope="row">${row.hypothesisId} sensitivity</th><td>${row.blockLength} XNYS</td><td>${row.replicates.toLocaleString()}</td><td>${formatVol(row.standardError, state.unit)}</td><td>[${row.ci95.map((value) => formatVol(value, state.unit)).join(", ")}]</td><td>${row.pRaw.toExponential(3)}</td><td>${escapeHtml(Object.entries(row.nByTicker).map(([ticker, n]) => `${ticker} ${n}`).join(" · "))}</td></tr>`).join("")}</tbody></table></div>`;
   const highVolTable = `<div class="table-scroll"><table class="data-table"><caption class="visually-hidden">Test high-volatility subset metrics for ${state.researchTicker}</caption><thead><tr><th scope="col">Model</th><th scope="col">Train p80 threshold</th><th scope="col">High-vol N</th><th scope="col">Common evaluable N</th><th scope="col">MAE</th><th scope="col">RMSE</th></tr></thead><tbody>${highVol.map((row) => `<tr><th scope="row">${modelId(row.modelName)}</th><td>${formatVol(row.trainThreshold, state.unit)}</td><td>${row.highVolAnchorCount}</td><td>${row.highVolCommonEvaluableN}</td><td>${row.highVolCommonEvaluableN === 0 ? "Insufficient Evidence (n=0)" : formatVol(row.mae, state.unit)}</td><td>${row.highVolCommonEvaluableN === 0 ? "—" : formatVol(row.rmse, state.unit)}</td></tr>`).join("")}</tbody></table></div><p class="chart-note">The high-volatility threshold is stored from Train. A zero-size Test subset has no MAE or RMSE score.</p>`;
-  return `<div class="page-stack"><section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">H1 · TRAIN ONLY · PRIMARY HAC LAG 5</span><h2 class="analysis-title">RV5 association evidence</h2><p>Scatter uses recorded Train observations. Results, p-values, intervals, and decisions are read from Stage 06.</p></div></div><label class="field-label">Asset<select data-field="research-ticker">${tickerNames.map((ticker) => `<option value="${ticker}" ${ticker === state.researchTicker ? "selected" : ""}>${ticker}</option>`).join("")}</select></label>${scatterChart(scatterRows, state.researchTicker)}${sourceFooter("H1_scatter_data.csv", "Train", state.researchTicker, scatterRows.length, "annualized decimal", snapshot.manifest.evaluationId)}${h1Table}${sourceFooter("H1_results.csv", "Train · primary HAC lag 5", state.researchTicker, h1Result?.n ?? 0, "beta in annualized decimal", snapshot.manifest.evaluationId)}<h3>Lag sensitivity</h3><div class="table-scroll"><table class="data-table"><caption class="visually-hidden">H1 HAC lag sensitivity</caption><thead><tr><th scope="col">HAC maxlags</th><th scope="col">N</th><th scope="col">Beta</th><th scope="col">95% CI</th><th scope="col">p (raw)</th></tr></thead><tbody>${sensitivity.map((row) => `<tr><th scope="row">${row.hacMaxlags}${row.hacMaxlags === 5 ? " · primary" : " · sensitivity"}</th><td>${row.n}</td><td>${row.beta.toFixed(6)}</td><td>[${row.ci95.map((value) => value.toFixed(6)).join(", ")}]</td><td>${row.pRaw.toExponential(3)}</td></tr>`).join("")}</tbody></table></div>${sourceFooter("H1_sensitivity.csv", "Train", `${state.researchTicker} · HAC 5/10/20`, sensitivity.length, "stored statistics", snapshot.manifest.evaluationId)}</section>
-    <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">H2 / H3 · TEST ONLY · MACRO</span><h3>Hypothesis results</h3><p>Effect, paired N, p-value, CI, decision, and method are source fields; no inference is run in the browser.</p></div></div>${h2h3Table}${sourceFooter("hypothesis_results.csv", "Test", "H2/H3 · MACRO", macroHypotheses.length, "annualized decimal effect / p-value", snapshot.manifest.evaluationId)}<h3>Bootstrap diagnostics · sensitivity</h3>${bootstrapTable}${sourceFooter("bootstrap_diagnostics.csv", "Test · sensitivity", "H2/H3 · block lengths 5 and 20", bootstrapRows.length, "annualized decimal effect / p-value", snapshot.manifest.evaluationId)}</section>
+  return `<div class="page-stack"><section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">H1 · TRAIN ONLY · PRIMARY HAC LAG 5</span><h2 class="analysis-title">RV5 association evidence</h2><p>Scatter uses recorded Train observations. Results, p-values, intervals, and decisions are read from Stage 06.</p></div></div><label class="field-label">Asset<select data-field="research-ticker">${tickerNames.map((ticker) => `<option value="${ticker}" ${ticker === state.researchTicker ? "selected" : ""}>${ticker}</option>`).join("")}</select></label>${scatterChart(scatterRows, state.researchTicker)}${sourceFooter("H1_scatter_data.csv", "Train", state.researchTicker, scatterRows.length, "annualized decimal", snapshot.manifest.evaluationId)}${h1Table}${sourceFooter("H1_results.csv", "Train · primary HAC lag 5", state.researchTicker, h1Result?.n ?? 0, "beta in annualized decimal", snapshot.manifest.evaluationId)}<details class="research-progressive-details" data-persist-open><summary>ดู lag sensitivity · HAC maxlags 5, 10, 20</summary><div class="table-scroll"><table class="data-table"><caption class="visually-hidden">H1 HAC lag sensitivity</caption><thead><tr><th scope="col">HAC maxlags</th><th scope="col">N</th><th scope="col">Beta</th><th scope="col">95% CI</th><th scope="col">p (raw)</th></tr></thead><tbody>${sensitivity.map((row) => `<tr><th scope="row">${row.hacMaxlags}${row.hacMaxlags === 5 ? " · primary" : " · sensitivity"}</th><td>${row.n}</td><td>${row.beta.toFixed(6)}</td><td>[${row.ci95.map((value) => value.toFixed(6)).join(", ")}]</td><td>${row.pRaw.toExponential(3)}</td></tr>`).join("")}</tbody></table></div>${sourceFooter("H1_sensitivity.csv", "Train", `${state.researchTicker} · HAC 5/10/20`, sensitivity.length, "stored statistics", snapshot.manifest.evaluationId)}</details></section>
+    <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">H2 / H3 · TEST ONLY · MACRO</span><h3>Hypothesis results</h3><p>Research question, scope, paired N, effect, uncertainty, decision, and source method stay together. No inference runs in the browser.</p></div></div>${h2h3Cards}${sourceFooter("hypothesis_results.csv", "Test", "H2/H3 · MACRO", macroHypotheses.length, "annualized decimal effect / p-value", snapshot.manifest.evaluationId)}<details class="research-progressive-details" data-persist-open><summary>ดู bootstrap diagnostics · sensitivity</summary>${bootstrapTable}${sourceFooter("bootstrap_diagnostics.csv", "Test · sensitivity", "H2/H3 · block lengths 5 and 20", bootstrapRows.length, "annualized decimal effect / p-value", snapshot.manifest.evaluationId)}</details></section>
     <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">HIGH-VOLATILITY TEST SUBSET</span><h3>${state.researchTicker} · Train p80 threshold</h3><p>Threshold is learned and pinned from Train; rows with n=0 remain unscored.</p></div></div>${highVolTable}${sourceFooter("high_volatility_metrics.csv", "Test", `${state.researchTicker} · B0–B3`, highVol.length, `annualized decimal · threshold ${state.unit}`, snapshot.manifest.evaluationId)}</section><section class="limitation-card"><span class="limitation-mark">i</span><p>These are results from one frozen experiment snapshot. p-values, confidence intervals, and decisions are displayed from the saved source and are not recomputed here.</p></section></div>`;
 }
 
@@ -930,36 +944,50 @@ function forecastExplorerPage(state: ViewState): string {
   </div>`;
 }
 
-function provenancePage(snapshot: SnapshotState): string {
+function provenancePage(state: ViewState): string {
+  const snapshot = state.snapshot;
   if (snapshot.status === "loading") return loadingState();
   if (snapshot.status !== "ready") return emptyState("ยังไม่มี provenance ที่ผ่านการตรวจ", "ซ่อน Source IDs และ checksums จนกว่า adapter จะยืนยัน snapshot ได้");
   const { manifest } = snapshot;
-  const files = Object.entries(manifest.files).map(([, file]) => `<div class="source-file-row"><div class="file-type-mark">CSV</div><div class="source-file-details"><strong>${escapeHtml(file.path)}</strong><small>${file.rowCount.toLocaleString()} source rows · ${file.headers.length} columns</small></div><code>${escapeHtml(file.sha256)}</code></div>`).join("");
-  return `<div class="page-stack"><section class="provenance-summary-card"><div class="provenance-summary-top"><div><span class="section-overline">FROZEN SOURCE</span><h2>ที่มาและขอบเขต</h2></div><span class="verified-badge">${icon("check", 13)} SOURCE VERIFIED</span></div><p>ไฟล์ CSV ที่แสดงมาจาก handoff ZIP ที่ pin ไว้ ตรวจ outer SHA-256, manifest ภายใน ZIP และ member hashes ก่อนอ่านข้อมูล</p><div class="provenance-pills"><span class="pill pill-neutral">${escapeHtml(manifest.mode)}</span><span class="pill pill-pending">Report approval pending</span><span class="pill pill-neutral">Point-in-time source not verified</span></div><div class="identity-pair"><span>Evaluation ID</span><code>${escapeHtml(manifest.evaluationId)}</code></div><div class="identity-pair"><span>Replay ID</span><code>${escapeHtml(manifest.replayId)}</code></div><div class="identity-pair"><span>Source repository</span><a href="https://github.com/${escapeHtml(manifest.sourceRepository)}" target="_blank" rel="noopener noreferrer">${escapeHtml(manifest.sourceRepository)}</a></div><div class="identity-pair"><span>Handoff commit</span><a href="https://github.com/${escapeHtml(manifest.sourceRepository)}/commit/${escapeHtml(manifest.sourceHandoffCommit)}" target="_blank" rel="noopener noreferrer"><code>${escapeHtml(manifest.sourceHandoffCommit)}</code></a></div><div class="identity-pair"><span>Baseline commit</span><code>${escapeHtml(manifest.baselineGitCommit)}</code></div><div class="identity-pair"><span>ZIP SHA-256</span><code>${escapeHtml(manifest.sourceZipSha256)}</code></div><div class="identity-pair"><span>Strict cutoff</span><code>${escapeHtml(manifest.strictCutoff)}</code></div><div class="identity-pair"><span>Report approval</span><strong>PENDING · not approved</strong></div></section><section class="source-file-card"><div class="section-card-heading"><div><span class="section-overline">PUBLIC DATA SUBSET</span><h3>ไฟล์ CSV ที่ใช้โดย dashboard</h3></div><span class="pill pill-neutral">CSV · READ ONLY</span></div>${files}<p class="source-footnote">Manifest JSON และ handoff identity ใช้ตอน build เพื่อตรวจสอบ IDs; hash ของไฟล์ export แสดงใน metadata แยกจาก hashes ของ source CSV</p></section><section class="limitation-card"><span class="limitation-mark">i</span><p>Snapshot นี้เป็นผลจาก Simulated Historical Replay ไม่ยืนยันว่าข้อมูลตลาดแต่ละรายการเข้าถึงได้ ณ วันที่จำลอง และยังไม่ใช่รายงานที่ได้รับอนุมัติ</p></section></div>`;
+  const files = Object.entries(manifest.files).map(([, file]) => `<div class="source-file-row"><div class="file-type-mark">CSV</div><div class="source-file-details"><strong>${escapeHtml(file.path)}</strong><small>${file.rowCount.toLocaleString()} source rows · ${file.headers.length} columns</small></div><code>${escapeHtml(file.sha256)}</code>${copyValueButton(file.sha256, `${file.path} SHA-256`)}</div>`).join("");
+  const selection = state.selection;
+  const replayHref = escapeHtml(routeHash("/forecasts", state));
+  const portfolioHref = escapeHtml(routeHash("/portfolio", state));
+  return `<div class="page-stack">${selectionContextSummary(state)}
+    <section class="provenance-summary-card"><div class="provenance-summary-top"><div><span class="section-overline">FROZEN SOURCE · VERIFIED BUILD</span><h2>ผลชุดไหน และควรอ่านอย่างไร</h2></div><span class="verified-badge">${icon("check", 13)} SOURCE VERIFIED</span></div><p>${escapeHtml(manifest.mode)} จาก snapshot ที่ pin ไว้ Build ตรวจ outer SHA-256, member hashes, source IDs และ schema ก่อนหน้าเว็บจะอ่านข้อมูล</p><div class="provenance-pills"><span class="pill pill-neutral">Strict cutoff · ${escapeHtml(manifest.strictCutoff)}</span><span class="pill pill-pending">Report approval pending</span><span class="pill pill-neutral">Point-in-time source not verified</span></div><p class="provenance-plain-note">ตัวเลขเป็นผลย้อนหลัง ไม่ใช่ข้อมูลสด การตรวจ checksum ยืนยันว่าไฟล์ตรงกับชุดที่ pin ไว้ แต่ไม่ได้ยืนยันว่าข้อมูลตลาดพร้อมใช้จริง ณ วันจำลอง</p><div class="provenance-action-row"><a class="button button-secondary" href="${replayHref}">เปิด Replay พร้อม selection นี้ →</a><a class="button button-secondary" href="${portfolioHref}">เปิด Portfolio พร้อม selection นี้ →</a></div><small class="provenance-selection-note">${selection ? `${escapeHtml(selection.predictionDate)} · ${modelId(selection.modelName)} · ${escapeHtml(selection.ticker)} · ${selection.view === "as-of" ? `As-of ${escapeHtml(selection.asOfDate ?? selection.predictionDate)}` : "Retrospective"}` : "ยังไม่มี selected session"}</small></section>
+    <details class="technical-details-card" id="provenance-run-details" data-persist-open><summary>Run identity, commits และ checksum ของ handoff</summary><div class="technical-details-body"><div class="identity-pair"><span>Evaluation ID</span><code>${escapeHtml(manifest.evaluationId)}</code>${copyValueButton(manifest.evaluationId, "Evaluation ID")}</div><div class="identity-pair"><span>Replay ID</span><code>${escapeHtml(manifest.replayId)}</code>${copyValueButton(manifest.replayId, "Replay ID")}</div><div class="identity-pair"><span>Source repository</span><a href="https://github.com/${escapeHtml(manifest.sourceRepository)}" target="_blank" rel="noopener noreferrer">${escapeHtml(manifest.sourceRepository)}</a></div><div class="identity-pair"><span>Handoff commit</span><a href="https://github.com/${escapeHtml(manifest.sourceRepository)}/commit/${escapeHtml(manifest.sourceHandoffCommit)}" target="_blank" rel="noopener noreferrer"><code>${escapeHtml(manifest.sourceHandoffCommit)}</code></a>${copyValueButton(manifest.sourceHandoffCommit, "handoff commit")}</div><div class="identity-pair"><span>Baseline commit</span><code>${escapeHtml(manifest.baselineGitCommit)}</code>${copyValueButton(manifest.baselineGitCommit, "baseline commit")}</div><div class="identity-pair"><span>Handoff ZIP SHA-256</span><code>${escapeHtml(manifest.sourceZipSha256)}</code>${copyValueButton(manifest.sourceZipSha256, "ZIP SHA-256")}</div><div class="identity-pair"><span>Report approval</span><strong>PENDING · not approved</strong></div></div></details>
+    <details class="source-file-card technical-details-card" id="provenance-files" data-persist-open><summary>ไฟล์และ SHA-256 ที่ใช้โดย dashboard · ${Object.keys(manifest.files).length} ไฟล์</summary><div class="technical-details-body"><div class="source-file-list">${files}</div><p class="source-footnote">Manifest และ handoff identity ใช้ตรวจสอบ IDs ตอน build ส่วน hash ของไฟล์ export อยู่ใน metadata แยกจาก source CSV</p></div></details>
+    <section class="limitation-card"><span class="limitation-mark">i</span><p>Snapshot นี้ไม่ยืนยันว่าข้อมูลตลาดเข้าถึงได้ ณ วันที่จำลอง รายงานยังรออนุมัติ และผลชุดนี้ไม่รับรองผลในอนาคต</p></section></div>`;
 }
 
-function guidePage(): string {
-  const definitions = [
-    ["RV5 · annualized volatility", "ความผันผวนจากผลตอบแทนจริงใน 5 วันซื้อขายถัดไป (Forward RV5) แสดงเป็น annualized decimal หรือ percent; ทั้งสองแบบเป็นหน่วยเดียวกันคนละรูปแบบ"],
-    ["Pending label · ป้ายที่ยังไม่ครบ", "มี forecast แล้ว แต่ข้อมูล target ยังไม่ครบช่วง 5 วัน ณ strict cutoff จึงแสดง actual/error เป็นค่าว่าง และยังไม่ให้คะแนน"],
-    ["B0–B3 · model family", "B0 คือ constant baseline, B1 คือ rolling 20D baseline, B2 คือ Static SGD และ B3 คือ Online SGD; dashboard อ่านค่าที่ Stage 06 บันทึกไว้"],
-    ["Split · Train / Validation / Test", "Train ใช้สร้างหรือศึกษารูปแบบ, Validation ใช้เลือกการตั้งค่า และ Test ใช้ประเมินชุด holdout; อย่านำผล Test ไปเลือกหรือปรับ model"],
-    ["Leakage · การรั่วไหลของข้อมูล", "เกิดเมื่อข้อมูลจากอนาคตหรือ target ที่ควรเก็บไว้ทดสอบไหลไปสู่การสร้าง feature หรือเลือก model; หน้านี้ไม่ยืนยันเรื่องดังกล่าวเพิ่มเติมนอกเหนือจาก source audit"],
-    ["ADWIN · drift monitor", "ตัวตรวจการเปลี่ยนแปลงของ error ในสตรีม; หน้านี้แสดง error และ drift/alert flags ที่บันทึกไว้เท่านั้น ไม่มี rule ที่สร้าง alert ใหม่ใน browser"],
-    ["MAE / RMSE · error scores", "MAE คือค่าเฉลี่ย absolute error; RMSE ให้น้ำหนัก error ที่ใหญ่กว่า ทั้งคู่ใช้หน่วย annualized volatility และอ่านจาก source ที่บันทึกไว้"],
-    ["Portfolio covariance · ความแปรปรวนร่วม", "เมทริกซ์ที่เก็บความแปรปรวนและ covariance ของ forecast ทั้งสามสินทรัพย์; Portfolio Lab เปลี่ยนได้เฉพาะน้ำหนักในสูตร √(wᵀΣw) ของแถวที่เลือก"],
-    ["MACRO · aggregate", "ค่า aggregate ที่ Stage 06 บันทึกไว้สำหรับ ETF panel; dashboard ไม่สร้างค่า RMSE หรือคำนวณค่า aggregate ใหม่ใน browser"],
-    ["Simulated Historical Replay", "ผลย้อนหลังจาก frozen snapshot ไม่ยืนยันว่า source market data เข้าถึงได้จริง ณ วันจำลอง และไม่ใช่ข้อมูลสด"],
+function guidePage(state: ViewState): string {
+  const tasks = [
+    { title: "Replay วันหนึ่ง", route: "/forecasts", description: "เลือก recorded Test session แล้วดู Forecast, สถานะ Pending/Evaluable และช่วง target", steps: "เลื่อนวัน → อ่าน maturity → เทียบ B0–B3 → เปิด source row" },
+    { title: "เปรียบเทียบโมเดล", route: "/models", description: "เลือก asset กับ MAE/RMSE แล้วอ่านผล Official Test ก่อนลองช่วงย่อย", steps: "ดู paired N และ common panel → แยก Official Test จาก exploratory range" },
+    { title: "ทดลองน้ำหนักพอร์ต", route: "/portfolio", description: "เลือกวันและโมเดลเดียวกันสำหรับ A/B แล้วดู risk delta จาก covariance แถวเดียวกัน", steps: "ปรับน้ำหนักให้รวม 100% → อ่านค่าเป็น pp → ตั้ง budget เองถ้าต้องการ" },
+    { title: "อ่านหลักฐานวิจัย", route: "/research", description: "ตรวจ H1 บน Train และ H2/H3 บน Test พร้อม effect, CI, adjusted p และ N", steps: "อ่าน method กับ decision → เปิด sensitivity → ตรวจข้อจำกัดของ frozen sample" },
   ];
-  return `<div class="page-stack"><section class="guide-intro"><span class="section-overline">READ THE EVIDENCE</span><h2>วิธีอ่านผลโดยไม่ตีความเกินข้อมูล</h2><p>Dashboard นี้เป็นพื้นที่สำรวจผลจากการทดลองที่ตรึงไว้ ตัวกรองและ Portfolio Lab ทำงานกับข้อมูลใน snapshot ที่ตรวจแล้วเท่านั้น</p></section><div class="glossary-grid">${definitions.map(([term, definition], index) => `<article class="glossary-card"><span class="glossary-number">${String(index + 1).padStart(2, "0")}</span><h3>${term}</h3><p>${definition}</p></article>`).join("")}</div><div class="limitation-card"><span class="limitation-mark">!</span><p>ผล Test เป็นหลักฐานจาก frozen sample เท่านั้น ไม่ยืนยัน point-in-time source availability ไม่รับรองผลในอนาคต และไม่ใช่คำแนะนำซื้อขาย</p></div></div>`;
+  const definitions: Array<[string, string, string]> = [
+    ["RV5 · annualized volatility", "ความผันผวนจากผลตอบแทนจริงใน 5 วันซื้อขายถัดไป (Forward RV5) แสดงเป็น annualized decimal หรือ percent", "/forecasts"],
+    ["Pending label", "มี forecast แล้ว แต่ target ยังไม่ครบช่วง 5 วัน ณ strict cutoff จึงไม่แสดง Actual/Error และยังไม่ให้คะแนน", "/forecasts"],
+    ["B0–B3 · model family", "B0 constant baseline · B1 rolling 20D baseline · B2 Static SGD · B3 Online SGD ค่าที่เห็นอ่านจาก Stage 06", "/models"],
+    ["Train / Validation / Test", "Train ใช้ฝึกหรือศึกษา Validation ใช้เลือกการตั้งค่า และ Test ใช้ประเมินชุด holdout; อย่าใช้ Test ไปปรับ model", "/models"],
+    ["Leakage", "ข้อมูลจากอนาคตหรือ target ที่ควรเก็บไว้ทดสอบอาจรั่วไปสู่ feature หรือการเลือก model; dashboard แสดงเฉพาะขอบเขตที่ source audit ยืนยัน", "/research"],
+    ["ADWIN", "Drift monitor ที่ดู error ในสตรีม หน้านี้แสดง error และ flags ที่บันทึกไว้ ไม่สร้าง alert ใหม่ใน browser", "/drift"],
+    ["MAE / RMSE", "MAE เฉลี่ย absolute error ส่วน RMSE ให้น้ำหนัก error ขนาดใหญ่ ทั้งคู่มีหน่วย annualized volatility และอ่านจาก source", "/models"],
+    ["Annualized portfolio risk", "คำนวณจาก √(wᵀΣw) ด้วยน้ำหนักและ covariance ของแถวที่เลือก ไม่ใช่ผลตอบแทนหรือ forecast ราคา", "/portfolio"],
+    ["MACRO", "ค่า aggregate ที่ Stage 06 บันทึกไว้สำหรับ ETF panel; browser ไม่คำนวณค่า aggregate ใหม่", "/models"],
+    ["Simulated Historical Replay", "ผลย้อนหลังจาก frozen snapshot ไม่ยืนยันว่า source market data เข้าถึงได้จริง ณ วันจำลอง และไม่ใช่ข้อมูลสด", "/provenance"],
+  ];
+  return `<div class="page-stack"><section class="guide-intro"><span class="section-overline">TASK GUIDE · FROZEN SNAPSHOT</span><h2>เริ่มจากสิ่งที่อยากตรวจ</h2><p>แต่ละหน้าทำงานกับผลที่บันทึกไว้ Dashboard ไม่รัน Train, inference, replay หรือ statistical tests ใหม่</p></section><section class="guide-task-section"><div class="section-card-heading"><div><span class="section-overline">FOUR COMMON TASKS</span><h2>เลือกงานแล้วไปต่อ</h2></div></div><div class="guide-task-grid">${tasks.map((task, index) => `<article class="guide-task-card"><span class="glossary-number">0${index + 1}</span><h3>${task.title}</h3><p>${task.description}</p><small>${task.steps}</small><a class="button button-secondary" href="${escapeHtml(routeHash(task.route, state))}">เปิด ${task.route === "/forecasts" ? "Replay" : task.route === "/portfolio" ? "Portfolio" : task.route === "/models" ? "Models" : "Research"} →</a></article>`).join("")}</div><div class="guide-related-links"><a class="button button-secondary" href="${escapeHtml(routeHash("/drift", state))}">ดู Drift / ADWIN →</a><a class="button button-secondary" href="${escapeHtml(routeHash("/provenance", state))}">ตรวจที่มาและ cutoff →</a></div></section><section class="guide-glossary-section"><div class="section-card-heading"><div><span class="section-overline">GLOSSARY · PROGRESSIVE DETAILS</span><h2>คำศัพท์ที่ใช้ในหน้า dashboard</h2></div></div><div class="glossary-grid">${definitions.map(([term, definition, path], index) => `<details class="glossary-card" id="guide-term-${index + 1}" data-persist-open><summary><span class="glossary-number">${String(index + 1).padStart(2, "0")}</span><h3>${term}</h3></summary><p>${definition}</p><a class="guide-term-link" href="${escapeHtml(routeHash(path, state))}">ดูใน ${path.slice(1)} →</a></details>`).join("")}</div></section><div class="limitation-card"><span class="limitation-mark">!</span><p>ผล Test อธิบาย frozen sample เท่านั้น ไม่ยืนยัน point-in-time source availability ไม่รับรองผลในอนาคต และไม่ใช่คำแนะนำซื้อขาย</p></div></div>`;
 }
 
 function pageContent(state: ViewState): string {
   if (state.selectionError && ["/forecasts", "/portfolio", "/drift"].includes(state.routePath)) return selectionUnavailable(state);
   if (state.routePath === "/overview") return overviewPage(state);
   if (state.routePath === "/forecasts") return forecastExplorerPage(state);
-  if (state.routePath === "/provenance") return provenancePage(state.snapshot);
-  if (state.routePath === "/guide") return guidePage();
+  if (state.routePath === "/provenance") return provenancePage(state);
+  if (state.routePath === "/guide") return guidePage(state);
   if (state.routePath === "/models") return modelsPage(state);
   if (state.routePath === "/portfolio") return portfolioPage(state);
   if (state.routePath === "/drift") return driftPage(state);
@@ -975,16 +1003,81 @@ function shell(state: ViewState): string {
   const secondaryRoutes = routes.slice(3);
   const mobileDrawer = state.mobileMenuOpen ? `<div class="mobile-nav-overlay" data-action="close-menu"><nav class="mobile-drawer" aria-label="เมนูทั้งหมด"><div class="drawer-heading"><strong>ไปยังหน้า</strong><button class="icon-button" type="button" data-action="close-menu" aria-label="ปิดเมนู">×</button></div>${sidebarLinks}</nav></div>` : "";
   const morePanel = state.moreOpen ? `<div class="mobile-more-panel" aria-label="More pages">${secondaryRoutes.map((item) => navLink(item, item.path === state.routePath, "", state.selection)).join("")}</div>` : "";
-  return `<div class="app-frame${state.presentationMode ? " presentation-mode" : ""}">
-    <aside class="sidebar" aria-label="Main navigation"><div class="brand-lockup"><div class="brand-mark">A</div><div><strong>Adaptive Risk Lab</strong><span>DEDS · RESEARCH WORKBENCH</span></div></div><div class="sidebar-section-label">WORKSPACE</div><nav class="sidebar-nav">${sidebarLinks}</nav><div class="sidebar-bottom"><div class="sidebar-status-mark">${icon("lock", 16)}<span>Read-only snapshot</span></div><div class="sidebar-caption">ผลลัพธ์ที่ตรึงไว้สำหรับทบทวน<br />ไม่มีการเรียก ML pipeline</div><span class="version-label">D1–D2 FOUNDATION</span></div></aside>
+  return `<div class="app-frame${state.presentationMode ? " presentation-mode" : ""}" data-route-path="${escapeHtml(state.routePath)}">
+    <aside class="sidebar" aria-label="Main navigation"><div class="brand-lockup"><div class="brand-mark">A</div><div><strong>Adaptive Risk Lab</strong><span>DEDS · RESEARCH WORKBENCH</span></div></div><div class="sidebar-section-label">WORKSPACE</div><nav class="sidebar-nav">${sidebarLinks}</nav><div class="sidebar-bottom"><div class="sidebar-status-mark">${icon("lock", 16)}<span>Read-only snapshot</span></div><div class="sidebar-caption">ผลลัพธ์ที่ตรึงไว้สำหรับทบทวน<br />ไม่มีการเรียก ML pipeline</div><span class="version-label">D1–D9 · REVIEW LAB</span></div></aside>
     <div class="app-main"><header class="mobile-topbar"><a class="mobile-brand" href="${escapeHtml(routeHash("/overview", state))}"><span class="brand-mark small">A</span><strong>Adaptive Risk Lab</strong></a><button class="icon-button mobile-menu-button" type="button" aria-label="เปิดเมนู" aria-expanded="${state.mobileMenuOpen}" data-action="toggle-menu">${icon("menu")}</button></header>${mobileDrawer}<main class="workspace"><div class="top-identity-row"><div class="breadcrumbs"><span>DEDS</span><span class="breadcrumb-separator">/</span><strong>Adaptive Portfolio Risk Lab</strong></div><div class="identity-state"><span class="identity-dot ${state.snapshot.status}"></span>${identity}</div></div><div class="page-heading-row"><div><div class="page-kicker">RESEARCH WORKBENCH <span>·</span> FROZEN DATASET</div><h1>${escapeHtml(route.thai)}</h1><p>${escapeHtml(route.description)}</p></div><div class="page-tools"><label class="unit-control"><span>Units</span><select aria-label="Display units" data-field="unit"><option value="decimal" ${state.unit === "decimal" ? "selected" : ""}>Decimal</option><option value="percent" ${state.unit === "percent" ? "selected" : ""}>Percent</option></select></label><button class="presentation-toggle${state.presentationMode ? " active" : ""}" type="button" data-action="toggle-presentation" aria-pressed="${state.presentationMode}">${state.presentationMode ? "ออกจากโหมดนำเสนอ" : "โหมดนำเสนอ"}</button><button class="snapshot-id-button" type="button" title="คัดลอก Evaluation ID และ Replay ID ที่ pin ไว้" data-action="copy-id"><span class="snapshot-id-icon">${icon("lock", 15)}</span><span><small>PINNED EVALUATION</small><strong>${escapeHtml(snapshotId.slice(0, 12))}${state.snapshot.status === "ready" ? "…" : ""}</strong></span><span class="copy-hint">COPY</span></button></div></div>${snapshotBanner(state.snapshot)}${state.snapshot.status === "missing" ? errorState(state.snapshot.message, "ยังไม่มีไฟล์ snapshot ที่ตรวจสอบแล้ว") : state.snapshot.status === "error" ? errorState(state.snapshot.message) : ""}<div class="page-content">${state.selectionError && !["/forecasts", "/portfolio", "/drift"].includes(state.routePath) ? selectionUnavailable(state) : ""}${pageContent(state)}</div><footer class="app-footer"><span>DEDS · Adaptive Portfolio Risk Lab</span><span>${icon("lock", 13)} Read-only · No live forecast</span></footer></main><nav class="mobile-bottom-nav" aria-label="Navigation">${mobilePrimary}<button class="nav-link mobile-more-link${state.moreOpen ? " active" : ""}" type="button" aria-expanded="${state.moreOpen}" data-action="toggle-more">${icon("menu", 19)}<span>More</span></button></nav>${morePanel}${guidedTourPanel(state)}</div>
   </div>`;
 }
 
-function render(root: HTMLElement, state: ViewState): void {
+function focusSelector(element: HTMLElement): string | null {
+  if (element.id) return `#${element.id.replace(/([^a-zA-Z0-9_-])/g, "\\$1")}`;
+  const attributes = ["data-action", "data-field", "data-route", "data-scenario", "data-index", "data-tab", "data-preset"];
+  const parts = attributes.flatMap((attribute) => {
+    const value = element.getAttribute(attribute);
+    return value === null ? [] : [`[${attribute}="${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`];
+  });
+  return parts.length > 0 ? `${element.tagName.toLowerCase()}${parts.join("")}` : null;
+}
+
+function restoreScrollPosition(left: number, top: number): void {
+  const documentElement = document.documentElement;
+  const previousBehavior = documentElement.style.scrollBehavior;
+  documentElement.style.scrollBehavior = "auto";
+  window.scrollTo(left, top);
+  documentElement.style.scrollBehavior = previousBehavior;
+}
+
+function render(root: HTMLElement, state: ViewState, focusFallback: HTMLElement | null = null): void {
+  const currentRoute = root.querySelector<HTMLElement>(".app-frame")?.dataset.routePath;
+  const routeChanged = currentRoute !== undefined && currentRoute !== state.routePath;
+  const active = document.activeElement instanceof HTMLElement && root.contains(document.activeElement)
+    ? document.activeElement
+    : focusFallback && root.contains(focusFallback)
+      ? focusFallback
+      : null;
+  const activeSelector = active ? focusSelector(active) : null;
+  let selectionStart: number | null = null;
+  let selectionEnd: number | null = null;
+  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+    try {
+      selectionStart = active.selectionStart;
+      selectionEnd = active.selectionEnd;
+    } catch {
+      selectionStart = null;
+      selectionEnd = null;
+    }
+  }
+  const scrollLeft = routeChanged ? 0 : window.scrollX;
+  const scrollTop = routeChanged ? 0 : window.scrollY;
+  const expandedDetails = routeChanged
+    ? []
+    : Array.from(root.querySelectorAll<HTMLDetailsElement>("details[data-persist-open][open]"))
+      .map((details) => details.id)
+      .filter(Boolean);
   root.innerHTML = shell(state);
   const route = routes.find((item) => item.path === state.routePath);
   document.title = `${route?.label ?? "Overview"} · Adaptive Portfolio Risk Lab`;
+  restoreScrollPosition(scrollLeft, scrollTop);
+  for (const id of expandedDetails) {
+    const details = root.querySelector<HTMLDetailsElement>(`details[id="${id}"][data-persist-open]`);
+    if (details) details.open = true;
+  }
+  if (!routeChanged) {
+    window.requestAnimationFrame(() => {
+      if (activeSelector) {
+        const replacement = root.querySelector<HTMLElement>(activeSelector);
+        replacement?.focus({ preventScroll: true });
+        if ((replacement instanceof HTMLInputElement || replacement instanceof HTMLTextAreaElement) && selectionStart !== null && selectionEnd !== null) {
+          try {
+            replacement.setSelectionRange(selectionStart, selectionEnd);
+          } catch {
+            // Number and range inputs do not expose a text selection range.
+          }
+        }
+      }
+      restoreScrollPosition(scrollLeft, scrollTop);
+    });
+  }
 }
 
 async function reload(root: HTMLElement, state: ViewState): Promise<void> {
@@ -1090,6 +1183,7 @@ export function startApp(root: HTMLElement): void {
     render(root, state);
   };
   window.addEventListener("hashchange", updateRoute);
+  window.addEventListener("popstate", updateRoute);
   const pausePlayback = () => {
     if (!state.sessionPlaying) return;
     stopSessionPlayback(state);
@@ -1237,6 +1331,24 @@ export function startApp(root: HTMLElement): void {
         if (state.snapshot.status === "ready") void navigator.clipboard?.writeText(`Evaluation ID: ${state.snapshot.manifest.evaluationId}\nReplay ID: ${state.snapshot.manifest.replayId}`);
         break;
       }
+      case "copy-source-value": {
+        const value = button.dataset.copyValue;
+        const label = button.dataset.copyLabel ?? "ค่า";
+        const status = button.querySelector<HTMLElement>("[data-copy-status]");
+        if (!value || !navigator.clipboard) {
+          if (status) status.textContent = "คัดลอกไม่ได้";
+          break;
+        }
+        void navigator.clipboard.writeText(value).then(() => {
+          if (status) status.textContent = "คัดลอกแล้ว";
+          button.setAttribute("aria-label", `คัดลอก ${label} แล้ว`);
+          window.setTimeout(() => {
+            if (status) status.textContent = "คัดลอก";
+            button.setAttribute("aria-label", `คัดลอก ${label}`);
+          }, 1600);
+        }).catch(() => { if (status) status.textContent = "คัดลอกไม่ได้"; });
+        break;
+      }
       case "export-forecasts-csv": exportForecastCsv(state); break;
       case "export-forecasts-metadata": void exportForecastMetadata(state); break;
     }
@@ -1351,8 +1463,8 @@ export function startApp(root: HTMLElement): void {
             output.classList.toggle("weight-error", validation.status === "invalid");
             output.setAttribute("role", validation.status === "invalid" ? "alert" : "status");
           }
-          if (validation.status === "valid") publishFinancialDecision(root, state);
-          else render(root, state);
+          if (validation.status === "valid") publishFinancialDecision(root, state, target);
+          else render(root, state, target);
           return;
         }
       }
@@ -1362,18 +1474,18 @@ export function startApp(root: HTMLElement): void {
         if (raw === "") {
           state.financialDecision.budgetAnnualizedDecimal = null;
           state.riskBudgetError = "";
-          publishFinancialDecision(root, state);
+          publishFinancialDecision(root, state, target);
           return;
         }
         const percentValue = Number(raw);
         if (!Number.isFinite(percentValue) || percentValue < 0) {
           state.riskBudgetError = "กรอกเปอร์เซ็นต์รายปีเป็นตัวเลขที่ไม่ติดลบ หรือเว้นว่าง";
-          render(root, state);
+          render(root, state, target);
           return;
         }
         state.financialDecision.budgetAnnualizedDecimal = percentValue / 100;
         state.riskBudgetError = "";
-        publishFinancialDecision(root, state);
+        publishFinancialDecision(root, state, target);
         return;
       }
     }
