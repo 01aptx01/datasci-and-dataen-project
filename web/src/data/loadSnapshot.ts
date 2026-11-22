@@ -411,7 +411,15 @@ function validateAdditionalSources(
       throw new SnapshotLoadError(`drift_error_timeline.csv row does not match a verified B3 Test evaluation: ${row.predictionId}`, "integrity");
     }
   }
-  if (driftIds.size !== evaluableById.size || drift.some((row) => row.driftDetected || row.alertRecordPresent)) throw new SnapshotLoadError("Drift source IDs or recorded alert count do not match the pinned B3 Test snapshot", "integrity");
+  const expectedDriftAlerts = manifest.expectedCounts.driftAlertRows ?? 0;
+  const observedDriftAlerts = drift.filter((row) => row.driftDetected).length;
+  if (
+    driftIds.size !== evaluableById.size
+    || drift.some((row) => row.driftDetected !== row.alertRecordPresent)
+    || observedDriftAlerts !== expectedDriftAlerts
+  ) {
+    throw new SnapshotLoadError("Drift source IDs or recorded alert count do not match the pinned B3 Test snapshot", "integrity");
+  }
 
   const h1ByTicker = keyed(h1Results, (row) => row.ticker, "H1_results.csv");
   const sensitivityByScope = keyed(h1Sensitivity, (row) => `${row.ticker}:${row.hacMaxlags}`, "H1_sensitivity.csv");

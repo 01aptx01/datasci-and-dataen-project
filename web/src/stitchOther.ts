@@ -1,6 +1,8 @@
 import type { SnapshotState } from "./data/loadSnapshot.js";
 import { renderMonitoringFeatureDrift, type FeatureDriftViewSelection } from "./featureDriftView.js";
 import type { FeatureDriftState } from "./data/featureDrift.js";
+import type { PolicySnapshotState } from "./data/policySnapshot.js";
+import { renderPolicyMonitoringPanel } from "./policyView.js";
 import { modelId } from "./data/schemas.js";
 
 type ReadySnapshot = Extract<SnapshotState, { status: "ready" }>;
@@ -32,9 +34,22 @@ function monitoringErrorPanel(snapshot: ReadySnapshot, selection: FeatureDriftVi
   return `<section class="st-monitor-chart"><div class="st-secondary-card-title"><div><h3>Rolling MAE20 ตลอดช่วง Test (${selection.ticker} · ${modelId(selection.model)})</h3><p>ความคลาดเคลื่อนรายปี · ${series.length.toLocaleString()} ช่วงที่บันทึกไว้</p></div><a href="#/replay?${esc(query.toString())}">เปิด Replay →</a></div>${chart}<p class="st-muted">ADWIN (B3) บันทึก ${alerts} alerts · ${errorRows.length.toLocaleString()} observations ของ ${selection.ticker} · Rolling MAE20 แสดง ${selection.ticker} · ${modelId(selection.model)} · การไม่พบ alert ไม่ได้ยืนยันว่าไม่มี drift</p></section>`;
 }
 
-function monitoring(snapshot: ReadySnapshot, drift: FeatureDriftState, selection: FeatureDriftViewSelection): string {
+function monitoring(
+  snapshot: ReadySnapshot,
+  drift: FeatureDriftState,
+  selection: FeatureDriftViewSelection,
+  policyState: PolicySnapshotState,
+): string {
   const alerts = snapshot.driftTimeline.filter((row) => row.ticker === selection.ticker && row.alertRecordPresent).length;
-  return `<div class="st-secondary-page"><section class="st-card st-secondary-head"><div><h1>ติดตามการเปลี่ยนแปลงของข้อมูลและความคลาดเคลื่อน</h1><p>Feature Drift ตรวจการกระจายของข้อมูล · Error Drift แสดงประวัติ ADWIN และ Rolling MAE20</p></div><span class="st-secondary-badge">Test · ${esc(snapshot.manifest.strictCutoff)}</span></section>${renderMonitoringFeatureDrift(drift, selection, monitoringErrorPanel(snapshot, selection))}<div class="st-secondary-triple"><section class="st-card"><strong>ประวัติการสลับรุ่น</strong><span>ยังไม่มีข้อมูล</span><p>ไม่มีประวัติการสลับรุ่นใน snapshot นี้</p></section><section class="st-card"><strong>สถานะ B4 · HAR-X (OLS)</strong><span>Static (Frozen)</span><p>B4 คงที่หลัง Train ไม่มีการอัปเดตออนไลน์หรือ ADWIN drift stream</p></section><section class="st-card"><strong>จำนวน ADWIN alert · ${selection.ticker}</strong><span>${alerts} alerts</span><p>ADWIN ติดตามเฉพาะ error stream ของ B3 โดยไม่สั่ง retrain อัตโนมัติ</p></section></div><p class="st-muted">Feature Drift เป็นการเปรียบเทียบการกระจายของ feature กับ Train โดยใช้เกณฑ์ Validation · ไม่ได้พิสูจน์สาเหตุหรือยืนยันความพร้อมของข้อมูล ณ เวลาจริง</p></div>`;
+  const policyPanel = renderPolicyMonitoringPanel(policyState, { ticker: selection.ticker, date: selection.date });
+  const policySummaryCard = policyState.status === "ready"
+    ? (() => {
+        const ops = policyState.operationsSummary.find((row) => row.ticker === selection.ticker);
+        const initChamp = policyState.manifest.initialChampion[selection.ticker];
+        return `<section class="st-card"><strong>Champion–Challenger Policy · ${selection.ticker}</strong><span>${ops ? `${ops.promotionCount} switches · ${ops.alertCount} alerts` : "พร้อมใช้งาน"}</span><p>Initial ${esc(initChamp)} → Final ${esc(ops?.finalChampionModelId ?? initChamp)} (${esc(ops?.finalChampionVersionId ?? "v001")}) · Exploratory v${esc(policyState.manifest.policyVersion)} (Simulated Replay)</p></section>`;
+      })()
+    : `<section class="st-card"><strong>Champion–Challenger Policy</strong><span>${policyState.status === "loading" ? "กำลังโหลด" : policyState.status === "error" ? "ตรวจไม่ผ่าน" : "ยังไม่มี sidecar"}</span><p>${policyState.status === "loading" ? "กำลังตรวจสอบ policy snapshot" : esc(policyState.message)}</p></section>`;
+  return `<div class="st-secondary-page"><section class="st-card st-secondary-head"><div><h1>ติดตามการเปลี่ยนแปลงของข้อมูล ความคลาดเคลื่อน และ Policy</h1><p>แยกชัดเจน 3 ส่วน: Feature Drift (W1/PSI) · B3 Monitor ADWIN เดิม · Champion–Challenger Policy ADWIN (Served Error)</p></div><span class="st-secondary-badge">Test · ${esc(snapshot.manifest.strictCutoff)}</span></section>${renderMonitoringFeatureDrift(drift, selection, monitoringErrorPanel(snapshot, selection), policyPanel)}<div class="st-secondary-triple">${policySummaryCard}<section class="st-card"><strong>สถานะ B4 · HAR-X (OLS)</strong><span>Static (Frozen)</span><p>B4 คงที่หลัง Train ไม่มีการอัปเดตออนไลน์หรือ ADWIN drift stream</p></section><section class="st-card"><strong>B3 Monitor ADWIN เดิม · ${selection.ticker}</strong><span>${alerts} alerts</span><p>ADWIN ติดตามเฉพาะ error stream ของ B3 Benchmark โดยไม่สั่งสลับรุ่น</p></section></div><p class="st-muted">Simulated Historical Replay · Feature Drift, B3 Monitor ADWIN และ Exploratory Champion–Challenger Policy แยกจากผลทดสอบสมมติฐาน H1–H3 · ยังไม่ยืนยันความพร้อมของข้อมูล ณ เวลาจริง</p></div>`;
 }
 function evidence(snapshot: ReadySnapshot): string {
   const rows = snapshot.hypothesisResults.map((row) => `<tr><td><strong>${row.hypothesisId}</strong></td><td>${row.datasetSplit} · ${row.tickerOrMacro}</td><td>${number(row.effectSize)}</td><td>[${number(row.confidenceInterval95[0])}, ${number(row.confidenceInterval95[1])}]</td><td>${number(row.adjustedPValue)}</td><td>${row.nPaired.toLocaleString()}</td><td>${esc(row.decision)}</td></tr>`).join("");
@@ -46,12 +61,14 @@ export function renderOtherPage(
   page: OtherPage,
   featureDrift?: FeatureDriftState,
   driftSelection?: FeatureDriftViewSelection,
+  policyState?: PolicySnapshotState,
 ): string {
   if (page === "models") return models(snapshot);
   if (page === "monitoring") return monitoring(
     snapshot,
     featureDrift ?? { status: "missing", message: "ยังไม่มี sidecar ของ Feature Drift" },
     driftSelection ?? { ticker: "SPY", date: "", feature: "ret_1d_t", windowSize: 60, metric: "wasserstein_normalized", tab: "feature", model: "ONLINE_SGD" },
+    policyState ?? { status: "missing", message: "ยังไม่มี sidecar ของ Champion–Challenger Policy" },
   );
   if (page === "evidence") return evidence(snapshot);
   return `<div class="st-secondary-page"><section class="st-card st-secondary-head"><div><h1>Adaptive Portfolio Risk Lab</h1><p>สำรวจความผันผวนและความเสี่ยงพอร์ตจากข้อมูล Stage 06</p></div><span class="st-secondary-badge">ข้อมูลถึง ${esc(snapshot.manifest.strictCutoff)}</span></section><section class="st-card"><h2>เริ่มสำรวจพอร์ต</h2><p>ปรับน้ำหนักเพื่อคำนวณความเสี่ยงจาก covariance ที่บันทึกไว้ หรือเล่นย้อนหลังเพื่อเปรียบเทียบ Forecast และ Actual</p><a href="#/portfolio">พยากรณ์พอร์ต →</a>　<a href="#/replay">เล่นย้อนหลัง →</a></section>${models(snapshot)}</div>`;

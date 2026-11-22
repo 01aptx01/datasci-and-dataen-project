@@ -65,6 +65,7 @@ export interface SnapshotPolicy {
     portfolioRiskRows: number;
     rollingMae20Rows: number;
     driftErrorTimelineRows: number;
+    driftAlertRows?: number;
     h1ScatterDataRows: number;
     h1ResultsRows: number;
     h1SensitivityRows: number;
@@ -473,6 +474,7 @@ export function parsePolicy(value: unknown): SnapshotPolicy {
       portfolioRiskRows: numberField(counts, "portfolioRiskRows"),
       rollingMae20Rows: numberField(counts, "rollingMae20Rows"),
       driftErrorTimelineRows: numberField(counts, "driftErrorTimelineRows"),
+      ...(counts.driftAlertRows !== undefined ? { driftAlertRows: numberField(counts, "driftAlertRows") } : {}),
       h1ScatterDataRows: numberField(counts, "h1ScatterDataRows"),
       h1ResultsRows: numberField(counts, "h1ResultsRows"),
       h1SensitivityRows: numberField(counts, "h1SensitivityRows"),
@@ -555,6 +557,7 @@ export function parseSnapshotManifest(value: unknown, policy: SnapshotPolicy): S
     portfolioRiskRows: numberField(counts, "portfolioRiskRows"),
     rollingMae20Rows: numberField(counts, "rollingMae20Rows"),
     driftErrorTimelineRows: numberField(counts, "driftErrorTimelineRows"),
+    ...(counts.driftAlertRows !== undefined ? { driftAlertRows: numberField(counts, "driftAlertRows") } : {}),
     h1ScatterDataRows: numberField(counts, "h1ScatterDataRows"),
     h1ResultsRows: numberField(counts, "h1ResultsRows"),
     h1SensitivityRows: numberField(counts, "h1SensitivityRows"),
