@@ -2758,3 +2758,63 @@ body { margin: 0; }
     gap: 4px;
   }
 }
+
+/* Shared desktop navigation and brand */
+.st-header {
+  display: block;
+  padding: 0 max(24px, calc((100vw - 1392px) / 2));
+}
+.st-header-top, .st-header-bottom, .st-header-actions {
+  display: flex;
+  align-items: center;
+}
+.st-header-top { min-height: 68px; justify-content: space-between; gap: 16px; }
+.st-brand-mark { width: 40px; height: 40px; border-radius: 12px; background: linear-gradient(145deg, #2456c6, #152c69); }
+.st-brand-mark svg { width: 34px; height: 34px; }
+.st-brand { font-size: 16px; }
+.st-header-bottom { justify-content: space-between; gap: 18px; padding: 10px 0; border-top: 1px solid var(--st-border); }
+.st-nav { flex: 0 1 auto; }
+.st-nav-link { font-size: 12px; padding-inline: 14px; }
+.st-header-actions { flex: 0 0 auto; gap: 8px; }
+.st-utility-link {
+  display: inline-flex; min-height: 38px; align-items: center; justify-content: center;
+  padding: 7px 12px; border: 1px solid var(--st-border-strong); border-radius: var(--st-radius-sm);
+  color: var(--st-ink); background: white; font-size: 12px; font-weight: 600;
+  text-decoration: none; white-space: nowrap;
+}
+.st-utility-link:hover { border-color: var(--st-primary); color: var(--st-primary); }
+.st-utility-link:focus-visible { outline: 3px solid rgb(36 86 198 / 24%); outline-offset: 2px; }
+.st-presentation-link { margin: 0; font-size: 12px; }
+@media (max-width: 1050px) {
+  .st-header-bottom { flex-wrap: wrap; }
+  .st-header-actions { margin-left: auto; }
+}
+@media (max-width: 620px) {
+  .st-header { padding: 0 12px; }
+  .st-header-top { min-height: 60px; }
+  .st-brand { font-size: 13px; }
+  .st-brand-mark { width: 34px; height: 34px; }
+  .st-brand-mark svg { width: 30px; height: 30px; }
+  .st-header-bottom { gap: 8px; padding: 8px 0; }
+  .st-nav { width: 100%; }
+  .st-header-actions { width: 100%; margin: 0; overflow-x: auto; }
+  .st-utility-link, .st-presentation-link { min-height: 34px; font-size: 11px; }
+}
+.st-portfolio-toolbar { grid-template-columns: minmax(250px, 1fr) minmax(330px, 1fr) auto; }
+.st-portfolio-model-chip { display: flex; min-width: 0; align-items: center; gap: 4px; padding: 0 9px; border-radius: 8px; color: #19366f; background: #eef0ff; }
+.st-portfolio-model-sparkle { font-size: 19px; line-height: 1; }
+.st-portfolio-toolbar .st-portfolio-model-chip select { width: auto; min-width: 0; border: 0; color: #19366f; background-color: transparent; font-weight: 700; }
+.st-portfolio-model-note { font-size: 11px; white-space: nowrap; }
+@media (max-width: 900px) { .st-portfolio-toolbar { grid-template-columns: 1fr; } .st-portfolio-model-chip { width: fit-content; max-width: 100%; flex-wrap: wrap; } }
+
+/* Give the desktop dashboard a more comfortable reading scale. */
+@media (min-width: 1000px) {
+  .st-app { zoom: 1.15; }
+}
+@media (min-width: 1000px) {
+  .st-portfolio-reset { white-space: nowrap; }
+}
+/* Align the header with the dashboard content at wide desktop sizes. */
+@media (min-width: 1200px) {
+  .st-header { padding-inline: max(24px, calc((100% - 1392px) / 2)); }
+}

@@ -19,8 +19,8 @@ const models: ModelName[] = ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATI
 const tickerLabel: Record<Ticker, string> = { SPY: "SPY · หุ้นสหรัฐ", IEF: "IEF · Treasury", GLD: "GLD · ทองคำ" };
 const modelLabel: Record<ModelName, string> = { CONSTANT_BASELINE: "B0 · Constant baseline", ROLLING_20D_BASELINE: "B1 · Rolling 20D", STATIC_SGD: "B2 · Static SGD", ONLINE_SGD: "B3 · Online SGD", HAR_X_OLS: "B4 · HAR-X (OLS)" };
 const pageLabel: Record<Page, string> = {
-  overview: "ภาพรวม", forecasts: "พยากรณ์", replay: "เล่นย้อนหลัง", portfolio: "ทดลองพอร์ต",
-  models: "โมเดล", monitoring: "ติดตาม", evidence: "หลักฐาน",
+  overview: "ภาพรวม", forecasts: "พยากรณ์", replay: "เล่นย้อนหลัง", portfolio: "พยากรณ์พอร์ต",
+  models: "เปรียบเทียบโมเดล", monitoring: "ติดตามโมเดล", evidence: "หลักฐาน",
 };
 
 interface State {
@@ -280,7 +280,16 @@ function portfolioPage(snapshot: ReadySnapshot, state: State): string {
   const sumOk = valid.status === "valid";
   const query = new URLSearchParams({ date, model: state.portfolio.model, ticker: "SPY" }).toString();
   const datesHtml = dates.map((item) => "<option value=\"" + esc(item) + "\"" + (item === date ? " selected" : "") + ">" + esc(item) + "</option>").join("");
-  return "<section class=\"st-portfolio-toolbar\"><label class=\"st-field\">วันที่พยากรณ์<select data-field=\"portfolio-date\">" + datesHtml + "</select></label><label class=\"st-field\">โมเดล<select data-field=\"portfolio-model\">" + selectOptions(models, modelLabel, state.portfolio.model) + "</select></label><span class=\"st-readonly-tag\">Stage 06 · " + esc(snapshot.manifest.strictCutoff) + "</span><span class=\"st-portfolio-source-status\">" + (row?.status === "OK" ? "ข้อมูลต้นทางพร้อม" : "ข้อมูลต้นทางไม่ครบ") + "</span></section>"
+  const bestMacroMetric = [...snapshot.modelMetrics]
+    .filter((metric) => metric.ticker === "MACRO")
+    .sort((left, right) => left.mae - right.mae)[0];
+  const modelNote = bestMacroMetric
+    ? state.portfolio.model === bestMacroMetric.modelName
+      ? "Macro MAE ต่ำสุด · Test"
+      : "Macro MAE ต่ำสุด: " + modelId(bestMacroMetric.modelName) + " · Test"
+    : "ไม่มีผล Macro MAE";
+  const portfolioModelLabels = Object.fromEntries(models.map((model) => [model, modelLabel[model].replace(" · ", " ")])) as Record<string, string>;
+  return "<section class=\"st-portfolio-toolbar\"><label class=\"st-field\">วันที่พยากรณ์<select data-field=\"portfolio-date\">" + datesHtml + "</select></label><label class=\"st-field st-portfolio-model-field\">โมเดล<span class=\"st-portfolio-model-chip\"><span class=\"st-portfolio-model-sparkle\" aria-hidden=\"true\">✧</span><select data-field=\"portfolio-model\" aria-label=\"โมเดลที่เลือก\">" + selectOptions(models, portfolioModelLabels, state.portfolio.model) + "</select><span class=\"st-portfolio-model-note\">" + esc(modelNote) + "</span></span></label><span class=\"st-portfolio-source-status\">" + (row?.status === "OK" ? "ข้อมูลต้นทางพร้อม" : "ข้อมูลต้นทางไม่ครบ") + "</span></section>"
     + "<div class=\"st-portfolio-layout\"><section class=\"st-card st-portfolio-editor\"><div class=\"st-section-heading\"><div><h2>ปรับน้ำหนักพอร์ต</h2><p>เลื่อนแถบหรือพิมพ์สัดส่วน SPY, IEF และ GLD รวมกันได้ 100%</p></div><button class=\"st-button st-button-quiet st-portfolio-reset\" type=\"button\" data-action=\"portfolio-reset\">↻ ค่าตั้งต้น</button></div>"
     + "<div class=\"st-portfolio-weights\">" + weightRows + "</div><div class=\"st-portfolio-total\"><span>น้ำหนักรวมพอร์ต</span><strong class=\"" + (sumOk ? "st-weight-valid" : "st-weight-invalid") + "\">" + (Number.isFinite(total) ? (total * 100).toFixed(0) : "—") + "% " + (sumOk ? "✓" : "· ต้องรวม 100%") + "</strong></div></section>"
     + "<section class=\"st-card st-portfolio-result\"><div class=\"st-section-heading\"><div><h2>ความผันผวนพอร์ต <span class=\"st-portfolio-horizon\">5 วันซื้อขายถัดไป</span></h2><p>วันพยากรณ์: " + esc(row?.predictionDate ?? date) + " · โมเดล " + esc(modelId(state.portfolio.model)) + "</p></div><span class=\"st-readonly-tag\">คำนวณจาก covariance</span></div>"
@@ -361,12 +370,12 @@ function render(root: HTMLElement, state: State): void {
   const title = state.page === "forecasts" ? "สำรวจ Forecast" : state.page === "replay" ? "เล่นย้อนหลัง" : state.page === "portfolio" ? "ทดลองน้ำหนักพอร์ต" : state.page === "models" ? "เปรียบเทียบโมเดล" : state.page === "monitoring" ? "ติดตามโมเดล" : state.page === "evidence" ? "หลักฐานและข้อมูล" : "Adaptive Portfolio Risk Lab";
   const subtitle = state.page === "replay" ? "Forecast ที่บันทึกไว้ · Actual แสดงเมื่อ target ครบกำหนด" : state.page === "portfolio" ? "ปรับสัดส่วนพอร์ตและคำนวณจาก covariance ที่ตรึงไว้" : "สำรวจข้อมูล Stage 06 snapshot · ไม่ใช่ข้อมูลสด";
   const showHeading = state.page === "forecasts";
-  const nav = pages.map((page) => "<a class=\"st-nav-link" + (page === state.page ? " st-active" : "") + "\" href=\"#/" + page + "\"" + (page === state.page ? " aria-current=\"page\"" : "") + ">" + esc(pageLabel[page]) + "</a>").join("");
-  const status = snapshot.status === "ready" ? "Stage 06 · cutoff " + esc(snapshot.manifest.strictCutoff) : snapshot.status === "loading" ? "กำลังโหลด snapshot" : "ตรวจ snapshot";
+  const nav = (["portfolio", "replay", "models", "monitoring"] satisfies Page[]).map((page) => "<a class=\"st-nav-link" + (page === state.page ? " st-active" : "") + "\" href=\"#/" + page + "\"" + (page === state.page ? " aria-current=\"page\"" : "") + ">" + esc(pageLabel[page]) + "</a>").join("");
+  const status = snapshot.status === "ready" ? "cutoff " + esc(snapshot.manifest.strictCutoff) : snapshot.status === "loading" ? "กำลังโหลด snapshot" : "ตรวจ snapshot";
   const presentationLink = CANVA_PRESENTATION_URL
-    ? "<a class=\"st-presentation-link\" href=\"" + esc(CANVA_PRESENTATION_URL) + "\" target=\"_blank\" rel=\"noopener noreferrer\">เปิด Canva Presentation ↗</a>"
-    : "<button class=\"st-presentation-link\" type=\"button\" disabled title=\"ยังไม่ได้ตั้งค่าลิงก์ Canva Presentation\">เปิด Canva Presentation ↗</button>";
-  root.innerHTML = "<div class=\"st-app\"><header class=\"st-header\"><a class=\"st-brand\" href=\"#/overview\"><span class=\"st-brand-mark\">R</span><span><strong>Risk Lab</strong><small>DEDS · Research snapshot</small></span></a><span class=\"st-status\">" + status + "</span><nav class=\"st-nav\" aria-label=\"หน้าหลัก\">" + nav + "</nav>" + presentationLink + "</header>"
+    ? "<a class=\"st-presentation-link\" href=\"" + esc(CANVA_PRESENTATION_URL) + "\" target=\"_blank\" rel=\"noopener noreferrer\">โหมดนำเสนอ ↗</a>"
+    : "<button class=\"st-presentation-link\" type=\"button\" disabled title=\"ยังไม่ได้ตั้งค่าลิงก์ Canva Presentation\">โหมดนำเสนอ ↗</button>";
+  root.innerHTML = "<div class=\"st-app\"><header class=\"st-header\"><div class=\"st-header-top\"><a class=\"st-brand\" href=\"#/overview\" aria-label=\"Future Portfolio Volatility: ภาพรวม\"><span class=\"st-brand-mark\" aria-hidden=\"true\"><svg viewBox=\"0 0 40 40\" fill=\"none\"><path d=\"M8 28V12M8 28h25\" stroke=\"white\" stroke-opacity=\".45\" stroke-width=\"1.5\" stroke-linecap=\"round\"/><path d=\"M11 24l6-7 5 4 9-11\" stroke=\"white\" stroke-width=\"2.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><circle cx=\"31\" cy=\"10\" r=\"2.5\" fill=\"#8DE5D4\"/></svg></span><span><strong>Future Portfolio Volatility</strong><small>Portfolio risk research</small></span></a><span class=\"st-status\">" + status + "</span></div><div class=\"st-header-bottom\"><nav class=\"st-nav\" aria-label=\"หน้าหลัก\">" + nav + "</nav><div class=\"st-header-actions\"><a class=\"st-utility-link\" href=\"#/forecasts\">สำรวจ Forecast</a><a class=\"st-utility-link st-evidence-link\" href=\"#/evidence\">▧ หลักฐานและข้อมูล</a>" + presentationLink + "</div></div></header>"
     + "<main class=\"st-main\">" + (showHeading ? "<div class=\"st-page-title\"><div><h1>" + title + "</h1><p>" + subtitle + "</p></div></div>" : "") + content(state) + "</main><footer class=\"st-footer\"><span>Simulated Historical Replay · ไม่ใช่คำแนะนำการลงทุน</span><a href=\"#/evidence\">ดูที่มาและข้อจำกัดของข้อมูล →</a></footer></div>";
   if (active) {
     const candidates = Array.from(root.querySelectorAll<HTMLElement>("[data-field], [data-action]"));

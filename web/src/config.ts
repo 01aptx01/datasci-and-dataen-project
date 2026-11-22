@@ -1,2 +1,1 @@
-// Set this to the Canva presentation URL to enable the header button.
-export const CANVA_PRESENTATION_URL: string = "";
+export const CANVA_PRESENTATION_URL = "https://canva.link/dsdn-project";
