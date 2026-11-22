@@ -2839,3 +2839,13 @@ body { margin: 0; }
   .st-replay-chart-panel .st-replay-chart-wrap { min-height: 440px; }
 }
 .st-replay-accuracy { margin: 10px 0; padding: 10px 14px; border-radius: 8px; background: #eef3ff; color: #19366f; font-weight: 600; }
+/* Keep chart labels proportional to the enlarged SVG and make result details readable. */
+.st-replay-chart-label, .st-replay-chart-date { font-size: 10px; }
+.st-replay-inspector { min-height: 0; padding: 18px; gap: 14px; }
+.st-replay-heading > div > span, .st-replay-target, .st-replay-target strong,
+.st-replay-metric-label, .st-replay-inspector .st-source-meta { font-size: 12px; }
+.st-replay-heading h2 { font-size: 20px; }
+.st-replay-metric { padding: 12px; }
+.st-replay-metric-value { font-size: 20px; }
+.st-replay-history, .st-replay-chart-panel .st-source-details summary { font-size: 12px; }
+.st-replay-inspector > .st-source-note { display: block; margin: 0; font-size: 12px; }
