@@ -53,20 +53,20 @@ test("H1 Thai explanation interprets beta in percentage points and keeps the Tra
   assert.match(summary, /Forward RV5/);
   assert.match(summary, /เพิ่มขึ้น 1 จุดเปอร์เซ็นต์/);
   assert.match(summary, /0\.57 จุดเปอร์เซ็นต์/);
-  assert.match(summary, /ไม่ได้ยืนยันเหตุและผล/);
-  assert.match(summary, /ไม่ยืนยันผลใน Test/);
+  assert.match(summary, /ไม่ยืนยันเหตุและผล/);
+  assert.match(summary, /ไม่ยืนยันเหตุและผลหรือผลใน Test/);
 });
 
 test("H2 card explains the positive MAE difference, paired sample, and stored test decision in Thai", () => {
   const html = renderHypothesisResultCard(h2, "percent");
   assert.match(html, /B3 \(Online SGD\)/);
   assert.match(html, /B2 \(Static SGD\)/);
-  assert.match(html, /คำถามวิจัย/);
-  assert.match(html, /จำนวนคู่ข้อมูลที่ใช้/);
+  assert.match(html, /<h4>.*หรือไม่\?<\/h4>/);
+  assert.match(html, /คู่ข้อมูลที่ใช้ \/ คาดไว้/);
   assert.match(html, /729/);
   assert.match(html, /0\.36 จุดเปอร์เซ็นต์/);
   assert.match(html, /ค่าบวกหมายถึง B3 มี MAE ต่ำกว่า/);
-  assert.match(html, /ไม่ได้หมายความว่า B3 จะชนะทุก ETF หรือทุกวัน/);
+  assert.match(html, /ไม่ได้แปลว่า B3 จะชนะทุก ETF หรือทุกวัน/);
   assert.match(html, /ปฏิเสธ H₀/);
 });
 

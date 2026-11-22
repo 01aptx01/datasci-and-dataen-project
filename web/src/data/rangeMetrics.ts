@@ -98,6 +98,6 @@ export function calculateDescriptiveRangeMetrics(
   return {
     status: "ready", ticker, startDate, endDate, scores, n, nByTicker,
     smallSample: selectedTickers.some((asset) => nByTicker[asset] < 20),
-    reason: ticker === "MACRO" ? "MACRO MAE คือค่าเฉลี่ย MAE ราย ETF; RMSE คือรากที่สองของค่าเฉลี่ย RMSE² ราย ETF" : "คำนวณจาก common paired rows ของทั้ง 4 โมเดลใน ETF ที่เลือก",
+    reason: ticker === "MACRO" ? "MACRO MAE คือค่าเฉลี่ย MAE ราย ETF ส่วน RMSE คือรากที่สองของค่าเฉลี่ย RMSE² ราย ETF" : "คำนวณจาก common paired rows ของทั้ง 4 โมเดลใน ETF ที่เลือก",
   };
 }

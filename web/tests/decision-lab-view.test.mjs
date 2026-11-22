@@ -64,11 +64,11 @@ test("Risk Center does not report zero over-budget dates before a user sets a bu
 test("Scenario Lab labels absolute risk deltas in percentage points", () => {
   const state = { ...createDefaultFinancialScenarioState(), scenarioB: [0.6, 0.2, 0.2], activeTab: "scenarios" };
   const html = render(state);
-  assert.match(html, /Difference · B − A[\s\S]*\d+\.\d+ pp/);
+  assert.match(html, /ส่วนต่าง B − A[\s\S]*\d+\.\d+ pp/);
   assert.match(html, /decision-risk-line scenario-a/);
   assert.match(html, /decision-risk-line scenario-b/);
-  assert.match(html, /Scenario A · 1 วันที่คำนวณได้/);
-  assert.match(html, /Scenario B · 1 วันที่คำนวณได้/);
+  assert.match(html, /Scenario A: 1 วันที่คำนวณได้/);
+  assert.match(html, /Scenario B: 1 วันที่คำนวณได้/);
   assert.match(html, /ความเสี่ยง Scenario A/);
   assert.match(html, /แต่ละจุดคือค่า Forecast ความผันผวนสำหรับ 5 วันซื้อขายถัดไป/);
   assert.match(html, /weights SPY\/IEF\/GLD/);
@@ -79,13 +79,13 @@ test("Scenario Lab labels absolute risk deltas in percentage points", () => {
 test("Risk Drivers displays the stored correlation evidence", () => {
   const state = { ...createDefaultFinancialScenarioState(), activeTab: "drivers" };
   const html = render(state);
-  assert.match(html, /Correlation ที่บันทึกไว้ · 20 วันซื้อขาย/);
+  assert.match(html, /Correlation จากข้อมูลย้อนหลัง 20 วันซื้อขาย/);
   assert.match(html, /0\.675/);
   assert.match(html, /0\.592/);
   assert.match(html, /0\.507/);
   assert.match(html, /corr_\*_20d/);
   assert.match(html, /decision-contribution-fill positive/);
-  assert.match(html, /ค่าความสัมพันธ์ย้อนหลัง ไม่ใช่การคาดการณ์ correlation/);
+  assert.match(html, /ข้อมูลย้อนหลัง ไม่ใช่การคาดการณ์/);
 });
 
 test("Scenario Lab pairs numeric weight fields with adjustable sliders", () => {
@@ -147,7 +147,7 @@ test("Portfolio date controls expose adjacent recorded dates and opt-in playback
   assert.match(html, /data-action="portfolio-date-step" data-direction="next"/);
   assert.match(html, /data-action="toggle-session-play"[^>]*aria-pressed="true"[^>]*>หยุดเล่น/);
   assert.match(html, /data-field="session-speed"/);
-  assert.match(html, /2 \/ 3 วันที่บันทึก/);
+  assert.match(html, /วันที่ 2 จาก 3 วัน/);
 });
 
 test("Portfolio playback keeps an invalid recorded date visible without calculating risk", () => {
@@ -164,7 +164,7 @@ test("Portfolio playback keeps an invalid recorded date visible without calculat
     availableDates: ["2025-01-01", selection.predictionDate, "2025-01-03"],
   });
   assert.match(html, /portfolio-date-status unavailable/);
-  assert.match(html, /ไม่พร้อม · สถานะต้นทาง INCOMPLETE_INPUTS/);
+  assert.match(html, /ไม่พร้อม \(สถานะต้นทาง INCOMPLETE_INPUTS\)/);
   assert.match(html, /ข้อมูลที่ขาด: IEF forecast/);
   assert.match(html, /class="decision-chart-empty"/);
   assert.match(html, /<td>—<\/td><td>INCOMPLETE_INPUTS<\/td>/);
@@ -182,10 +182,10 @@ test("Scenario Lab keeps editors, selected-day comparison, timeline, and budget 
   assert.match(html, /class="scenario-editors"/);
   assert.match(html, /class="scenario-analysis"/);
   assert.match(html, /class="scenario-selected-day"/);
-  assert.match(html, /Difference · B − A/);
+  assert.match(html, /ส่วนต่าง B − A/);
   assert.match(html, /id="scenario-risk-budget-input"/);
   assert.match(html, /data-scenario-budget-summary/);
-  assert.match(html, /ความเสี่ยงย้อนหลัง · ใช้น้ำหนัก A\/B คงที่/);
+  assert.match(html, /ความเสี่ยงย้อนหลังที่ใช้น้ำหนัก A\/B คงที่/);
   assert.match(html, /น้ำหนัก SPY/);
 });
 

@@ -9,10 +9,10 @@ const points = [
 
 test("Replay chart marks the selected saved session and exposes a data table", () => {
   const html = renderSessionChart(points, "2025-01-03", "percent");
-  assert.match(html, /aria-label="Forecast ที่บันทึกไว้และ Actual ที่ครบกำหนดแล้ว \(RV5\); เลือกวันที่ 2025-01-03"/);
+  assert.match(html, /aria-label="Forecast ที่บันทึกไว้และ Actual ที่ครบกำหนดแล้ว \(RV5\), เลือกวันที่ 2025-01-03"/);
   assert.match(html, /class="session-chart-dot session-chart-forecast selected"/);
-  assert.match(html, /ดูค่ากราฟเป็นตาราง/);
-  assert.match(html, /Actual · แสดงเมื่อครบกำหนดและประเมินได้/);
+  assert.match(html, /ดูค่ากราฟในตาราง/);
+  assert.match(html, /Actual \(ครบกำหนดและประเมินได้\)/);
   assert.match(html, /mature-id/);
 });
 
@@ -21,8 +21,8 @@ test("Replay chart does not plot or table an Actual value when the caller withho
     { predictionDate: "2025-01-02", predictionId: "pending-id", forecast: 0.1, actual: null, status: "PENDING_LABEL" },
   ], "2025-01-02", "percent");
   assert.match(html, /Forecast 10\.00%/);
-  assert.match(html, /Pending · ยังไม่ให้คะแนน/);
-  assert.match(html, /Actual · ซ่อนไว้จนกว่าจะครบกำหนด/);
+  assert.match(html, /Pending \(ยังไม่ให้คะแนน\)/);
+  assert.match(html, /Actual \(ซ่อนไว้จนกว่าจะครบกำหนด\)/);
   assert.doesNotMatch(html, /Actual 99\.00%/);
   assert.doesNotMatch(html, /<td>99\.00%<\/td>/);
 });
