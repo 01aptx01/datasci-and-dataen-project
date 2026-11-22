@@ -5,10 +5,13 @@ from datetime import date, timedelta
 from pathlib import Path
 import shutil
 
+import joblib
+import numpy as np
 import pandas as pd
 import pandas_market_calendars as market_calendars
 import pytest
 from pandas.testing import assert_frame_equal
+from sklearn.linear_model import LinearRegression
 
 from src.features.pipeline import CORE_FEATURE_COLUMNS, FEATURE_COLUMNS, SUPPORTED_TICKERS
 from src.ml_dataset.dataset import prepare_ml_dataset
@@ -44,13 +47,12 @@ def _next_sessions(anchor: date, count: int) -> list[date]:
 
 
 def _synthetic_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
+    rng = np.random.default_rng(2024)
     training_dates = [
-        date(2024, 9, 17),
-        date(2024, 9, 18),
-        date(2024, 9, 19),
-        date(2024, 9, 20),
-        date(2024, 9, 23),
-        date(2024, 9, 24),
+        stamp.date()
+        for stamp in market_calendars.get_calendar("XNYS")
+        .schedule(start_date="2024-09-03", end_date="2024-09-24")
+        .index
     ]
     replay_dates = [
         stamp.date()
@@ -63,11 +65,11 @@ def _synthetic_tables() -> tuple[pd.DataFrame, pd.DataFrame]:
     label_rows: list[dict[str, object]] = []
     for ticker_index, ticker in enumerate(SUPPORTED_TICKERS):
         for index, anchor in enumerate(dates):
-            values = {
-                name: 0.015 + ticker_index * 0.001 + index * 0.0001
-                for name in CORE_FEATURE_COLUMNS
-            }
-            values["rv_20d"] = 0.12 + ticker_index * 0.01 + index * 0.001
+            vec = rng.normal(0.0, 0.02, size=len(CORE_FEATURE_COLUMNS))
+            values = dict(zip(CORE_FEATURE_COLUMNS, vec))
+            values["rv_5d"] = abs(values["rv_5d"]) + 0.10 + ticker_index * 0.005
+            values["rv_20d"] = abs(values["rv_20d"]) + 0.12 + ticker_index * 0.01
+            values["rv_60d"] = abs(values["rv_60d"]) + 0.13 + ticker_index * 0.01
             feature_rows.append(
                 {
                     "date": anchor,
@@ -114,8 +116,7 @@ def synthetic_stage04(tmp_path_factory: pytest.TempPathFactory) -> tuple[object,
         replay_date=date(2026, 9, 25),
     )
     artifact_dir = tmp_path_factory.mktemp("stage04") / "initial-models"
-    # Synthetic fixture has 5 Train rows (< 9 required for B4 OLS); B4 replay is wired in Session 3.
-    run_training_selection(prepared, labels, artifact_dir=artifact_dir, include_b4=False)
+    run_training_selection(prepared, labels, artifact_dir=artifact_dir)
     return prepared, labels, artifact_dir
 
 
@@ -135,13 +136,14 @@ def test_final_replay_saves_contract_forecasts_and_evaluates_only_mature_labels(
 
     predictions = result.predictions
     assert predictions.columns.tolist() == PREDICTION_COLUMNS
-    assert len(predictions) == 14 * 3 * 4
+    assert len(predictions) == 14 * 3 * 5
     assert not predictions["prediction_id"].duplicated().any()
     assert set(predictions["model_name"]) == {
         "CONSTANT_BASELINE",
         "ROLLING_20D_BASELINE",
         "STATIC_SGD",
         "ONLINE_SGD",
+        "HAR_X_OLS",
     }
     assert predictions["prediction_mode"].eq("HISTORICAL_REPLAY").all()
     assert predictions["prediction_date"].min() == date(2024, 10, 1)
@@ -166,7 +168,7 @@ def test_final_replay_saves_contract_forecasts_and_evaluates_only_mature_labels(
     first_anchor_evaluations = evaluations.loc[
         evaluations["prediction_date"] == date(2024, 10, 1)
     ]
-    assert len(first_anchor_evaluations) == 3 * 4
+    assert len(first_anchor_evaluations) == 3 * 5
     assert first_anchor_evaluations["evaluation_date"].eq(date(2024, 10, 8)).all()
     assert first_anchor_evaluations["split"].eq("validation").all()
     assert first_anchor_evaluations["target_version"].eq("2.0.0").all()
@@ -180,6 +182,7 @@ def test_final_replay_saves_contract_forecasts_and_evaluates_only_mature_labels(
     assert len(result.committed_sessions) == 14
     assert result.experiment_manifest["point_in_time_source_availability_verified"] is False
     assert result.experiment_manifest["b2_frozen_state_verified"] is True
+    assert result.experiment_manifest["b4_frozen_state_verified"] is True
     assert result.final_b2_state_sha256_by_ticker == {
         ticker: manifest_hash
         for ticker, manifest_hash in result.experiment_manifest[
@@ -423,3 +426,134 @@ def test_replay_recovers_from_uncommitted_daily_failure_without_duplicate_learni
     assert len(resumed.committed_sessions) == 14
     assert not resumed.updated_labels.duplicated(["ticker", "anchor_date"]).any()
     assert not resumed.drift_errors["prediction_id"].duplicated().any()
+
+
+def test_b4_replay_predictions_match_direct_artifact_and_stay_frozen(
+    synthetic_stage04: tuple[object, pd.DataFrame, Path], tmp_path: Path
+) -> None:
+    from src.ml_replay import run_final_replay
+
+    prepared, labels, artifact_dir = synthetic_stage04
+    result = run_final_replay(
+        prepared,
+        labels,
+        initial_model_artifact_dir=artifact_dir,
+        output_root=tmp_path / "b4-direct",
+        replay_end_date=date(2024, 10, 18),
+    )
+    bundle = joblib.load(artifact_dir / "initial_models.joblib")
+    b4_preds = result.predictions.loc[result.predictions["model_name"] == "HAR_X_OLS"].copy()
+    assert len(b4_preds) == 14 * 3
+    assert b4_preds["model_version"].eq("b4_ols_v1.0.0").all()
+    assert (b4_preds["last_training_target_end_date"] <= date(2024, 9, 30)).all()
+    assert not result.updated_labels.empty
+    assert result.experiment_manifest["b4_frozen_state_verified"] is True
+
+    # Direct calculation from Stage 04 artifact must match Replay B4 predictions within 1e-15.
+    for row in b4_preds.itertuples(index=False):
+        b4_entry = bundle["b4_models"][row.ticker]
+        mask = (prepared.prediction.metadata["date"] == row.prediction_date) & (
+            prepared.prediction.metadata["ticker"] == row.ticker
+        )
+        feat_row = prepared.prediction.X.loc[mask, list(CORE_FEATURE_COLUMNS)]
+        expected_pred = float(b4_entry["model"].predict(b4_entry["scaler"].transform(feat_row))[0])
+        assert abs(float(row.predicted_vol_annualized) - expected_pred) <= 1e-15
+
+
+def test_b4_invalid_forecast_and_pending_semantics(
+    synthetic_stage04: tuple[object, pd.DataFrame, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.ml_replay import run_final_replay
+
+    prepared, labels, artifact_dir = synthetic_stage04
+    original_predict = LinearRegression.predict
+
+    def predict_negative_once(self: LinearRegression, X: np.ndarray) -> np.ndarray:
+        preds = original_predict(self, X).copy()
+        preds[0] = -0.15
+        return preds
+
+    monkeypatch.setattr(LinearRegression, "predict", predict_negative_once)
+    result = run_final_replay(
+        prepared,
+        labels,
+        initial_model_artifact_dir=artifact_dir,
+        output_root=tmp_path / "b4-invalid",
+        replay_end_date=date(2024, 10, 8),
+    )
+
+    b4_failures = result.forecast_failures.loc[
+        result.forecast_failures["model_name"] == "HAR_X_OLS"
+    ]
+    assert len(b4_failures) == 6 * 3
+    assert (b4_failures["failure_type"] == "invalid_forecast").all()
+    b4_cov = result.coverage.loc[result.coverage["model_name"] == "HAR_X_OLS"]
+    assert b4_cov["invalid_count"].sum() == 6 * 3
+    assert b4_cov["published_count"].sum() == 0
+    assert result.predictions.loc[result.predictions["model_name"] == "HAR_X_OLS"].empty
+
+
+def test_replay_stop_resume_and_incompatible_b4_checkpoint_rejected(
+    synthetic_stage04: tuple[object, pd.DataFrame, Path], tmp_path: Path
+) -> None:
+    from src.ml_replay import ReplayError, run_final_replay
+
+    prepared, labels, artifact_dir = synthetic_stage04
+    continuous = run_final_replay(
+        prepared,
+        labels,
+        initial_model_artifact_dir=artifact_dir,
+        output_root=tmp_path / "continuous",
+        replay_end_date=date(2024, 10, 18),
+    )
+
+    resumed_root = tmp_path / "stop-resume"
+    partial = run_final_replay(
+        prepared,
+        labels,
+        initial_model_artifact_dir=artifact_dir,
+        output_root=resumed_root,
+        replay_end_date=date(2024, 10, 18),
+        stop_after_session=date(2024, 10, 8),
+    )
+    assert not partial.completed
+    resumed = run_final_replay(
+        prepared,
+        labels,
+        initial_model_artifact_dir=artifact_dir,
+        output_root=resumed_root,
+        replay_end_date=date(2024, 10, 18),
+        resume=True,
+    )
+    assert resumed.completed
+    assert_frame_equal(
+        resumed.predictions.drop(columns=["run_id", "prediction_created_at_utc"]),
+        continuous.predictions.drop(columns=["run_id", "prediction_created_at_utc"]),
+        check_dtype=False,
+        check_exact=True,
+    )
+    assert_frame_equal(
+        resumed.evaluations.drop(columns=["prediction_run_id", "evaluation_run_id"]),
+        continuous.evaluations.drop(columns=["prediction_run_id", "evaluation_run_id"]),
+        check_dtype=False,
+        check_exact=True,
+    )
+
+    # Corrupting compatibility_fingerprint in a committed checkpoint must be rejected on resume.
+    ck_path = (
+        resumed.artifact_dir / "checkpoints" / "committed" / "2024-10-08" / "checkpoint.joblib"
+    )
+    ck = joblib.load(ck_path)
+    ck["compatibility_fingerprint"] = "incompatible-suite-or-b4-artifact"
+    joblib.dump(ck, ck_path)
+    with pytest.raises(ReplayError, match="checkpoint"):
+        run_final_replay(
+            prepared,
+            labels,
+            initial_model_artifact_dir=artifact_dir,
+            output_root=resumed_root,
+            replay_end_date=date(2024, 10, 18),
+            resume=True,
+        )

@@ -1,4 +1,4 @@
-model_suite_version: "1.0.0"
+model_suite_version: "1.1.0"
 
 models:
   - model_id: B0
@@ -16,6 +16,10 @@ models:
     model_name: ONLINE_SGD
     strategy: sgd
     update_policy: partial_fit_mature_labels_only
+  - model_id: B4
+    model_name: HAR_X_OLS
+    strategy: ols
+    update_policy: frozen_after_initial_fit
 
 sgd:
   estimator: SGDRegressor

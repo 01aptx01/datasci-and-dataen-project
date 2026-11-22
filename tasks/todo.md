@@ -68,9 +68,31 @@
 
 ## Session 3 — Replay
 
-- [ ] Forecast B4 ตรง OLS artifact, version และ Train label cutoff ถูกต้อง
-- [ ] ตรวจ coverage, invalid, pending และ no-update ของ B4 พร้อมตรวจผล B0–B3
-- [ ] ผล resume สอดคล้องกับ run ต่อเนื่องและปฏิเสธ checkpoint ไม่ตรง suite/artifact
+- [x] Forecast B4 ตรง OLS artifact, version และ Train label cutoff ถูกต้อง
+- [x] ตรวจ coverage, invalid, pending และ no-update ของ B4 พร้อมตรวจผล B0–B3
+- [x] ผล resume สอดคล้องกับ run ต่อเนื่องและปฏิเสธ checkpoint ไม่ตรง suite/artifact
+
+### หลักฐาน Session 3
+- **สถานะ**: `PASS`
+- **ตรวจ Session 2 Artifact ก่อนเริ่ม**: `data/processed/ml_training/run_id=stage04_b4_20261122_01/training_manifest.json` (`selection_status=selected`, `checksums_ok=True`, `feature_order` 8 ตัวตรง, `train_cutoff=2024-09-30`, `last_training_target_end_date=2024-09-30`, `b4_ols_v1.0.0`)
+- **โค้ดและสัญญาที่อัปเดต**:
+  - [models.yaml](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/config/models.yaml): `model_suite_version="1.1.0"`, เพิ่ม `B4` (`HAR_X_OLS`, `strategy: ols`, `update_policy: frozen_after_initial_fit`)
+  - [prediction_contract.md](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/docs/contract/prediction_contract.md) และ [datadict.md](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/docs/contract/datadict.md): เพิ่ม `HAR_X_OLS` (`B4`)
+  - [pipeline.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/src/ml_replay/pipeline.py): เพิ่ม `B4` ใน `MODEL_NAMES`/`MODEL_ORDER`, ตรวจ `MODEL_SUITE_VERSION="1.1.0"`, โหลดและตรวจ checksum/scaler/cutoff ของ `b4_models`, แยกกิ่ง `B3` และ `B4` ชัดเจน, ผูก `b4_initial_state_sha256_by_ticker`/`model_suite_version`/`model_order` ใน `compatibility_fingerprint`, และตรวจ `b4_frozen_state_verified=True`
+  - [test_ml_contract_config.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/tests/test_ml_contract_config.py) และ [test_ml_replay.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/tests/test_ml_replay.py): อัปเดต fixture และเพิ่ม unit tests ของ B4 direct parity, invalid/pending, stop/resume และ incompatible checkpoint
+- **คำสั่งและผลตรวจ**:
+  - Unit tests:
+    - `.venv\Scripts\python.exe -m pytest tests\test_ml_replay.py -v` (รันคู่ใน `task-361`) → **16 passed**
+    - `.venv\Scripts\python.exe -m pytest tests\test_ml_contract_config.py -v` → **3 passed**
+  - Real Final Replay (`run_final_replay` บน `feat_20261122T143142_ad87117a` / `target_20261122T143149_c9b24e99` + `stage04_b4_20261122_01`):
+    - `completed=True`, `sessions=498` (`2024-10-01`..`2026-09-25`), `b2_frozen=True`, `b4_frozen=True`
+    - `predictions_by_model`: `1,494` ต่อโมเดลทั้ง 5 โมเดล (รวม `7,470` แถว), `evaluations_by_model`: `1,479` ต่อโมเดล, `pending_by_model`: `15` ต่อโมเดล, `invalid_by_model`: `0` ต่อโมเดล
+    - B4 direct artifact parity (`30` sampled predictions): `max_direct_diff = 9.02e-17`, `model_version = ["b4_ols_v1.0.0"]`, `last_training_target_end_date = ["2024-09-30"]`
+    - B3 only updates/ADWIN: `updates_count=1494`, `drift_errors_count=1479`
+    - B0–B3 Test parity เทียบ ZIP อ้างอิง `ml-results-handoff-82572c84.zip` (`count=729` ต่อโมเดล): `CONSTANT_BASELINE` MAE `0.075853` (ref `0.075854`), `ROLLING_20D_BASELINE` `0.059340` (ref `0.059340`), `STATIC_SGD` `0.052479` (ref `0.052479`), `ONLINE_SGD` `0.048892` (ref `0.048892`); `HAR_X_OLS` `0.051065`
+- **Artifacts / run IDs**:
+  - Replay experiment: `data/processed/ml_replay/experiments/b39bd163e0176a90aad5b8b1accb4adacaca5af8bfacb8cb937676f25da32101` (`outputs/{asset_volatility_predictions.csv,evaluation.csv,coverage.csv,drift_errors.csv,drift_alerts.csv,updates.csv,forecast_failures.csv}`, `experiment_manifest.json`, `checkpoints/committed/`)
+- **เกณฑ์ที่ยังไม่ผ่านและสิ่งที่ขาด**: ไม่มี (พร้อมสำหรับ Session 4).
 
 ## Session 4 — Evaluation
 

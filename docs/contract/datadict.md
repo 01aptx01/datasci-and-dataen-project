@@ -166,7 +166,7 @@
 - **Grain:** 1 คำทำนาย × 1 `prediction_date` × 1 `ticker` × 1 `model_name` × 1 ชุด Model/Input ที่ใช้จริง
 - **Primary Key:** `prediction_id` (รหัสไม่ซ้ำและคงที่สำหรับการทำนายที่มีชุด Input/Model เดิม)
 - **Logical Deduplication Key:** `(prediction_date, ticker, model_name, prediction_mode, model_version, feature_set_version, input_snapshot_id)`; รันคำขอเดิมซ้ำต้องไม่เพิ่ม Record เชิงธุรกิจซ้ำ
-- **โมเดลเริ่มต้น:** `CONSTANT_BASELINE` (B0), `ROLLING_20D_BASELINE` (B1), `STATIC_SGD` (B2) และ `ONLINE_SGD` (B3); B0 ใช้ Train Mean แยก ETF, B1 ใช้ `rv_20d` โดยตรง และ B2/B3 ใช้ SGD กับ Core Features 8 ตัว
+- **โมเดลเริ่มต้น:** `CONSTANT_BASELINE` (B0), `ROLLING_20D_BASELINE` (B1), `STATIC_SGD` (B2), `ONLINE_SGD` (B3) และ `HAR_X_OLS` (B4); B0 ใช้ Train Mean แยก ETF, B1 ใช้ `rv_20d` โดยตรง, B2/B3 ใช้ SGD กับ Core Features 8 ตัว และ B4 ใช้ OLS พร้อม intercept กับ Core Features 8 ตัว
 - **Storage:** เป็นตารางหลักลำดับที่ 5 เท่านั้น; ไม่มีตาราง Evaluation เพิ่ม โดยเก็บผลประเมินใน `outputs/evaluation.csv`
 
 | Table | Column | Type | Unit / Format | Meaning | Role | Nullable |
@@ -174,7 +174,7 @@
 | `asset_volatility_predictions` | `prediction_id` | `VARCHAR(64)` | stable ID / UUID | รหัสไม่ซ้ำของคำทำนายที่เผยแพร่ ใช้เชื่อมผลประเมินใน CSV | Primary Key | No |
 | `asset_volatility_predictions` | `prediction_date` | `DATE` | `YYYY-MM-DD` | วันที่อ้างอิง `t` หลังปิดตลาดสหรัฐฯ; Feature ที่ใช้ต้องเป็นของวันเดียวกัน | Business Key / Time | No |
 | `asset_volatility_predictions` | `ticker` | `VARCHAR(16)` | uppercase string | `SPY`, `IEF` หรือ `GLD` | Business Key | No |
-| `asset_volatility_predictions` | `model_name` | `VARCHAR(64)` | enum-like string | `CONSTANT_BASELINE`, `ROLLING_20D_BASELINE`, `STATIC_SGD` หรือ `ONLINE_SGD` | Business Key | No |
+| `asset_volatility_predictions` | `model_name` | `VARCHAR(64)` | enum-like string | `CONSTANT_BASELINE`, `ROLLING_20D_BASELINE`, `STATIC_SGD`, `ONLINE_SGD` หรือ `HAR_X_OLS` | Business Key | No |
 | `asset_volatility_predictions` | `model_version` | `VARCHAR(64)` | model/config version | เวอร์ชัน Model State หรือ Baseline Config ที่สร้างผลนี้ | Version / Lineage | No |
 | `asset_volatility_predictions` | `prediction_mode` | `VARCHAR(32)` | `HISTORICAL_REPLAY` / `LATEST_BATCH` | ระบุว่าเป็นคำทำนายใน Replay หรือรอบ Batch ล่าสุด | Context | No |
 | `asset_volatility_predictions` | `forecast_horizon_trading_days` | `INTEGER` | days | ต้องเท่ากับ `5`; เป็นวันซื้อขาย ไม่ใช่วันปฏิทิน | Prediction Metadata | No |

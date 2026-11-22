@@ -58,11 +58,12 @@ flowchart TD
 | `ROLLING_20D_BASELINE` (**B1**) | Baseline หลัก | ใช้ `rv_20d` ของ ETF ณ วัน `t` เป็น Forecast โดยตรง; **ไม่ต้อง Train ด้วย Features 8 ตัว** |
 | `STATIC_SGD` (**B2**) | Static ML control | `SGDRegressor` แยกตาม ETF ใช้ Core Features **8 ตัว**; Initial Fit ด้วย Train แล้ว Freeze ตลอด Validation/Test |
 | `ONLINE_SGD` (**B3**) | Online ML model | ใช้ `SGDRegressor` และ Core Features 8 ตัวเช่นเดียวกับ B2; เริ่มจาก Initial Model/RobustScaler/Hyperparameters ชุดเดียวกับ B2 แล้ว `partial_fit` เฉพาะ Mature Labels ที่ผ่าน Cut-off หลังบันทึก Forecast ของวันนั้น |
+| `HAR_X_OLS` (**B4**) | Static OLS benchmark | ใช้ OLS พร้อม intercept (ไม่มี regularization) บน Core Features 8 ตัว และ `RobustScaler` ชุดเดียวกับ B2 ที่ Fit จาก Train เท่านั้น แล้ว Freeze ตลอด Validation/Test |
 
-- ชื่อทั้งสี่ข้างต้นเป็น **ค่า `model_name` มาตรฐานใน Contract นี้**; เปลี่ยนชื่อหรือเพิ่มโมเดลต้องอัปเดต Config/Tests และเอกสารที่เกี่ยวข้อง
-- B2 และ B3 ใช้ RobustScaler ที่ Fit จาก Train เท่านั้นและ Freeze; สำหรับ ETF เดียวกันต้องเริ่มจาก Model/Scaler State และ Selected Hyperparameters เดียวกันจริง
-- `model_version` ต้องบ่งบอกสถานะและเตรียมข้อมูลที่มีผลต่อคำทำนาย: B0/B1 ใช้ Baseline Config/Method Version, B2 ใช้ Immutable Initial Model/Scaler State Version, B3 ใช้ **Pre-update** Model/Scaler State Version; เก็บรายละเอียดและ Hash ใน Artifact/Manifest โดยไม่เพิ่มคอลัมน์
-- `last_training_target_end_date`: B1 ซึ่งไม่ใช้ Labels ให้เป็น `NULL`; B0 ระบุ Label ล่าสุดที่ใช้คำนวณ Mean, B2 ระบุ Label ล่าสุดของ Initial Train และ B3 ระบุ Label Mature ล่าสุดที่ Update เข้า State ก่อน Forecast นั้น
+- ชื่อทั้งห้าข้างต้นเป็น **ค่า `model_name` มาตรฐานใน Contract นี้**; เปลี่ยนชื่อหรือเพิ่มโมเดลต้องอัปเดต Config/Tests และเอกสารที่เกี่ยวข้อง
+- B2 และ B3 ใช้ RobustScaler ที่ Fit จาก Train เท่านั้นและ Freeze; สำหรับ ETF เดียวกันต้องเริ่มจาก Model/Scaler State และ Selected Hyperparameters เดียวกันจริง ส่วน B4 ใช้ Train sample และ RobustScaler เดียวกับ B2 แต่ Fit ด้วย OLS และ Freeze
+- `model_version` ต้องบ่งบอกสถานะและเตรียมข้อมูลที่มีผลต่อคำทำนาย: B0/B1 ใช้ Baseline Config/Method Version, B2 ใช้ Immutable Initial Model/Scaler State Version, B3 ใช้ **Pre-update** Model/Scaler State Version, B4 ใช้ Model Artifact Version (`b4_ols_v1.0.0`); เก็บรายละเอียดและ Hash ใน Artifact/Manifest โดยไม่เพิ่มคอลัมน์
+- `last_training_target_end_date`: B1 ซึ่งไม่ใช้ Labels ให้เป็น `NULL`; B0 ระบุ Label ล่าสุดที่ใช้คำนวณ Mean, B2 และ B4 ระบุ Label ล่าสุดของ Initial Train และ B3 ระบุ Label Mature ล่าสุดที่ Update เข้า State ก่อน Forecast นั้น
 
 ---
 
@@ -80,7 +81,7 @@ flowchart TD
 | 1 | `prediction_id` | `VARCHAR(64)` | No | Primary Key ที่ระบุ Record ได้ไม่ซ้ำ; รัน Logical Key เดิมต้องได้ ID เดิม |
 | 2 | `prediction_date` | `DATE` | No | วันซื้อขายอ้างอิง `t` (America/New_York) และต้องตรงกับวัน Feature |
 | 3 | `ticker` | `VARCHAR(16)` | No | `SPY`, `IEF`, `GLD` เท่านั้น |
-| 4 | `model_name` | `VARCHAR(64)` | No | `CONSTANT_BASELINE`, `ROLLING_20D_BASELINE`, `STATIC_SGD`, `ONLINE_SGD` |
+| 4 | `model_name` | `VARCHAR(64)` | No | `CONSTANT_BASELINE`, `ROLLING_20D_BASELINE`, `STATIC_SGD`, `ONLINE_SGD`, `HAR_X_OLS` |
 | 5 | `model_version` | `VARCHAR(64)` | No | เวอร์ชัน Model State หรือ Baseline Config ที่ใช้จริง |
 | 6 | `prediction_mode` | `VARCHAR(32)` | No | `HISTORICAL_REPLAY` หรือ `LATEST_BATCH` |
 | 7 | `forecast_horizon_trading_days` | `INTEGER` | No | เท่ากับ **5** เสมอ |
