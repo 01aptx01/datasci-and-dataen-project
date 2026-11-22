@@ -1,6 +1,6 @@
 # DEDS Adaptive Portfolio Risk Lab — frozen snapshot dashboard
 
-This folder contains the D1–D9, eight-route read-only dashboard and its build-time adapter for one pinned Stage 06 review snapshot. It includes saved-session Replay, B0–B3 evidence views, Drift review, and a covariance-based Financial Decision Lab. It does not import or run the Python ML pipeline.
+This folder contains the Stitch-inspired interface and the original read-only dashboard, backed by one pinned Stage 06 review snapshot. It includes saved-session Replay, B0–B3 evidence views, Drift review, and covariance-based portfolio analysis. It does not import or run the Python ML pipeline.
 
 ## Run locally
 
@@ -14,7 +14,7 @@ npm test
 npm run preview
 ```
 
-Open `http://localhost:4173`. `npm run dev` builds the verified static snapshot and starts the local preview server. Build output and extracted public snapshot files are ignored by Git and can be reproduced from the pinned handoff ZIP.
+Open `http://localhost:4173` for the new interface or `http://localhost:4173/legacy.html` for the original dashboard. `npm run dev` builds the verified static snapshot and starts the local preview server. Build output and extracted public snapshot files are ignored by Git and can be reproduced from the pinned handoff ZIP.
 
 ## Snapshot boundary
 
@@ -44,7 +44,7 @@ The browser only calculates portfolio what-if volatility from the covariance mat
 
 ## Routes
 
-The shell contains Overview, Models, Forecasts, Portfolio, Drift, Research, Provenance, and Guide.
+The new interface includes portfolio, replay, model comparison, monitoring and evidence views. Links to the original dashboard retain its detailed research, provenance, and guide views. The original shell contains Overview, Models, Forecasts, Portfolio, Drift, Research, Provenance, and Guide.
 
 - Overview shows frozen metrics, model comparison, coverage, and recorded forecast observations.
 - Models and Forecasts filter source-backed Test metrics and recorded rows; Pending actual/error values stay blank.

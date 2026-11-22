@@ -91,7 +91,7 @@ test("portfolio validation requires an exact recorded Test row", () => {
   assert.equal(validateExperimentSelection(portfolioSelection, source, true).status, "valid");
   const missingRow = validateExperimentSelection({ ...selection, predictionDate: "2026-09-24" }, source, true);
   assert.equal(missingRow.status, "invalid");
-  assert.match(missingRow.message, /portfolio row/);
+  assert.match(missingRow.message, /ไม่พบแถวความเสี่ยงพอร์ต/);
   const wrongModel = validateExperimentSelection({ ...selection, modelName: "STATIC_SGD" }, source, true);
   assert.equal(wrongModel.status, "invalid");
 });

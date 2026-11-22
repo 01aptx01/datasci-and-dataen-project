@@ -79,7 +79,7 @@ test("Scenario Lab labels absolute risk deltas in percentage points", () => {
 test("Risk Drivers displays the stored correlation evidence", () => {
   const state = { ...createDefaultFinancialScenarioState(), activeTab: "drivers" };
   const html = render(state);
-  assert.match(html, /Correlation จากข้อมูลย้อนหลัง 20 วันซื้อขาย/);
+  assert.match(html, /ความสัมพันธ์ของสินทรัพย์จากข้อมูลย้อนหลัง 20 วัน/);
   assert.match(html, /0\.675/);
   assert.match(html, /0\.592/);
   assert.match(html, /0\.507/);
