@@ -20,6 +20,7 @@ from src.ml_training import (
     B4_MODEL_NAME,
     B4_MODEL_VERSION,
     CandidateConfig,
+    InitialChampionConfig,
     TrainingConfig,
     TrainingError,
     b4_state_sha256,
@@ -30,6 +31,7 @@ from src.ml_training import (
     predict_baselines,
     run_training_selection,
     scaler_state_sha256,
+    select_initial_champion,
 )
 from src.ml_training import pipeline as training_pipeline
 
@@ -682,3 +684,382 @@ def test_b4_validation_rejects_negative_forecasts_without_clipping(
     )
     with pytest.raises(TrainingError, match="zero valid Validation forecasts"):
         evaluate_b4_validation(prepared, "SPY", artifact)
+
+
+def _synthetic_prepared_with_cutover(
+    *,
+    include_mature_before_cutover: bool = True,
+    delay_all_validation_past_cutover: bool = False,
+) -> tuple[PreparedDataset, pd.DataFrame]:
+    schedule = market_calendars.get_calendar("XNYS").schedule(
+        start_date="2024-09-09", end_date="2025-10-15"
+    )
+    all_sessions = [stamp.date() for stamp in schedule.index]
+    session_idx = {d: i for i, d in enumerate(all_sessions)}
+
+    train_dates = [d for d in all_sessions if date(2024, 9, 9) <= d <= date(2024, 9, 25)][:12]
+    # Include both mature anchors before 2025-10-01 and the 5 purge anchors 2025-09-24..2025-09-30.
+    val_all = [d for d in all_sessions if date(2025, 9, 17) <= d <= date(2025, 9, 30)]
+    if not include_mature_before_cutover:
+        val_dates = val_all[-5:]
+    else:
+        val_dates = val_all
+    test_dates = [d for d in all_sessions if date(2025, 10, 1) <= d <= date(2025, 10, 3)]
+
+    rows: list[dict[str, object]] = []
+    label_rows: list[dict[str, object]] = []
+    supervised_keys: set[tuple[date, str]] = set()
+    purge_train_anchor = train_dates[-1]
+
+    for ticker_index, ticker in enumerate(SUPPORTED_TICKERS):
+        rng = np.random.default_rng(700 + ticker_index)
+        base = 0.10 + ticker_index * 0.03
+        for split, anchors in (
+            ("train", train_dates),
+            ("validation", val_dates),
+            ("test", test_dates),
+        ):
+            for idx, anchor in enumerate(anchors):
+                target_end = all_sessions[session_idx[anchor] + 5]
+                if split == "validation" and delay_all_validation_past_cutover:
+                    target_end = max(target_end, date(2025, 10, 3))
+                fixed_purged = (split == "train" and target_end >= date(2024, 10, 1)) or (
+                    split == "validation" and target_end >= date(2025, 10, 1)
+                )
+                target = base + (idx * 0.002 if split != "test" else 50.0)
+                feature_values = {
+                    name: float(rng.normal(0.02 + ticker_index * 0.002, 0.01))
+                    for name in CORE_FEATURE_COLUMNS
+                }
+                feature_values["rv_5d"] = abs(feature_values["rv_5d"]) + 0.05
+                feature_values["rv_20d"] = abs(feature_values["rv_20d"]) + 0.06
+                feature_values["rv_60d"] = abs(feature_values["rv_60d"]) + 0.07
+                # Make SPY favor B1 (exact rv_20d), IEF favor B0 (train mean), GLD keep normal dynamics.
+                if ticker == "SPY" and split == "validation":
+                    feature_values["rv_20d"] = target
+                elif ticker == "IEF" and split == "validation":
+                    target = base + 0.006  # constant Validation target close to train mean
+                    feature_values["rv_20d"] = 0.45
+                elif ticker == "GLD" and split == "validation":
+                    feature_values["rv_20d"] = 0.50
+                if split == "test":
+                    feature_values = {name: 999.0 for name in CORE_FEATURE_COLUMNS}
+                rows.append(
+                    {
+                        "date": anchor,
+                        "ticker": ticker,
+                        **feature_values,
+                        "split": split,
+                        "target_end_date": target_end,
+                        "is_label_mature": True,
+                        "target_obs_count": 5,
+                        "feature_quality_passed": True,
+                        "label_quality_passed": True,
+                        "prediction_eligible": True,
+                        "supervised_eligible": not fixed_purged,
+                        "fixed_purged": fixed_purged,
+                        "online_update_eligible": True,
+                        "already_updated": False,
+                        "exclusion_reasons": ("fixed_split_purge",) if fixed_purged else (),
+                    }
+                )
+                label_rows.append(
+                    {
+                        "date": anchor,
+                        "ticker": ticker,
+                        "target_end_date": target_end,
+                        "target_obs_count": 5,
+                        "target_realized_vol_5d": target,
+                        "is_label_mature": True,
+                    }
+                )
+                if not fixed_purged:
+                    supervised_keys.add((anchor, ticker))
+
+    ordered = sorted(rows, key=lambda row: (row["ticker"], row["date"]))
+    metadata_columns = [
+        "date",
+        "ticker",
+        "split",
+        "target_end_date",
+        "is_label_mature",
+        "target_obs_count",
+        "feature_quality_passed",
+        "label_quality_passed",
+        "prediction_eligible",
+        "supervised_eligible",
+        "fixed_purged",
+        "online_update_eligible",
+        "already_updated",
+        "exclusion_reasons",
+    ]
+    metadata = pd.DataFrame(ordered).loc[:, metadata_columns].reset_index(drop=True)
+    X = pd.DataFrame(ordered).loc[:, list(CORE_FEATURE_COLUMNS)].reset_index(drop=True)
+    audit = metadata.copy()
+    supervised_mask = [(row["date"], row["ticker"]) in supervised_keys for row in ordered]
+    supervised_metadata = metadata.loc[supervised_mask].reset_index(drop=True)
+    supervised_X = X.loc[supervised_mask].reset_index(drop=True)
+    target_lookup = {
+        (row["date"], row["ticker"]): row["target_realized_vol_5d"] for row in label_rows
+    }
+    supervised_y = pd.Series(
+        [target_lookup[(row.date, row.ticker)] for row in supervised_metadata.itertuples()],
+        name="target_realized_vol_5d",
+        dtype="float64",
+    )
+    prepared = PreparedDataset(
+        prediction=DatasetView(X=X, metadata=metadata),
+        supervised=DatasetView(X=supervised_X, metadata=supervised_metadata, y=supervised_y),
+        audit=audit,
+        report=PreparationReport(
+            summary={"as_of_date": "2026-09-25", "data_cutoff": "2026-09-25"},
+            counts_by_ticker_split_reason=pd.DataFrame(),
+            lineage={"source_snapshot_id": "synthetic-cutover-snapshot"},
+            versions={"feature": ["2.0.0"], "target": ["2.0.0"]},
+            limitations=("synthetic cutover fixture",),
+        ),
+    )
+    return prepared, pd.DataFrame(label_rows)
+
+
+def _quick_initial_pair_and_baselines(
+    prepared: PreparedDataset,
+    config: TrainingConfig,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    initial_models: dict[str, dict[str, Any]] = {}
+    baselines: dict[str, dict[str, Any]] = {}
+    candidate = CandidateConfig(eta0=0.001, alpha=1e-4, max_iter=20)
+    for ticker in SUPPORTED_TICKERS:
+        train_X, train_y, _, _ = training_pipeline._training_rows(prepared, ticker, config)
+        pair = training_pipeline._fit_initial_pair(train_X, train_y, candidate, config)
+        initial_models[ticker] = {
+            **pair,
+            "selected_candidate": candidate.as_dict(),
+            "train_cutoff": config.dataset.train_end_date,
+            "feature_order": tuple(config.core_features),
+        }
+        baselines[ticker] = {
+            "b0_model_id": "B0",
+            "b0_model_name": "CONSTANT_BASELINE",
+            "b0_train_mean": float(train_y.mean()),
+            "b0_train_row_count": int(len(train_y)),
+            "b0_train_end_date": config.dataset.train_end_date.isoformat(),
+            "b1_model_id": "B1",
+            "b1_model_name": "ROLLING_20D_BASELINE",
+            "b1_feature": "rv_20d",
+            "b1_strategy": "feature_value",
+        }
+    return initial_models, baselines
+
+
+def test_run_selection_with_initial_champion_filters_cutover_persists_hashes_and_preserves_sgd_b4(
+    tmp_path: Path,
+) -> None:
+    prepared, labels = _synthetic_prepared_with_cutover()
+    cfg_v12 = TrainingConfig.from_yaml()
+    cfg_v11 = replace(cfg_v12, training_config_version="1.1.0", initial_champion=None)
+
+    res_v11 = run_training_selection(
+        prepared,
+        labels,
+        config=cfg_v11,
+        artifact_dir=tmp_path / "run-v11",
+        include_b4=True,
+    )
+    res_v12_a = run_training_selection(
+        prepared,
+        labels,
+        config=cfg_v12,
+        artifact_dir=tmp_path / "run-v12-a",
+        include_b4=True,
+    )
+    # Tamper Test labels heavily; both SGD selection and initial champion selection must remain unchanged.
+    tampered_labels = labels.copy()
+    tampered_labels.loc[
+        tampered_labels["date"] >= date(2025, 10, 1),
+        "target_realized_vol_5d",
+    ] = 1e6
+    res_v12_b = run_training_selection(
+        prepared,
+        tampered_labels,
+        config=cfg_v12,
+        artifact_dir=tmp_path / "run-v12-b",
+        include_b4=True,
+    )
+
+    assert res_v11.initial_champions is None
+    pd.testing.assert_frame_equal(res_v11.selected_configs, res_v12_a.selected_configs)
+    for ticker in SUPPORTED_TICKERS:
+        assert res_v11.b4_models[ticker]["state_sha256"] == res_v12_a.b4_models[ticker]["state_sha256"]
+
+    assert res_v12_a.initial_champions is not None
+    assert res_v12_a.initial_champion_scores is not None
+    assert set(res_v12_a.initial_champion_scores["model_id"]) == {"B0", "B1", "B2"}
+    assert "B3" not in set(res_v12_a.initial_champion_scores["model_id"])
+    assert "B4" not in set(res_v12_a.initial_champion_scores["model_id"])
+
+    by_ticker = res_v12_a.initial_champions.set_index("ticker")
+    assert by_ticker.loc["SPY", "selected_model_id"] == "B1"
+    assert by_ticker.loc["IEF", "selected_model_id"] == "B0"
+    for ticker in SUPPORTED_TICKERS:
+        assert int(by_ticker.loc[ticker, "validation_total_anchor_count"]) == 10
+        assert int(by_ticker.loc[ticker, "immature_at_cutover_count"]) == 5
+        assert int(by_ticker.loc[ticker, "expected_cutover_anchor_count"]) == 5
+        assert int(by_ticker.loc[ticker, "paired_anchor_count"]) == 5
+        assert float(by_ticker.loc[ticker, "paired_coverage"]) == pytest.approx(1.0)
+
+    # Deterministic rerun & no Test leakage.
+    pd.testing.assert_frame_equal(res_v12_a.initial_champions, res_v12_b.initial_champions)
+    pd.testing.assert_frame_equal(res_v12_a.initial_champion_scores, res_v12_b.initial_champion_scores)
+
+    dir_a = tmp_path / "run-v12-a"
+    manifest_a = json.loads((dir_a / "training_manifest.json").read_text("utf-8"))
+    ic_json_a = json.loads((dir_a / "initial_champion_selection.json").read_text("utf-8"))
+    assert "initial_champion_selection.json" in manifest_a["artifact_sha256"]
+    assert "initial_champion_validation_scores.csv" in manifest_a["artifact_sha256"]
+    assert manifest_a["initial_champion"]["selected_by_ticker"] == ic_json_a["selected_by_ticker"]
+    assert manifest_a["initial_champion"]["test_used_for_initial_champion"] is False
+    assert (dir_a / "initial_champion_validation_scores.csv").read_bytes() == (
+        tmp_path / "run-v12-b" / "initial_champion_validation_scores.csv"
+    ).read_bytes()
+
+
+def test_select_initial_champion_breaks_ties_deterministically_by_b0_b1_b2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, labels = _synthetic_prepared_with_cutover()
+    config = TrainingConfig.from_yaml()
+    initial_models, baselines = _quick_initial_pair_and_baselines(prepared, config)
+
+    # Construct exact B0 == B1 == B2 predictions on SPY within tie_tolerance, and B1 == B2 on IEF.
+    cutover = config.initial_champion.cutover_date
+    val_mature_mask = (prepared.audit["split"] == "validation") & (
+        prepared.audit["target_end_date"] < cutover
+    )
+    spy_val_dates = set(prepared.audit.loc[val_mature_mask & (prepared.audit["ticker"] == "SPY"), "date"])
+    ief_val_dates = set(prepared.audit.loc[val_mature_mask & (prepared.audit["ticker"] == "IEF"), "date"])
+
+    spy_b0 = float(baselines["SPY"]["b0_train_mean"])
+    ief_b0 = float(baselines["IEF"]["b0_train_mean"])
+    prepared.prediction.X.loc[
+        (prepared.prediction.metadata["ticker"] == "SPY")
+        & (prepared.prediction.metadata["date"].isin(spy_val_dates)),
+        "rv_20d",
+    ] = spy_b0 + 5e-13
+    prepared.prediction.X.loc[
+        (prepared.prediction.metadata["ticker"] == "IEF")
+        & (prepared.prediction.metadata["date"].isin(ief_val_dates)),
+        "rv_20d",
+    ] = ief_b0 + 0.05  # strictly positive difference so B1 != B0
+
+    # Set IEF mature Validation targets close to ief_b0 + 0.05 so B1 & B2 beat B0 and tie each other.
+    labels.loc[
+        (labels["ticker"] == "IEF") & (labels["date"].isin(ief_val_dates)),
+        "target_realized_vol_5d",
+    ] = ief_b0 + 0.05
+
+    spy_b2_model = initial_models["SPY"]["b2"]
+    ief_b2_model = initial_models["IEF"]["b2"]
+    orig_predict = SGDRegressor.predict
+
+    def tied_b2_predict(self: SGDRegressor, X: np.ndarray) -> np.ndarray:
+        if self is spy_b2_model:
+            return np.full(len(X), spy_b0)
+        if self is ief_b2_model:
+            return np.full(len(X), ief_b0 + 0.05 - 2e-13)
+        return orig_predict(self, X)
+
+    monkeypatch.setattr(SGDRegressor, "predict", tied_b2_predict)
+
+    selection_df, _, summary = select_initial_champion(
+        prepared,
+        labels,
+        initial_models,
+        baselines,
+        config=config,
+    )
+    by_ticker = selection_df.set_index("ticker")
+    assert bool(by_ticker.loc["SPY", "tie_detected"]) is True
+    assert by_ticker.loc["SPY", "tied_models"] == "B0,B1,B2"
+    assert by_ticker.loc["SPY", "selected_model_id"] == "B0"
+
+    assert bool(by_ticker.loc["IEF", "tie_detected"]) is True
+    assert by_ticker.loc["IEF", "tied_models"] == "B1,B2"
+    assert by_ticker.loc["IEF", "selected_model_id"] == "B1"
+    assert summary["selected_by_ticker"]["SPY"] == "B0"
+    assert summary["selected_by_ticker"]["IEF"] == "B1"
+
+
+def test_select_initial_champion_rejects_invalid_predictions_without_clipping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared, labels = _synthetic_prepared_with_cutover()
+    config = TrainingConfig.from_yaml()
+    initial_models, baselines = _quick_initial_pair_and_baselines(prepared, config)
+
+    # Case 1: negative B2 prediction must not be clipped to 0.0; coverage gate must reject it.
+    monkeypatch.setattr(
+        SGDRegressor,
+        "predict",
+        lambda self, X: np.array([-0.02] + [0.15] * (len(X) - 1)),
+    )
+    with pytest.raises(TrainingError, match="failed completeness gate"):
+        select_initial_champion(prepared, labels, initial_models, baselines, config=config)
+
+    monkeypatch.undo()
+    # Case 2: negative B1 (rv_20d) on one cutover anchor rejects without clipping.
+    prepared.prediction.X.loc[
+        (prepared.prediction.metadata["split"] == "validation")
+        & (prepared.prediction.metadata["ticker"] == "SPY"),
+        "rv_20d",
+    ] = -0.01
+    with pytest.raises(TrainingError, match="failed completeness gate"):
+        select_initial_champion(prepared, labels, initial_models, baselines, config=config)
+
+
+def test_select_initial_champion_rejects_delayed_or_incomplete_cutover_labels() -> None:
+    config = TrainingConfig.from_yaml()
+    base_prepared, base_labels = _synthetic_prepared_with_cutover()
+    initial_models, baselines = _quick_initial_pair_and_baselines(base_prepared, config)
+
+    # Case 1: all Validation rows immature at cutover -> zero cutover anchors -> explicit error.
+    delayed_prepared, delayed_labels = _synthetic_prepared_with_cutover(
+        include_mature_before_cutover=False,
+        delay_all_validation_past_cutover=True,
+    )
+    with pytest.raises(TrainingError, match="< minimum_cutover_anchors"):
+        select_initial_champion(
+            delayed_prepared,
+            delayed_labels,
+            initial_models,
+            baselines,
+            config=config,
+        )
+
+    # Case 2: an expected pre-cutover Validation label is marked immature or missing.
+    immature_labels = base_labels.copy()
+    cutover = config.initial_champion.cutover_date
+    spy_pre_cutover_idx = immature_labels.index[
+        (immature_labels["ticker"] == "SPY")
+        & (immature_labels["date"] >= config.dataset.validation_start_date)
+        & (immature_labels["target_end_date"] < cutover)
+    ][0]
+    immature_labels.loc[spy_pre_cutover_idx, "is_label_mature"] = False
+    with pytest.raises(TrainingError, match="label_immature_before_cutover"):
+        select_initial_champion(
+            base_prepared,
+            immature_labels,
+            initial_models,
+            baselines,
+            config=config,
+        )
+
+    missing_labels = base_labels.drop(index=spy_pre_cutover_idx).reset_index(drop=True)
+    with pytest.raises(TrainingError, match="missing_validation_label_at_cutover"):
+        select_initial_champion(
+            base_prepared,
+            missing_labels,
+            initial_models,
+            baselines,
+            config=config,
+        )

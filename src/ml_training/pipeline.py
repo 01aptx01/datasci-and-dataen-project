@@ -26,10 +26,17 @@ from src.features.pipeline import CORE_FEATURE_COLUMNS, SUPPORTED_TICKERS
 B4_MODEL_ID = "B4"
 B4_MODEL_NAME = "HAR_X_OLS"
 B4_MODEL_VERSION = "b4_ols_v1.0.0"
+BASELINE_MODEL_NAMES = {
+    "B0": "CONSTANT_BASELINE",
+    "B1": "ROLLING_20D_BASELINE",
+    "B2": "STATIC_SGD",
+}
 from src.ml_dataset.dataset import PreparedDataset
 from src.ml_training.config import (
     LEGACY_TRAINING_CONFIG_VERSION,
+    TRAINING_CONFIG_VERSION,
     CandidateConfig,
+    InitialChampionConfig,
     TrainingConfig,
     TrainingError,
 )
@@ -70,6 +77,8 @@ class TrainingSelectionResult:
     artifact_dir: Path | None = None
     b4_models: dict[str, dict[str, Any]] | None = None
     b4_validation: pd.DataFrame | None = None
+    initial_champions: pd.DataFrame | None = None
+    initial_champion_scores: pd.DataFrame | None = None
 
 
 def _market_date(value: Any, name: str) -> date:
@@ -882,6 +891,395 @@ def predict_baselines(
     return pd.DataFrame(predictions)
 
 
+def _canonical_json_sha256(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=_json_default)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _initial_candidate_state_hashes(
+    ticker: str,
+    initial_model_entry: Mapping[str, Any],
+    baseline_entry: Mapping[str, Any],
+) -> dict[str, str]:
+    b2_hash = model_state_sha256(initial_model_entry["b2"], initial_model_entry["scaler"])
+    if b2_hash != str(initial_model_entry["state_sha256"]):
+        raise TrainingError(f"{ticker} B2 state hash does not match initial_models entry")
+    b0_hash = _canonical_json_sha256(
+        {
+            "model_id": "B0",
+            "model_name": BASELINE_MODEL_NAMES["B0"],
+            "ticker": ticker,
+            "b0_train_mean": float(baseline_entry["b0_train_mean"]),
+            "b0_train_end_date": str(baseline_entry["b0_train_end_date"]),
+        }
+    )
+    b1_hash = _canonical_json_sha256(
+        {
+            "model_id": "B1",
+            "model_name": BASELINE_MODEL_NAMES["B1"],
+            "ticker": ticker,
+            "b1_feature": str(baseline_entry["b1_feature"]),
+            "b1_strategy": str(baseline_entry["b1_strategy"]),
+        }
+    )
+    return {"B0": b0_hash, "B1": b1_hash, "B2": b2_hash}
+
+
+def _validation_cutover_labels(
+    labels: pd.DataFrame,
+    cutover_date: date,
+) -> dict[tuple[date, str], dict[str, Any]]:
+    required_columns = {
+        "date",
+        "ticker",
+        "target_end_date",
+        "target_obs_count",
+        "target_realized_vol_5d",
+        "is_label_mature",
+    }
+    missing = required_columns.difference(labels.columns)
+    if missing:
+        raise TrainingError(f"labels are missing Stage 04 fields: {sorted(missing)}")
+    found: dict[tuple[date, str], dict[str, Any]] = {}
+    for row in labels.itertuples(index=False):
+        anchor_date = _market_date(getattr(row, "date"), "label date")
+        ticker = str(getattr(row, "ticker"))
+        if ticker not in SUPPORTED_TICKERS or anchor_date >= cutover_date:
+            # Never inspect Test labels or labels on/after cutover during initial champion selection.
+            continue
+        key = (anchor_date, ticker)
+        if key in found:
+            raise TrainingError(f"label primary key (date, ticker) is duplicated for {key}")
+        raw_end = getattr(row, "target_end_date")
+        raw_obs = getattr(row, "target_obs_count")
+        raw_mature = getattr(row, "is_label_mature")
+        found[key] = {
+            "target_end_date": None if pd.isna(raw_end) else _market_date(raw_end, "target_end_date"),
+            "target_obs_count": None if pd.isna(raw_obs) else int(raw_obs),
+            "target_realized_vol_5d": getattr(row, "target_realized_vol_5d"),
+            "is_label_mature": False if pd.isna(raw_mature) else bool(raw_mature),
+        }
+    return found
+
+
+def _validation_cutover_features(
+    prepared: PreparedDataset,
+    ticker: str,
+    config: TrainingConfig,
+    cutover_date: date,
+) -> dict[date, np.ndarray]:
+    view = prepared.prediction
+    if len(view.X) != len(view.metadata) or tuple(view.X.columns) != tuple(config.core_features):
+        raise TrainingError("prediction features and metadata must align in locked feature order")
+    metadata = view.metadata
+    mask = (metadata["split"] == "validation") & (metadata["ticker"].astype(str) == ticker)
+    selected_metadata = metadata.loc[mask]
+    selected_X = view.X.loc[mask]
+    if selected_metadata.duplicated(["date", "ticker"]).any():
+        raise TrainingError("prediction primary key (date, ticker) must be unique")
+    feature_map: dict[date, np.ndarray] = {}
+    for (_, row), values in zip(selected_metadata.iterrows(), selected_X.to_numpy(dtype=float)):
+        anchor_date = _market_date(row["date"], "prediction date")
+        if anchor_date >= cutover_date:
+            raise TrainingError(f"{ticker} Validation anchor {anchor_date} reaches or exceeds cutover {cutover_date}")
+        if not np.isfinite(values).all():
+            raise TrainingError(f"non-finite eligible prediction features for {(anchor_date, ticker)}")
+        feature_map[anchor_date] = values.copy()
+    return feature_map
+
+
+def _select_ticker_initial_champion(
+    prepared: PreparedDataset,
+    label_lookup: Mapping[tuple[date, str], Mapping[str, Any]],
+    ticker: str,
+    initial_model_entry: Mapping[str, Any],
+    baseline_entry: Mapping[str, Any],
+    config: TrainingConfig,
+    ic_cfg: InitialChampionConfig,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    audit = prepared.audit
+    required = {"date", "ticker", "split", "target_end_date", "prediction_eligible"}
+    missing = required.difference(audit.columns)
+    if missing:
+        raise TrainingError(f"dataset audit is missing Stage 04 fields: {sorted(missing)}")
+    val_audit = audit.loc[
+        (audit["split"] == "validation") & (audit["ticker"].astype(str) == ticker)
+    ].copy()
+    if val_audit.duplicated(["date", "ticker"]).any():
+        raise TrainingError("dataset audit primary key (date, ticker) must be unique")
+    val_audit["date"] = val_audit["date"].map(lambda value: _market_date(value, "audit date"))
+    if (val_audit["date"] >= ic_cfg.cutover_date).any():
+        raise TrainingError(f"{ticker} Validation rows must precede cutover_date {ic_cfg.cutover_date}")
+    val_audit["target_end_date"] = val_audit["target_end_date"].map(
+        lambda value: None if pd.isna(value) else _market_date(value, "target_end_date")
+    )
+    eligible = val_audit.loc[_boolean_values(val_audit["prediction_eligible"])].sort_values(
+        "date", kind="stable"
+    )
+    validation_total_anchors = int(len(eligible))
+    immature_mask = eligible["target_end_date"].isna() | (eligible["target_end_date"] >= ic_cfg.cutover_date)
+    immature_rows = eligible.loc[immature_mask]
+    expected_rows = eligible.loc[~immature_mask].reset_index(drop=True)
+    immature_at_cutover_count = int(len(immature_rows))
+    expected_cutover_count = int(len(expected_rows))
+    if expected_cutover_count < ic_cfg.minimum_cutover_anchors:
+        raise TrainingError(
+            f"{ticker} initial champion selection found {expected_cutover_count} mature Validation anchors "
+            f"before cutover {ic_cfg.cutover_date.isoformat()} (< minimum_cutover_anchors="
+            f"{ic_cfg.minimum_cutover_anchors}); immature_at_cutover_count={immature_at_cutover_count}"
+        )
+
+    feature_map = _validation_cutover_features(prepared, ticker, config, ic_cfg.cutover_date)
+    expected_dates = [row.date for row in expected_rows.itertuples(index=False)]
+    missing_features = [anchor for anchor in expected_dates if anchor not in feature_map]
+    if missing_features:
+        raise TrainingError(
+            f"{ticker} is missing Validation prediction features before cutover: {missing_features[:3]}"
+        )
+    x_df = pd.DataFrame(
+        [feature_map[anchor] for anchor in expected_dates],
+        columns=list(config.core_features),
+    )
+    scaler: RobustScaler = initial_model_entry["scaler"]
+    b2_model: SGDRegressor = initial_model_entry["b2"]
+    b2_raw_preds = b2_model.predict(scaler.transform(x_df))
+    b1_raw_preds = x_df["rv_20d"].to_numpy(dtype=float)
+    b0_raw_val = baseline_entry.get("b0_train_mean")
+    state_hashes = _initial_candidate_state_hashes(ticker, initial_model_entry, baseline_entry)
+
+    valid_counts = {m: 0 for m in ic_cfg.candidate_models}
+    invalid_counts = {m: 0 for m in ic_cfg.candidate_models}
+    abs_errors: dict[str, list[float]] = {m: [] for m in ic_cfg.candidate_models}
+    sq_errors: dict[str, list[float]] = {m: [] for m in ic_cfg.candidate_models}
+    label_invalid_count = 0
+    failure_reasons: list[str] = []
+    paired_anchor_count = 0
+    candidate_score_rows: list[dict[str, Any]] = []
+
+    for idx, meta_row in enumerate(expected_rows.itertuples(index=False)):
+        anchor_date: date = meta_row.date
+        audit_target_end: date = meta_row.target_end_date
+        label_entry = label_lookup.get((anchor_date, ticker))
+        label_valid = True
+        label_reason: str | None = None
+        actual_val = float("nan")
+        if label_entry is None:
+            label_valid = False
+            label_reason = "missing_validation_label_at_cutover"
+        elif not bool(label_entry["is_label_mature"]) or label_entry["target_obs_count"] != 5:
+            label_valid = False
+            label_reason = "label_immature_before_cutover"
+        elif label_entry["target_end_date"] is None or label_entry["target_end_date"] >= ic_cfg.cutover_date:
+            label_valid = False
+            label_reason = "label_target_end_not_strictly_before_cutover"
+        elif label_entry["target_end_date"] != audit_target_end:
+            label_valid = False
+            label_reason = "label_target_end_mismatch_with_audit"
+        elif not _is_valid_forecast(label_entry["target_realized_vol_5d"]):
+            label_valid = False
+            label_reason = "label_target_value_nonfinite_or_negative"
+        else:
+            actual_val = float(label_entry["target_realized_vol_5d"])
+
+        if not label_valid:
+            label_invalid_count += 1
+            failure_reasons.append(f"{anchor_date.isoformat()}:{label_reason}")
+
+        raw_by_model = {
+            "B0": b0_raw_val,
+            "B1": float(b1_raw_preds[idx]),
+            "B2": float(b2_raw_preds[idx]),
+        }
+        anchor_model_valid: dict[str, bool] = {}
+        anchor_errors: dict[str, float] = {}
+        per_anchor_rows: list[dict[str, Any]] = []
+        for model_id in ic_cfg.candidate_models:
+            raw_pred = raw_by_model[model_id]
+            pred_valid = _is_valid_forecast(raw_pred)
+            anchor_model_valid[model_id] = pred_valid
+            pred_float = float(raw_pred) if isinstance(raw_pred, (int, float, np.integer, np.floating)) else np.nan
+            invalid_reason: str | None = None
+            if pred_valid:
+                valid_counts[model_id] += 1
+            else:
+                invalid_counts[model_id] += 1
+                invalid_reason = "forecast must be finite and nonnegative; value rejected without clipping"
+                failure_reasons.append(f"{anchor_date.isoformat()}:{model_id}:{invalid_reason}")
+            if pred_valid and label_valid:
+                abs_err = abs(actual_val - pred_float)
+                sq_err = (actual_val - pred_float) ** 2
+                anchor_errors[model_id] = abs_err
+            else:
+                abs_err = np.nan
+                sq_err = np.nan
+                if invalid_reason is None and label_reason is not None:
+                    invalid_reason = label_reason
+            per_anchor_rows.append(
+                {
+                    "ticker": ticker,
+                    "prediction_date": anchor_date,
+                    "target_end_date": audit_target_end,
+                    "cutover_date": ic_cfg.cutover_date,
+                    "model_id": model_id,
+                    "model_name": BASELINE_MODEL_NAMES[model_id],
+                    "target_realized_vol_5d": actual_val if label_valid else np.nan,
+                    "raw_prediction": pred_float,
+                    "predicted_vol_annualized": pred_float if pred_valid else np.nan,
+                    "forecast_valid": bool(pred_valid),
+                    "label_valid": bool(label_valid),
+                    "invalid_reason": invalid_reason,
+                    "absolute_error": abs_err,
+                    "squared_error": sq_err,
+                }
+            )
+
+        paired_valid = label_valid and all(anchor_model_valid.values())
+        if paired_valid:
+            paired_anchor_count += 1
+            for model_id in ic_cfg.candidate_models:
+                abs_errors[model_id].append(anchor_errors[model_id])
+                sq_errors[model_id].append(anchor_errors[model_id] ** 2)
+        for row_dict in per_anchor_rows:
+            row_dict["paired_valid"] = bool(paired_valid)
+            candidate_score_rows.append(row_dict)
+
+    paired_coverage = paired_anchor_count / expected_cutover_count if expected_cutover_count > 0 else 0.0
+    if (
+        paired_anchor_count < ic_cfg.minimum_cutover_anchors
+        or paired_coverage < ic_cfg.minimum_paired_coverage
+    ):
+        raise TrainingError(
+            f"{ticker} initial champion selection failed completeness gate "
+            f"({paired_anchor_count}/{expected_cutover_count} = {paired_coverage:.4f} < "
+            f"{ic_cfg.minimum_paired_coverage}); invalid_counts={invalid_counts}, "
+            f"label_invalid_count={label_invalid_count}, examples={failure_reasons[:3]}"
+        )
+
+    mae_by_model = {m: float(np.mean(abs_errors[m])) for m in ic_cfg.candidate_models}
+    rmse_by_model = {m: float(np.sqrt(np.mean(sq_errors[m]))) for m in ic_cfg.candidate_models}
+    best_mae = min(mae_by_model.values())
+    tied_models = [
+        m for m in ic_cfg.tie_break_order if abs(mae_by_model[m] - best_mae) <= ic_cfg.tie_tolerance
+    ]
+    winner = tied_models[0]
+    runner_up = sorted(
+        [m for m in ic_cfg.tie_break_order if m != winner],
+        key=lambda m: (mae_by_model[m], ic_cfg.tie_break_order.index(m)),
+    )[0]
+    margin = float(mae_by_model[runner_up] - mae_by_model[winner])
+
+    for row_dict in candidate_score_rows:
+        row_dict["selected_initial_champion"] = row_dict["model_id"] == winner
+
+    selection_row = {
+        "ticker": ticker,
+        "policy_version": ic_cfg.policy_version,
+        "scoring_split": ic_cfg.scoring_split,
+        "cutover_date": ic_cfg.cutover_date,
+        "validation_total_anchor_count": validation_total_anchors,
+        "immature_at_cutover_count": immature_at_cutover_count,
+        "expected_cutover_anchor_count": expected_cutover_count,
+        "paired_anchor_count": paired_anchor_count,
+        "paired_coverage": float(paired_coverage),
+        "b0_valid_count": valid_counts["B0"],
+        "b0_invalid_count": invalid_counts["B0"],
+        "mae_b0_validation": mae_by_model["B0"],
+        "rmse_b0_validation": rmse_by_model["B0"],
+        "b1_valid_count": valid_counts["B1"],
+        "b1_invalid_count": invalid_counts["B1"],
+        "mae_b1_validation": mae_by_model["B1"],
+        "rmse_b1_validation": rmse_by_model["B1"],
+        "b2_valid_count": valid_counts["B2"],
+        "b2_invalid_count": invalid_counts["B2"],
+        "mae_b2_validation": mae_by_model["B2"],
+        "rmse_b2_validation": rmse_by_model["B2"],
+        "selected_model_id": winner,
+        "selected_model_name": BASELINE_MODEL_NAMES[winner],
+        "selected_validation_mae": mae_by_model[winner],
+        "runner_up_model_id": runner_up,
+        "runner_up_validation_mae": mae_by_model[runner_up],
+        "mae_margin_vs_runner_up": margin,
+        "tie_detected": len(tied_models) > 1,
+        "tied_models": ",".join(tied_models),
+        "tie_tolerance": ic_cfg.tie_tolerance,
+        "selected_model_state_sha256": state_hashes[winner],
+        "b2_equals_b3_initial_state_sha256": state_hashes["B2"],
+        "last_training_target_end_date": str(baseline_entry["b0_train_end_date"]),
+        "candidate_models_considered": ",".join(ic_cfg.candidate_models),
+        "excluded_models": "B3,B4",
+        "config_fingerprint": ic_cfg.fingerprint(),
+    }
+    ticker_json = {
+        **selection_row,
+        "cutover_date": ic_cfg.cutover_date.isoformat(),
+        "immature_at_cutover_dates": [d.isoformat() for d in immature_rows["date"].tolist()],
+        "tied_models": list(tied_models),
+        "candidate_models_considered": list(ic_cfg.candidate_models),
+        "excluded_models": ["B3", "B4"],
+        "mae_by_model": mae_by_model,
+        "rmse_by_model": rmse_by_model,
+        "state_sha256_by_candidate": state_hashes,
+    }
+    return selection_row, candidate_score_rows, ticker_json
+
+
+def select_initial_champion(
+    prepared: PreparedDataset,
+    labels: pd.DataFrame,
+    initial_models: Mapping[str, Mapping[str, Any]],
+    baselines: Mapping[str, Mapping[str, Any]],
+    *,
+    config: TrainingConfig | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Select the per-ETF Initial Champion (B0/B1/B2 only) at Validation->Test cutover."""
+    effective_config = config or TrainingConfig.from_yaml()
+    if effective_config.initial_champion is None:
+        raise TrainingError(
+            "initial_champion config is required; use training_config_version 1.2.0 or provide initial_champion"
+        )
+    ic_cfg = effective_config.initial_champion
+    label_lookup = _validation_cutover_labels(labels, ic_cfg.cutover_date)
+    selection_rows: list[dict[str, Any]] = []
+    score_rows: list[dict[str, Any]] = []
+    tickers_summary: dict[str, Any] = {}
+    for ticker in SUPPORTED_TICKERS:
+        if ticker not in initial_models or ticker not in baselines:
+            raise TrainingError(f"missing Stage 04 initial model or baseline entry for {ticker}")
+        sel_row, ticker_scores, ticker_json = _select_ticker_initial_champion(
+            prepared,
+            label_lookup,
+            ticker,
+            initial_models[ticker],
+            baselines[ticker],
+            effective_config,
+            ic_cfg,
+        )
+        selection_rows.append(sel_row)
+        score_rows.extend(ticker_scores)
+        tickers_summary[ticker] = ticker_json
+    selection_df = pd.DataFrame(selection_rows).reset_index(drop=True)
+    scores_df = pd.DataFrame(score_rows).reset_index(drop=True)
+    summary = {
+        "policy_version": ic_cfg.policy_version,
+        "training_config_version": effective_config.training_config_version,
+        "training_config_fingerprint": effective_config.fingerprint(),
+        "initial_champion_config_fingerprint": ic_cfg.fingerprint(),
+        "scoring_split": ic_cfg.scoring_split,
+        "cutover_date": ic_cfg.cutover_date.isoformat(),
+        "cutover_maturity_rule": ic_cfg.cutover_maturity_rule,
+        "candidate_models": list(ic_cfg.candidate_models),
+        "excluded_models": ["B3", "B4"],
+        "tie_break_order": list(ic_cfg.tie_break_order),
+        "tie_tolerance": ic_cfg.tie_tolerance,
+        "test_used_for_initial_champion": False,
+        "selected_by_ticker": {
+            ticker: tickers_summary[ticker]["selected_model_id"] for ticker in SUPPORTED_TICKERS
+        },
+        "tickers": tickers_summary,
+    }
+    return selection_df, scores_df, summary
+
+
 def _result_row(run: CandidateRun) -> dict[str, Any]:
     return {
         "ticker": run.ticker,
@@ -963,6 +1361,8 @@ def _persist_artifacts(
     b4_models: dict[str, dict[str, Any]] | None = None,
     b4_validation_rows: pd.DataFrame | None = None,
     b4_validation_summary: list[dict[str, Any]] | None = None,
+    initial_champion_scores: pd.DataFrame | None = None,
+    initial_champion_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     target = artifact_dir.expanduser().resolve()
     if target.exists():
@@ -1000,6 +1400,12 @@ def _persist_artifacts(
             b4_val_path = stage / "b4_validation_evaluations.csv"
             b4_validation_rows.to_csv(b4_val_path, index=False, float_format="%.17g")
             hashed_paths.append(b4_val_path)
+        if initial_champion_summary is not None and initial_champion_scores is not None:
+            ic_sel_path = stage / "initial_champion_selection.json"
+            ic_scores_path = stage / "initial_champion_validation_scores.csv"
+            _write_json(ic_sel_path, dict(initial_champion_summary))
+            initial_champion_scores.to_csv(ic_scores_path, index=False, float_format="%.17g")
+            hashed_paths.extend([ic_sel_path, ic_scores_path])
         artifact_hashes = {
             path.name: _sha256(path)
             for path in hashed_paths
@@ -1030,6 +1436,7 @@ def _persist_artifacts(
             "training_run_id": str(uuid.uuid4()),
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
             "training_config_version": config.training_config_version,
+            "training_config_fingerprint": config.fingerprint(),
             "dataset_config": config.dataset.as_dict(),
             "feature_order": list(config.core_features),
             "selection_split": "validation",
@@ -1053,6 +1460,8 @@ def _persist_artifacts(
             "artifact_sha256": artifact_hashes,
             "artifacts_are_validation_trials_not_final_replay": True,
         }
+        if initial_champion_summary is not None:
+            manifest["initial_champion"] = dict(initial_champion_summary)
         _write_json(manifest_path, manifest)
         stage.replace(target)
         return manifest
@@ -1173,9 +1582,26 @@ def run_training_selection(
         if b4_validation_frames
         else pd.DataFrame()
     )
+    initial_champions_df: pd.DataFrame | None = None
+    initial_champion_scores_df: pd.DataFrame | None = None
+    initial_champion_summary: dict[str, Any] | None = None
+    if effective_config.initial_champion is not None:
+        (
+            initial_champions_df,
+            initial_champion_scores_df,
+            initial_champion_summary,
+        ) = select_initial_champion(
+            prepared,
+            labels,
+            initial_models,
+            baselines,
+            config=effective_config,
+        )
+
     manifest: dict[str, Any] = {
         "stage": "04_models_training_and_validation",
         "training_config_version": effective_config.training_config_version,
+        "training_config_fingerprint": effective_config.fingerprint(),
         "selection_split": "validation",
         "selection_objective": "(mae_b2_validation + mae_b3_validation) / 2",
         "test_used_for_training_or_selection": False,
@@ -1187,6 +1613,8 @@ def run_training_selection(
         "source_lineage": lineage,
         "versions": _package_versions(),
     }
+    if initial_champion_summary is not None:
+        manifest["initial_champion"] = dict(initial_champion_summary)
     persisted_dir: Path | None = None
     if artifact_dir is not None:
         persisted_dir = Path(artifact_dir).expanduser().resolve()
@@ -1203,6 +1631,8 @@ def run_training_selection(
             b4_models=b4_models if include_b4 else None,
             b4_validation_rows=b4_validation_all if include_b4 else None,
             b4_validation_summary=b4_validation_summaries if include_b4 else None,
+            initial_champion_scores=initial_champion_scores_df,
+            initial_champion_summary=initial_champion_summary,
         )
     return TrainingSelectionResult(
         candidate_evaluations=candidate_rows,
@@ -1215,4 +1645,6 @@ def run_training_selection(
         artifact_dir=persisted_dir,
         b4_models=b4_models if include_b4 else None,
         b4_validation=b4_validation_all if include_b4 else None,
+        initial_champions=initial_champions_df,
+        initial_champion_scores=initial_champion_scores_df,
     )
