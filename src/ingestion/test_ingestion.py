@@ -425,12 +425,14 @@ def test_quarantine_appends_to_csv(tmp_path):
     assert df_quarantine.iloc[0]["source_batch_id"] == "yf_test_batch"
 
 
-def test_audit_report_appends_to_jsonl(tmp_path):
+@pytest.mark.parametrize("raw_path", ["custom/raw/yf_test_batch/raw_prices.csv", None])
+def test_audit_report_appends_to_jsonl(tmp_path, raw_path):
     import json
 
     metadata = {
         "run_id": "run_test_audit",
         "source_batch_id": "yf_test_batch",
+        "raw_snapshot_path": raw_path,
         "started_at_utc": "2026-09-24T01:00:00Z",
         "finished_at_utc": "2026-09-24T01:00:05Z",
         "config_start_date": "2021-09-27",
@@ -487,6 +489,12 @@ def test_audit_report_appends_to_jsonl(tmp_path):
     )
 
     assert report["overall_status"] == "SUCCESS"
+    assert report["raw_snapshot_path"] == metadata["raw_snapshot_path"]
+    saved_report = json.loads(
+        (tmp_path / "audit" / "run_id=run_test_audit" / "run_report.json")
+        .read_text(encoding="utf-8")
+    )
+    assert saved_report["raw_snapshot_path"] == metadata["raw_snapshot_path"]
     assert jsonl_file.is_file()
 
     with jsonl_file.open("r", encoding="utf-8") as f:
@@ -496,6 +504,7 @@ def test_audit_report_appends_to_jsonl(tmp_path):
     entry = json.loads(lines[0])
     assert entry["run_id"] == "run_test_audit"
     assert entry["status"] == "SUCCESS"
+    assert entry["raw_snapshot_path"] == metadata["raw_snapshot_path"]
     assert entry["rows_fetched_raw"] == 5
     assert entry["rows_published"] == 5
     assert "SPY" in entry["tickers"]

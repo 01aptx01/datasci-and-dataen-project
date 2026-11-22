@@ -100,7 +100,7 @@ def create_run_report(
         "auto_adjust": run_metadata.get("auto_adjust"),
         "code_version": run_metadata.get("code_version"),
         "dependency_versions": run_metadata.get("dependency_versions"),
-        "raw_snapshot_path": f"data/raw/yfinance/run_id={run_id}",
+        "raw_snapshot_path": run_metadata.get("raw_snapshot_path"),
         "validated_data_path": publish_report.get("table"),
         "ticker_results": ticker_report,
         "overall_status": overall_status,
@@ -150,10 +150,7 @@ def create_run_report(
             run_metadata.get("effective_end_date")
             or run_metadata.get("config_end_date")
         ),
-        "raw_snapshot_path": (
-            run_metadata.get("raw_snapshot_path")
-            or report.get("raw_snapshot_path")
-        ),
+        "raw_snapshot_path": report["raw_snapshot_path"],
         "rows_fetched_raw": total_fetched,
         "rows_validated_passed": total_passed,
         "rows_published": total_published,
