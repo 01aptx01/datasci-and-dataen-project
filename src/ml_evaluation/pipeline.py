@@ -315,12 +315,14 @@ def _verify_replay_artifacts(replay_dir: Path, config: EvaluationConfig) -> tupl
 def _verify_training_artifacts(training_dir: Path, replay_manifest: Mapping[str, Any]) -> dict[str, str]:
     expected = replay_manifest.get("stage04_artifact_sha256", {})
     manifest_expected = replay_manifest.get("stage04_training_manifest_sha256")
-    names = (
+    names = [
         "initial_models.joblib",
         "selected_configs.json",
         "training_config.json",
         "validation_candidate_evaluations.csv",
-    )
+    ]
+    if "b4_validation_evaluations.csv" in expected:
+        names.append("b4_validation_evaluations.csv")
     hashes: dict[str, str] = {}
     for name in names:
         digest = _file_sha256(training_dir / name)
