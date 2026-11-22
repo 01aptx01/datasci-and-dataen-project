@@ -1,10 +1,10 @@
 # DEDS Adaptive Portfolio Risk Lab — frozen snapshot dashboard
 
-This folder contains the Stitch-inspired interface and the original read-only dashboard, backed by one pinned Stage 06 review snapshot. It includes saved-session Replay, B0–B3 evidence views, Drift review, and covariance-based portfolio analysis. It does not import or run the Python ML pipeline.
+This folder contains the read-only Adaptive Portfolio Risk Lab, backed by one pinned Stage 06 review snapshot. It includes saved-session Replay, B0–B3 evidence views, Drift review, and covariance-based portfolio analysis. It does not import or run the Python ML pipeline.
 
 ## Run locally
 
-Requirements: Node.js 20+ and Python 3.10+. The only frontend development dependency is TypeScript; the built dashboard has no runtime npm dependencies.
+Requirements: Node.js (verified with v25) and Python 3.10+. The only frontend development dependency is TypeScript; the built dashboard has no runtime npm dependencies.
 
 ```powershell
 cd web
@@ -14,7 +14,7 @@ npm test
 npm run preview
 ```
 
-Open `http://localhost:4173` for the new interface or `http://localhost:4173/legacy.html` for the original dashboard. `npm run dev` builds the verified static snapshot and starts the local preview server. Build output and extracted public snapshot files are ignored by Git and can be reproduced from the pinned handoff ZIP.
+Open `http://localhost:4173` to use the dashboard. `npm run dev` builds the verified static snapshot and starts the local preview server. Build output and extracted public snapshot files are ignored by Git and can be reproduced from the pinned handoff ZIP.
 
 ## Snapshot boundary
 
@@ -38,19 +38,15 @@ Open `http://localhost:4173` for the new interface or `http://localhost:4173/leg
 
 Source CSV rows are retained. The build does not copy reports, notebooks, model checkpoints, source paths, or the handoff ZIP into the public snapshot directory. Pending forecast rows preserve blank actual and absolute-error values.
 
-The frozen evaluation is a **Simulated Historical Replay** with strict cutoff `2026-09-25`. Point-in-time source availability is unverified and report approval is pending. The dashboard identifies both pinned IDs on every route and shows their full values on Provenance.
+The frozen evaluation is a **Simulated Historical Replay** with strict cutoff `2026-09-25`. Point-in-time source availability is unverified and report approval is pending. The Evidence view displays both pinned IDs, the cutoff, and the snapshot limitations.
 
 The browser only calculates portfolio what-if volatility from the covariance matrix stored with the selected date/model row. It does not run training, replay, forecast, drift, or hypothesis inference.
 
-## Routes
+## Routes and presentation link
 
-The new interface includes portfolio, replay, model comparison, monitoring and evidence views. Links to the original dashboard retain its detailed research, provenance, and guide views. The original shell contains Overview, Models, Forecasts, Portfolio, Drift, Research, Provenance, and Guide.
+The dashboard includes portfolio, replay, forecast, model comparison, monitoring, and evidence views. Portfolio risk uses `sqrt(wᵀΣw)` with the recorded covariance; Replay reveals an Actual only when the target has matured, its verified evaluation exists, and the user requests it. Source Pending rows remain hidden.
 
-- Overview shows frozen metrics, model comparison, coverage, and recorded forecast observations.
-- Models and Forecasts filter source-backed Test metrics and recorded rows; Pending actual/error values stay blank.
-- Portfolio recomputes `sqrt(wᵀΣw)` from the same stored covariance row and rejects invalid weights or incomplete source inputs.
-- Drift and Research display recorded rolling-MAE, ADWIN, H1–H3, bootstrap, and high-volatility results with source split and sample information.
-- Provenance lists source hashes, snapshot identity, cutoff, and review limitations. Guide explains the terms used in the dashboard.
+The Canva Presentation button is disabled until a URL is set. To enable it, set `CANVA_PRESENTATION_URL` in `src/config.ts` to the presentation URL and rebuild; it then opens in a new tab.
 
 ## Source pins
 
@@ -67,4 +63,4 @@ Build `web/dist` and publish its contents beneath a directory with an `index.htm
 
 ## Verification
 
-`npm test` covers pinned checksum and identity failures, missing inputs, source schemas, Pending rows, portfolio parity and invalid weights, forecast filtering, and CSV/metadata construction. Browser and responsive checks for the earlier dashboard phases are recorded in [D3–D7 verification](docs/D3_D7_VERIFICATION.md), with handoff evidence in `docs/D1_D2_VERIFICATION.md`. The current acceptance branch records its browser findings and remaining coverage in [the final UX acceptance report](../docs/dashboard/FINAL_UX_ACCEPTANCE_REPORT.md), with a Thai-first [user task guide](../docs/dashboard/FINAL_UX_USER_TASK_GUIDE.md).
+`npm test` verifies snapshot checksums and identity, source schemas, Pending labels, portfolio covariance calculations, and replay gating. Visual and browser-flow evidence is in [the Stitch verification report](evidence/stitch/VERIFICATION.md).

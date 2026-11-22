@@ -21,7 +21,8 @@ Copy the **contents** of `web/dist` to the directory served by the static host. 
 
 ```text
 index.html
-styles.css
+stitch.css
+stitchOther.css
 snapshot.policy.json
 assets/
 snapshots/<evaluation-id>/
@@ -35,10 +36,10 @@ Do not publish the handoff ZIP, `public/snapshots`, Python source, reports, note
 
 Before sharing the site, open its directory URL and check that:
 
-- the snapshot banner reports successful verification and shows the pinned Evaluation and Replay ID prefixes;
-- all eight hash routes load and survive a reload;
-- Overview and Provenance show the frozen replay mode, strict cutoff, and pending report approval;
+- the dashboard loads the verified snapshot and shows the cutoff;
+- the portfolio, replay, models, monitoring, and evidence routes load and survive a reload;
+- Evidence shows the frozen replay mode, strict cutoff, pinned IDs, and pending report approval;
 - the browser console has no dashboard errors;
 - source requests resolve under the nested directory, with no requests to a repository root path.
 
-The bundled app is read-only apart from the local portfolio covariance what-if and user-requested forecast exports. There is no live data endpoint or server-side ML execution.
+The bundled app is read-only apart from the local portfolio covariance what-if. There is no live data endpoint or server-side ML execution.

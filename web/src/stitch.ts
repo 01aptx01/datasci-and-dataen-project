@@ -1,9 +1,9 @@
 import { filterForecastRows, loadSnapshot, selectRecordedSessions, type SnapshotState } from "./data/loadSnapshot.js";
-import { computePortfolioVolatility, type PortfolioWeights } from "./data/portfolio.js";
-import { portfolioRiskSourceDates, validateScenarioWeights } from "./data/decisionLab.js";
+import { computePortfolioVolatility, portfolioRiskSourceDates, validateScenarioWeights, type PortfolioWeights } from "./data/portfolio.js";
 import { resolveAsOfLabelView, selectSameDateForecasts } from "./data/replay.js";
 import { modelId, type ForecastAuditRow, type ModelName, type Ticker } from "./data/schemas.js";
 import { renderOtherPage } from "./stitchOther.js";
+import { CANVA_PRESENTATION_URL } from "./config.js";
 
 type Page = "overview" | "forecasts" | "replay" | "portfolio" | "models" | "monitoring" | "evidence";
 type ReadySnapshot = Extract<SnapshotState, { status: "ready" }>;
@@ -298,8 +298,11 @@ function render(root: HTMLElement, state: State): void {
   const showHeading = state.page === "forecasts";
   const nav = pages.map((page) => "<a class=\"st-nav-link" + (page === state.page ? " st-active" : "") + "\" href=\"#/" + page + "\"" + (page === state.page ? " aria-current=\"page\"" : "") + ">" + esc(pageLabel[page]) + "</a>").join("");
   const status = snapshot.status === "ready" ? "Stage 06 · cutoff " + esc(snapshot.manifest.strictCutoff) : snapshot.status === "loading" ? "กำลังโหลด snapshot" : "ตรวจ snapshot";
-  root.innerHTML = "<div class=\"st-app\"><header class=\"st-header\"><a class=\"st-brand\" href=\"#/overview\"><span class=\"st-brand-mark\">R</span><span><strong>Risk Lab</strong><small>DEDS · Research snapshot</small></span></a><span class=\"st-status\">" + status + "</span><nav class=\"st-nav\" aria-label=\"หน้าหลัก\">" + nav + "</nav><a class=\"st-legacy-link\" href=\"./legacy.html#/overview\">เปิด Dashboard เดิม ↗</a></header>"
-    + "<main class=\"st-main\">" + (showHeading ? "<div class=\"st-page-title\"><div><h1>" + title + "</h1><p>" + subtitle + "</p></div></div>" : "") + content(state) + "</main><footer class=\"st-footer\"><span>Simulated Historical Replay · ไม่ใช่คำแนะนำการลงทุน</span><a href=\"./legacy.html#/provenance\">ดู provenance และข้อจำกัดใน Dashboard เดิม →</a></footer></div>";
+  const presentationLink = CANVA_PRESENTATION_URL
+    ? "<a class=\"st-presentation-link\" href=\"" + esc(CANVA_PRESENTATION_URL) + "\" target=\"_blank\" rel=\"noopener noreferrer\">เปิด Canva Presentation ↗</a>"
+    : "<button class=\"st-presentation-link\" type=\"button\" disabled title=\"ยังไม่ได้ตั้งค่าลิงก์ Canva Presentation\">เปิด Canva Presentation ↗</button>";
+  root.innerHTML = "<div class=\"st-app\"><header class=\"st-header\"><a class=\"st-brand\" href=\"#/overview\"><span class=\"st-brand-mark\">R</span><span><strong>Risk Lab</strong><small>DEDS · Research snapshot</small></span></a><span class=\"st-status\">" + status + "</span><nav class=\"st-nav\" aria-label=\"หน้าหลัก\">" + nav + "</nav>" + presentationLink + "</header>"
+    + "<main class=\"st-main\">" + (showHeading ? "<div class=\"st-page-title\"><div><h1>" + title + "</h1><p>" + subtitle + "</p></div></div>" : "") + content(state) + "</main><footer class=\"st-footer\"><span>Simulated Historical Replay · ไม่ใช่คำแนะนำการลงทุน</span><a href=\"#/evidence\">ดูที่มาและข้อจำกัดของข้อมูล →</a></footer></div>";
   if (active) {
     const candidates = Array.from(root.querySelectorAll<HTMLElement>("[data-field], [data-action]"));
     candidates.find((element) => element.dataset.field === active.field && element.dataset.action === active.action
