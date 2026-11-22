@@ -2824,3 +2824,18 @@ body { margin: 0; }
 .st-app .st-covariance-table th, .st-app .st-covariance-table td { text-align: center; padding: 12px; }
 .st-app .st-covariance-table tbody tr:nth-child(even) { background: #f7f9fc; }
 .st-app .st-covariance-table tbody th { background: #edf2fa; }
+.st-replay-intro h1 { margin: 0; font-size: 24px; }
+.st-replay-intro p { margin: 4px 0 0; color: var(--st-ink-soft); }
+.st-replay-advanced { border: 1px solid var(--st-border); border-radius: var(--st-radius-lg); background: white; padding: 16px; }
+.st-replay-advanced > summary { cursor: pointer; font-weight: 700; color: var(--st-ink); }
+.st-replay-advanced > .st-replay-lower-grid { margin-top: 16px; }
+.st-replay-month { display: flex; flex-direction: column; justify-content: center; gap: 3px; }
+.st-replay-month small { font-size: 11px; font-weight: 400; }
+.st-replay-chart-panel .st-replay-chart { height: auto; min-height: 300px; }
+.st-replay-chart-panel .st-replay-chart-wrap { min-height: 320px; }
+@media (min-width: 1000px) {
+  .st-replay-layout { grid-template-columns: minmax(0, 1fr); }
+  .st-replay-chart-panel .st-replay-chart { min-height: 420px; }
+  .st-replay-chart-panel .st-replay-chart-wrap { min-height: 440px; }
+}
+.st-replay-accuracy { margin: 10px 0; padding: 10px 14px; border-radius: 8px; background: #eef3ff; color: #19366f; font-weight: 600; }

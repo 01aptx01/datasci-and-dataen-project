@@ -143,19 +143,19 @@ interface ReplayChartPoint {
   actualStatus: string;
 }
 
-function replayChart(points: ReplayChartPoint[], selectedDate: string): string {
+function replayChart(points: ReplayChartPoint[], selectedDate: string, scaleMax: number): string {
   const validValues = points.flatMap((point) => [point.forecast, point.actual])
     .filter((value): value is number => value !== null && Number.isFinite(value) && value >= 0);
   if (points.length === 0 || validValues.length === 0) {
     return "<div class=\"st-empty\" role=\"status\">ไม่มี Forecast หรือ Actual ที่ใช้วาดกราฟในชุดที่เลือก</div>";
   }
   const width = 880;
-  const height = 246;
+  const height = 320;
   const left = 64;
   const right = 848;
   const top = 34;
-  const bottom = 204;
-  const maxValue = Math.max(...validValues) * 1.08 || 1;
+  const bottom = 278;
+  const maxValue = scaleMax;
   const x = (index: number) => left + index * ((right - left) / Math.max(points.length - 1, 1));
   const y = (value: number) => bottom - (value / maxValue) * (bottom - top);
   const lines = (key: "forecast" | "actual", className: string, color: string) => {
@@ -181,13 +181,22 @@ function replayChart(points: ReplayChartPoint[], selectedDate: string): string {
     return marker + forecast + actual;
   }).join("");
   const rows = points.map((point) => "<tr" + (point.row.predictionDate === selectedDate ? " class=\"st-selected-row\"" : "") + "><th scope=\"row\">" + esc(point.row.predictionDate) + "</th><td>" + risk(point.forecast) + "</td><td>" + risk(point.actual) + "</td><td><span class=\"" + (point.row.evaluationStatus === "PENDING_LABEL" ? "st-replay-status st-replay-pending" : point.actual !== null ? "st-replay-status st-replay-evaluable" : "st-replay-status") + "\">" + esc(point.actualStatus) + "</span></td><td><code>" + esc(point.row.predictionId.slice(0, 12)) + "</code></td></tr>").join("");
+  const errors = points.flatMap((point) => point.forecast !== null && point.actual !== null ? [Math.abs(point.forecast - point.actual)] : []);
+  const mae = errors.length ? errors.reduce((sum, value) => sum + value, 0) / errors.length : null;
+  const summary = mae === null
+    ? "ยังสรุปความคลาดเคลื่อนไม่ได้ · เปิดเผยผลจริงที่ครบกำหนดเพื่อเปรียบเทียบ"
+    : "ความคลาดเคลื่อนเฉลี่ย " + (mae * 100).toFixed(3) + " จุดเปอร์เซ็นต์ · เทียบได้ " + errors.length + " จาก " + points.length + " วัน · ค่ายิ่งต่ำยิ่งใกล้ผลจริง";
+  const grid = [0, 1, 2, 3, 4].map((step) => {
+    const value = maxValue * step / 4;
+    const position = y(value);
+    return "<line class=\"st-replay-chart-gridline\" x1=\"" + left + "\" y1=\"" + position + "\" x2=\"" + right + "\" y2=\"" + position + "\" stroke=\"#e4e9f0\"/><text class=\"st-replay-chart-label\" x=\"8\" y=\"" + (position + 4) + "\">" + risk(value) + "</text>";
+  }).join("");
   const actualLegend = points.some((point) => point.actual !== null)
     ? "Actual ที่เปิดเผยผ่านสถานะประเมินแล้ว"
     : "Actual ซ่อนไว้จน target ครบและกดเปิดเผย";
-  return "<div class=\"st-replay-chart-wrap\"><svg class=\"st-replay-chart\" viewBox=\"0 0 " + width + " " + height + "\" role=\"img\" aria-label=\"Forecast ที่บันทึกไว้และ Actual ที่เปิดเผยแล้วของ Replay\">"
+  return "<p class=\"st-replay-accuracy\">" + esc(summary) + "</p><div class=\"st-replay-chart-wrap\"><svg class=\"st-replay-chart\" viewBox=\"0 0 " + width + " " + height + "\" role=\"img\" aria-label=\"Forecast ที่บันทึกไว้และ Actual ที่เปิดเผยแล้วของ Replay\">"
     + "<line class=\"st-replay-chart-axis\" x1=\"" + left + "\" y1=\"" + bottom + "\" x2=\"" + right + "\" y2=\"" + bottom + "\" stroke=\"#cbd5e1\"/><line class=\"st-replay-chart-axis\" x1=\"" + left + "\" y1=\"" + top + "\" x2=\"" + left + "\" y2=\"" + bottom + "\" stroke=\"#cbd5e1\"/>"
-    + "<line class=\"st-replay-chart-gridline\" x1=\"" + left + "\" y1=\"" + ((top + bottom) / 2) + "\" x2=\"" + right + "\" y2=\"" + ((top + bottom) / 2) + "\" stroke=\"#e4e9f0\"/>"
-    + "<text class=\"st-replay-chart-label\" x=\"8\" y=\"" + (top + 4) + "\">" + risk(maxValue) + "</text><text class=\"st-replay-chart-label\" x=\"8\" y=\"" + bottom + "\">0%</text>"
+    + grid
     + "<text class=\"st-replay-chart-date\" x=\"" + left + "\" y=\"" + (height - 7) + "\">" + esc(points[0]!.row.predictionDate) + "</text><text class=\"st-replay-chart-date\" x=\"" + right + "\" y=\"" + (height - 7) + "\" text-anchor=\"end\">" + esc(points[points.length - 1]!.row.predictionDate) + "</text>"
     + lines("forecast", "st-replay-forecast-line", "#2e62a5") + lines("actual", "st-replay-actual-line", "#b36b22") + dots + "</svg>"
     + "<div class=\"st-replay-legend\"><span class=\"st-replay-chip\"><i class=\"st-replay-forecast-key\"></i>Forecast ที่บันทึกไว้</span><span class=\"st-replay-chip\"><i class=\"st-replay-actual-key\"></i>" + actualLegend + "</span><span>" + points.length.toLocaleString() + " วัน · เส้นเลือกวันที่ตรงกับแถวด้านข้าง</span></div></div>"
@@ -224,7 +233,10 @@ function replayPage(snapshot: ReadySnapshot, state: State): string {
       actualStatus: resolved.status === "revealed" ? "EVALUABLE" : session.evaluationStatus === "PENDING_LABEL" ? "Pending · Actual ซ่อนอยู่" : resolved.status,
     };
   });
-  const monthsHtml = months.map((month) => "<button class=\"st-replay-month" + (month === activeMonth ? " st-active" : "") + "\" type=\"button\" data-action=\"replay-month\" data-month=\"" + esc(month) + "\" aria-pressed=\"" + (month === activeMonth) + "\">" + esc(monthLabel(month)) + "</button>").join("");
+  const scaleFactor = state.replay.scale === "five-day" ? Math.sqrt(5 / 252) : 1;
+  const scaleValues = sessions.flatMap((session) => [session.predictedVolAnnualized, session.targetRealizedVol5d]).filter((value): value is number => value !== null && Number.isFinite(value) && value >= 0);
+  const scaleMax = Math.max(0.005, Math.ceil(Math.max(...scaleValues, 0) * scaleFactor * 1.05 / 0.005) * 0.005);
+  const monthsHtml = months.map((month) => "<button class=\"st-replay-month" + (month === activeMonth ? " st-active" : "") + "\" type=\"button\" data-action=\"replay-month\" data-month=\"" + esc(month) + "\" aria-pressed=\"" + (month === activeMonth) + "\">" + esc(monthLabel(month)) + "<small>" + new Set(sessions.filter((item) => monthKey(item.predictionDate) === month).map((item) => item.predictionDate)).size + " วันซื้อขาย</small></button>").join("");
   const replayStatus = row.evaluationStatus === "PENDING_LABEL" ? "st-replay-status st-replay-pending"
     : reveal.actual !== null ? "st-replay-status st-replay-evaluable" : "st-replay-status";
   const visibleForecast = row.predictionDate <= asOf ? row.predictedVolAnnualized : null;
@@ -238,24 +250,24 @@ function replayPage(snapshot: ReadySnapshot, state: State): string {
       })()
     : "ยังไม่มีประวัติการสลับรุ่นใน snapshot นี้";
   const tickerButtons = tickers.map((ticker) => "<button class=\"st-replay-ticker" + (ticker === state.replay.ticker ? " st-active" : "") + "\" type=\"button\" data-action=\"replay-ticker\" data-ticker=\"" + ticker + "\" aria-pressed=\"" + (ticker === state.replay.ticker) + "\">" + ticker + "</button>").join("");
-  return "<section class=\"st-replay-toolbar\"><div class=\"st-replay-view-toggle\" role=\"group\" aria-label=\"รูปแบบมุมมอง\">"
+  return "<div class=\"st-replay-intro\"><h1>เล่นย้อนหลัง</h1><p>เลือกสินทรัพย์และวันพยากรณ์ แล้วเปรียบเทียบค่าที่คาดการณ์กับผลจริงเมื่อครบช่วงเป้าหมาย · วันที่ออกคำพยากรณ์คือวันที่สร้างค่า ส่วนวันที่จำลองคือวันที่ใช้ตรวจว่ารู้ผลจริงแล้วหรือยัง</p></div><section class=\"st-replay-toolbar\"><div class=\"st-replay-view-toggle\" role=\"group\" aria-label=\"รูปแบบมุมมอง\">"
     + "<button class=\"st-button" + (state.replay.view === "monthly" ? " st-active" : "") + "\" type=\"button\" data-action=\"replay-view\" data-view=\"monthly\" aria-pressed=\"" + (state.replay.view === "monthly") + "\">มุมมองรายเดือน</button>"
     + "<button class=\"st-button" + (state.replay.view === "daily" ? " st-active" : "") + "\" type=\"button\" data-action=\"replay-view\" data-view=\"daily\" aria-pressed=\"" + (state.replay.view === "daily") + "\">มุมมองรายวัน</button></div>"
     + (state.replay.view === "monthly" ? "<div class=\"st-replay-monthly-strip\" aria-label=\"เลือกเดือน\">" + monthsHtml + "</div>" : "") + "<div class=\"st-replay-options\"><div class=\"st-replay-tickers\" role=\"group\" aria-label=\"เลือก ETF\">" + tickerButtons + "</div>"
     + "<label class=\"st-field st-replay-model-field\">โมเดล<select data-field=\"replay-model\">" + selectOptions(models, modelLabel, state.replay.model) + "</select></label>"
     + "<div class=\"st-replay-scale\" role=\"group\" aria-label=\"หน่วยความเสี่ยง\"><button type=\"button\" class=\"st-button" + (state.replay.scale === "five-day" ? " st-active" : "") + "\" data-action=\"replay-scale\" data-scale=\"five-day\" aria-pressed=\"" + (state.replay.scale === "five-day") + "\">สเกล 5 วัน</button><button type=\"button\" class=\"st-button" + (state.replay.scale === "annualized" ? " st-active" : "") + "\" data-action=\"replay-scale\" data-scale=\"annualized\" aria-pressed=\"" + (state.replay.scale === "annualized") + "\">สเกลรายปี</button></div>"
     + (state.replay.scale === "five-day" ? "<small class=\"st-replay-scale-note\">สเกล 5 วันเป็นค่าประมาณจากรายปี × √(5/252)</small>" : "") + "</div></section>"
-    + (state.replay.view === "daily" ? "<section class=\"st-replay-daily-controls\"><button class=\"st-button st-button-quiet\" type=\"button\" data-action=\"replay-view\" data-view=\"monthly\">← กลับมุมมองรายเดือน</button><label class=\"st-field\">วันพยากรณ์<select data-field=\"replay-date\">" + options + "</select></label>"
+    + (state.replay.view === "daily" ? "<section class=\"st-replay-daily-controls\"><label class=\"st-field\">วันที่ออกคำพยากรณ์<select data-field=\"replay-date\">" + options + "</select></label>"
     + "<div class=\"st-replay-step-controls\"><button class=\"st-button st-button-quiet\" type=\"button\" data-action=\"replay-step\" data-direction=\"previous\"" + (selectedIndex === 0 ? " disabled" : "") + " aria-label=\"วันก่อนหน้า\">‹ ก่อนหน้า</button><input class=\"st-replay-slider\" type=\"range\" min=\"0\" max=\"" + (sessions.length - 1) + "\" step=\"1\" value=\"" + selectedIndex + "\" data-field=\"replay-index\" aria-label=\"เลือกวันพยากรณ์\" aria-valuetext=\"" + esc(row.predictionDate) + ", วันที่ " + (selectedIndex + 1) + " จาก " + sessions.length + "\"><button class=\"st-button st-button-quiet\" type=\"button\" data-action=\"replay-step\" data-direction=\"next\"" + (selectedIndex >= sessions.length - 1 ? " disabled" : "") + " aria-label=\"วันถัดไป\">ถัดไป ›</button></div>"
-    + "<label class=\"st-field st-replay-asof-field\">ดูข้อมูล ณ วันที่<input type=\"date\" data-field=\"replay-as-of\" min=\"" + esc(sessions[0]!.predictionDate) + "\" value=\"" + esc(asOf) + "\"></label>"
-    + "<button class=\"st-button st-button-quiet\" type=\"button\" data-action=\"replay-asof-target\">ถึงสิ้นสุด Target</button><button class=\"st-button st-button-primary\" type=\"button\" data-action=\"replay-toggle-reveal\" aria-pressed=\"" + state.replay.reveal + "\">" + (state.replay.reveal ? "ซ่อน Actual" : "เปิดเผย Actual") + "</button></section>" : "")
-    + "<div class=\"st-replay-layout\"><section class=\"st-card st-replay-chart-panel\"><div class=\"st-replay-chart-heading\"><div><h2>ความผันผวน " + (state.replay.scale === "five-day" ? "5 วันข้างหน้า" : "รายปี") + " · " + esc(monthLabel(activeMonth)) + " (" + state.replay.ticker + ")</h2><p>Prediction " + esc(datesInMonth[0] ?? row.predictionDate) + " – " + esc(datesInMonth[datesInMonth.length - 1] ?? row.predictionDate) + " · โมเดล " + esc(modelId(state.replay.model)) + "</p></div><span>เส้นทึบ = Forecast · เส้นประ = Actual</span></div>" + replayChart(chartPoints, row.predictionDate)
+    + "<label class=\"st-field st-replay-asof-field\">จำลองข้อมูลที่รู้ ณ วันที่<input type=\"date\" data-field=\"replay-as-of\" min=\"" + esc(sessions[0]!.predictionDate) + "\" value=\"" + esc(asOf) + "\"></label>"
+    + "<button class=\"st-button st-button-quiet\" type=\"button\" data-action=\"replay-asof-target\">ไปวันสิ้นสุดเป้าหมาย</button><button class=\"st-button st-button-primary\" type=\"button\" data-action=\"replay-toggle-reveal\" aria-pressed=\"" + state.replay.reveal + "\">" + (state.replay.reveal ? "ซ่อนผลจริง" : "แสดงผลจริง") + "</button></section>" : "")
+    + "<div class=\"st-replay-layout\"><section class=\"st-card st-replay-chart-panel\"><div class=\"st-replay-chart-heading\"><div><h2>ความผันผวน " + (state.replay.scale === "five-day" ? "5 วันข้างหน้า" : "รายปี") + " · " + esc(monthLabel(activeMonth)) + " (" + state.replay.ticker + ")</h2><p>Prediction " + esc(datesInMonth[0] ?? row.predictionDate) + " – " + esc(datesInMonth[datesInMonth.length - 1] ?? row.predictionDate) + " · โมเดล " + esc(modelId(state.replay.model)) + "</p></div><span>เส้นทึบ = ค่าพยากรณ์ · เส้นประ = ผลจริง · แกนคงที่ทุกเดือนสำหรับสินทรัพย์และโมเดลที่เลือก</span></div>" + replayChart(chartPoints, row.predictionDate, scaleMax)
     + "<div class=\"st-replay-history\"><strong>ประวัติการสลับรุ่น</strong><span>" + esc(policyHistoryText) + "</span></div></section>"
     + "<aside class=\"st-replay-sidebar\"><section class=\"st-card st-replay-inspector\"><div class=\"st-replay-heading\"><div><span>วันที่เลือก (" + state.replay.ticker + ")</span><h2>" + esc(row.predictionDate) + "</h2></div><span class=\"" + replayStatus + "\">" + esc(reveal.text) + "</span></div>"
-    + "<div class=\"st-replay-target\"><span>ช่วงเป้าหมาย t+1…t+5</span><strong>" + esc(row.targetStartDate) + " – " + esc(row.targetEndDate) + "</strong></div>"
-    + "<div class=\"st-replay-metrics\"><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Forecast</span><strong class=\"st-replay-metric-value\">" + replayRisk(visibleForecast, state.replay.scale) + "</strong></div><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Actual</span><strong class=\"st-replay-metric-value\">" + replayRisk(reveal.actual, state.replay.scale) + "</strong></div><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Abs Error</span><strong class=\"st-replay-metric-value\">" + replayRisk(reveal.error, state.replay.scale) + "</strong></div></div>"
+    + "<div class=\"st-replay-target\"><span>ช่วงวันที่วัดผลจริง</span><strong>" + esc(row.targetStartDate) + " – " + esc(row.targetEndDate) + "</strong></div>"
+    + "<div class=\"st-replay-metrics\"><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">ค่าพยากรณ์</span><strong class=\"st-replay-metric-value\">" + replayRisk(visibleForecast, state.replay.scale) + "</strong></div><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">ผลจริง</span><strong class=\"st-replay-metric-value\">" + replayRisk(reveal.actual, state.replay.scale) + "</strong></div><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">ความคลาดเคลื่อน</span><strong class=\"st-replay-metric-value\">" + replayRisk(reveal.error, state.replay.scale) + "</strong></div></div>"
     + "<div class=\"st-source-meta\"><span>Forecast ที่บันทึก: <strong>" + esc(modelId(state.replay.model)) + " " + esc(state.replay.model.replaceAll("_", " ")) + "</strong></span><span>สถานะ source: " + esc(row.forecastStatus) + " / " + esc(row.labelStatus) + " / " + esc(row.evaluationStatus) + "</span><span>Prediction ID <code>" + esc(row.predictionId) + "</code></span></div><p class=\"st-source-note\">" + (row.evaluationStatus === "PENDING_LABEL" ? "แถวนี้ยัง Pending จากต้นทาง จึงไม่มี Actual หรือ error ให้เปิดเผย" : "Actual แสดงจาก evaluation row ที่ตรงกับ prediction ID เมื่อ target ครบและกดเปิดเผย") + "</p></section></aside></div>"
-    + "<div class=\"st-replay-lower-grid\">" + policyCard + featureDriftCard + "<section class=\"st-card\"><div class=\"st-section-heading\"><h2>Shadow B3 · Online Update</h2><span>อัปเดตเมื่อ label ครบกำหนด</span></div><p>โมเดลท้าชิง B3 รับ label ที่ครบ 5 วันหลังบันทึก forecast · เปรียบเทียบกับ Champion ใน Champion–Challenger Policy</p></section></div>"
+    + "<details class=\"st-replay-advanced\"><summary>รายละเอียดการติดตามโมเดลและข้อมูลเชิงเทคนิค</summary><div class=\"st-replay-lower-grid\">" + policyCard + featureDriftCard + "<section class=\"st-card\"><div class=\"st-section-heading\"><h2>Shadow B3 · Online Update</h2><span>อัปเดตเมื่อ label ครบกำหนด</span></div><p>โมเดลท้าชิง B3 รับ label ที่ครบ 5 วันหลังบันทึก forecast · เปรียบเทียบกับ Champion ใน Champion–Challenger Policy</p></section></div></details>"
     + "<details class=\"st-source-details\"><summary>เปรียบเทียบทุกโมเดลในวันเดียวกัน</summary><div class=\"st-table-wrap\"><table class=\"st-table\"><thead><tr><th>โมเดล</th><th>Forecast</th><th>Actual</th><th>Abs Error</th><th>สถานะ</th></tr></thead><tbody>" + comparisons + "</tbody></table></div></details>"
     + "<p class=\"st-source-note\">Replay เป็นการจำลองย้อนหลังจากข้อมูลที่บันทึกไว้ · Actual จะแสดงเมื่อถึง target end และกดเปิดเผย · แถว Pending จะคงซ่อน Actual เสมอ</p>";
 }
@@ -353,6 +365,8 @@ function content(state: State): string {
   return otherPage(state.snapshot, state.page, state);
 }
 function render(root: HTMLElement, state: State): void {
+  const scrollY = window.scrollY;
+  const monthScroll = root.querySelector<HTMLElement>(".st-replay-monthly-strip")?.scrollLeft ?? 0;
   const active = document.activeElement instanceof HTMLElement && root.contains(document.activeElement)
     ? {
       field: document.activeElement.dataset.field,
@@ -380,6 +394,9 @@ function render(root: HTMLElement, state: State): void {
     : "<button class=\"st-presentation-link\" type=\"button\" disabled title=\"ยังไม่ได้ตั้งค่าลิงก์ Canva Presentation\">โหมดนำเสนอ ↗</button>";
   root.innerHTML = "<div class=\"st-app\"><header class=\"st-header\"><div class=\"st-header-top\"><a class=\"st-brand\" href=\"#/overview\" aria-label=\"Future Portfolio Volatility: ภาพรวม\"><span class=\"st-brand-mark\" aria-hidden=\"true\"><svg viewBox=\"0 0 40 40\" fill=\"none\"><path d=\"M8 28V12M8 28h25\" stroke=\"white\" stroke-opacity=\".45\" stroke-width=\"1.5\" stroke-linecap=\"round\"/><path d=\"M11 24l6-7 5 4 9-11\" stroke=\"white\" stroke-width=\"2.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><circle cx=\"31\" cy=\"10\" r=\"2.5\" fill=\"#8DE5D4\"/></svg></span><span><strong>Future Portfolio Volatility</strong><small>Portfolio risk research</small></span></a><span class=\"st-status\">" + status + "</span></div><div class=\"st-header-bottom\"><nav class=\"st-nav\" aria-label=\"หน้าหลัก\">" + nav + "</nav><div class=\"st-header-actions\"><a class=\"st-utility-link\" href=\"#/forecasts\">สำรวจ Forecast</a><a class=\"st-utility-link st-evidence-link\" href=\"#/evidence\">▧ หลักฐานและข้อมูล</a>" + presentationLink + "</div></div></header>"
     + "<main class=\"st-main\">" + (showHeading ? "<div class=\"st-page-title\"><div><h1>" + title + "</h1><p>" + subtitle + "</p></div></div>" : "") + content(state) + "</main><footer class=\"st-footer\"><span>Simulated Historical Replay · ไม่ใช่คำแนะนำการลงทุน</span><a href=\"#/evidence\">ดูที่มาและข้อจำกัดของข้อมูล →</a></footer></div>";
+  const monthStrip = root.querySelector<HTMLElement>(".st-replay-monthly-strip");
+  if (monthStrip) monthStrip.scrollLeft = monthScroll;
+  window.scrollTo({ top: scrollY, behavior: "instant" });
   if (active) {
     const candidates = Array.from(root.querySelectorAll<HTMLElement>("[data-field], [data-action]"));
     candidates.find((element) => element.dataset.field === active.field && element.dataset.action === active.action
