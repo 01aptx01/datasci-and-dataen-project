@@ -6,10 +6,17 @@ from __future__ import annotations
 import shutil
 import json
 import hashlib
+import sys
 from pathlib import Path
 
 WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
+REPO_ROOT = WEB_ROOT.parent.resolve()
 DIST = (WEB_ROOT / "dist").resolve()
+
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.ml_diagnostics.export import publish_active_sidecar
 
 if DIST.parent != WEB_ROOT.resolve():
     raise SystemExit("Refusing to write outside web/dist")
@@ -52,4 +59,7 @@ if snapshot_manifest.is_file():
             raise SystemExit(f"Refusing to publish a changed snapshot file: {source.name}")
         shutil.copy2(source, output_dir / source.name)
     shutil.copy2(snapshot_manifest, output_dir / snapshot_manifest.name)
+diagnostic_id = publish_active_sidecar(REPO_ROOT, DIST)
+if diagnostic_id:
+    print(f"VERIFIED FEATURE DRIFT SIDECAR: {diagnostic_id}")
 print(f"STATIC BUILD READY: {DIST}")

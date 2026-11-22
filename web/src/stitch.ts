@@ -1,7 +1,9 @@
 import { filterForecastRows, loadSnapshot, selectRecordedSessions, type SnapshotState } from "./data/loadSnapshot.js";
+import { loadFeatureDrift, type DriftMetricName, type DriftTicker, type DriftWindowSize, type FeatureDriftState } from "./data/featureDrift.js";
 import { computePortfolioVolatility, portfolioRiskSourceDates, validateScenarioWeights, type PortfolioWeights } from "./data/portfolio.js";
 import { resolveAsOfLabelView, selectSameDateForecasts } from "./data/replay.js";
 import { modelId, type ForecastAuditRow, type ModelName, type Ticker } from "./data/schemas.js";
+import { renderReplayFeatureDriftCard, type FeatureDriftViewSelection } from "./featureDriftView.js";
 import { renderOtherPage } from "./stitchOther.js";
 import { CANVA_PRESENTATION_URL } from "./config.js";
 
@@ -10,6 +12,7 @@ type ReadySnapshot = Extract<SnapshotState, { status: "ready" }>;
 type ForecastStatusFilter = "all" | "mature" | "pending" | "invalid";
 const pages: Page[] = ["overview", "forecasts", "replay", "portfolio", "models", "monitoring", "evidence"];
 const tickers: Ticker[] = ["SPY", "IEF", "GLD"];
+const driftFeatures = ["ret_1d_t", "ret_lag_1d", "ret_lag_2d", "ret_trailing_5d", "ret_trailing_20d", "rv_5d", "rv_20d", "rv_60d"];
 const models: ModelName[] = ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"];
 const tickerLabel: Record<Ticker, string> = { SPY: "SPY · หุ้นสหรัฐ", IEF: "IEF · Treasury", GLD: "GLD · ทองคำ" };
 const modelLabel: Record<ModelName, string> = { CONSTANT_BASELINE: "B0 · Constant baseline", ROLLING_20D_BASELINE: "B1 · Rolling 20D", STATIC_SGD: "B2 · Static SGD", ONLINE_SGD: "B3 · Online SGD" };
@@ -20,10 +23,12 @@ const pageLabel: Record<Page, string> = {
 
 interface State {
   snapshot: SnapshotState;
+  featureDrift: FeatureDriftState;
   page: Page;
   forecast: { split: "test" | "validation"; ticker: Ticker; model: ModelName; status: ForecastStatusFilter; from: string; to: string; asOf: string; reveal: boolean };
   replay: { ticker: Ticker; model: ModelName; date: string; asOf: string; reveal: boolean; view: "monthly" | "daily"; month: string; scale: "five-day" | "annualized" };
   portfolio: { model: ModelName; date: string; weights: PortfolioWeights };
+  monitoring: { ticker: DriftTicker; date: string; feature: string; windowSize: DriftWindowSize; metric: DriftMetricName; tab: "feature" | "error" };
 }
 
 function esc(value: unknown): string {
@@ -31,6 +36,9 @@ function esc(value: unknown): string {
 }
 function isTicker(value: string): value is Ticker { return tickers.includes(value as Ticker); }
 function isModel(value: string): value is ModelName { return models.includes(value as ModelName); }
+function isDriftFeature(value: string): boolean { return driftFeatures.includes(value); }
+function isDriftWindow(value: string): value is "60" | "120" { return value === "60" || value === "120"; }
+function isDriftMetric(value: string): value is DriftMetricName { return value === "wasserstein_normalized" || value === "psi"; }
 function currentPage(): Page {
   const id = window.location.hash.slice(1).split("?")[0]?.replace(/^\/+/, "");
   return pages.find((page) => page === id) ?? "portfolio";
@@ -41,16 +49,28 @@ function applyRouteSelection(state: State): void {
   const date = query.get("date");
   const ticker = query.get("ticker");
   const model = query.get("model");
+  const feature = query.get("feature");
+  const windowValue = query.get("window");
+  const metric = query.get("metric");
+  const tab = query.get("tab");
   if (date) {
     state.portfolio.date = date;
     state.replay.date = date;
     state.replay.month = monthKey(date);
+    state.monitoring.date = date;
   }
-  if (ticker && isTicker(ticker)) state.replay.ticker = ticker;
+  if (ticker && isTicker(ticker)) {
+    state.replay.ticker = ticker;
+    state.monitoring.ticker = ticker;
+  }
   if (model && isModel(model)) {
     state.portfolio.model = model;
     state.replay.model = model;
   }
+  if (feature && isDriftFeature(feature)) state.monitoring.feature = feature;
+  if (windowValue && isDriftWindow(windowValue)) state.monitoring.windowSize = Number(windowValue) as DriftWindowSize;
+  if (metric && isDriftMetric(metric)) state.monitoring.metric = metric;
+  if (tab === "feature" || tab === "error") state.monitoring.tab = tab;
 }
 function selectOptions(values: string[], labels: Record<string, string>, selected: string): string {
   return values.map((value) => "<option value=\"" + esc(value) + "\"" + (value === selected ? " selected" : "") + ">" + esc(labels[value] ?? value) + "</option>").join("");
@@ -207,6 +227,7 @@ function replayPage(snapshot: ReadySnapshot, state: State): string {
   const datesInMonth = monthSessions.map((item) => item.predictionDate);
   const drift = snapshot.driftTimeline.filter((item) => item.ticker === state.replay.ticker && item.predictionDate >= (datesInMonth[0] ?? row.predictionDate) && item.predictionDate <= (datesInMonth[datesInMonth.length - 1] ?? row.predictionDate));
   const driftAlerts = drift.filter((item) => item.driftDetected || item.alertRecordPresent).length;
+  const featureDriftCard = renderReplayFeatureDriftCard(state.featureDrift, row.predictionDate, state.replay.ticker, state.replay.model);
   const tickerButtons = tickers.map((ticker) => "<button class=\"st-replay-ticker" + (ticker === state.replay.ticker ? " st-active" : "") + "\" type=\"button\" data-action=\"replay-ticker\" data-ticker=\"" + ticker + "\" aria-pressed=\"" + (ticker === state.replay.ticker) + "\">" + ticker + "</button>").join("");
   return "<section class=\"st-replay-toolbar\"><div class=\"st-replay-view-toggle\" role=\"group\" aria-label=\"รูปแบบมุมมอง\">"
     + "<button class=\"st-button" + (state.replay.view === "monthly" ? " st-active" : "") + "\" type=\"button\" data-action=\"replay-view\" data-view=\"monthly\" aria-pressed=\"" + (state.replay.view === "monthly") + "\">มุมมองรายเดือน</button>"
@@ -225,7 +246,7 @@ function replayPage(snapshot: ReadySnapshot, state: State): string {
     + "<div class=\"st-replay-target\"><span>ช่วงเป้าหมาย t+1…t+5</span><strong>" + esc(row.targetStartDate) + " – " + esc(row.targetEndDate) + "</strong></div>"
     + "<div class=\"st-replay-metrics\"><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Forecast</span><strong class=\"st-replay-metric-value\">" + replayRisk(visibleForecast, state.replay.scale) + "</strong></div><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Actual</span><strong class=\"st-replay-metric-value\">" + replayRisk(reveal.actual, state.replay.scale) + "</strong></div><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Abs Error</span><strong class=\"st-replay-metric-value\">" + replayRisk(reveal.error, state.replay.scale) + "</strong></div></div>"
     + "<div class=\"st-source-meta\"><span>Forecast ที่บันทึก: <strong>" + esc(modelId(state.replay.model)) + " " + esc(state.replay.model.replaceAll("_", " ")) + "</strong></span><span>สถานะ source: " + esc(row.forecastStatus) + " / " + esc(row.labelStatus) + " / " + esc(row.evaluationStatus) + "</span><span>Prediction ID <code>" + esc(row.predictionId) + "</code></span></div><p class=\"st-source-note\">" + (row.evaluationStatus === "PENDING_LABEL" ? "แถวนี้ยัง Pending จากต้นทาง จึงไม่มี Actual หรือ error ให้เปิดเผย" : "Actual แสดงจาก evaluation row ที่ตรงกับ prediction ID เมื่อ target ครบและกดเปิดเผย") + "</p></section></aside></div>"
-    + "<div class=\"st-replay-lower-grid\"><section class=\"st-card\"><div class=\"st-section-heading\"><h2>Feature Drift</h2><span>ไม่มีข้อมูลใน snapshot</span></div><p>ชุดข้อมูลนี้ไม่มีผลตรวจ Feature Drift</p></section><section class=\"st-card\"><div class=\"st-section-heading\"><h2>Error Drift · ADWIN</h2><span>" + driftAlerts + " เหตุการณ์</span></div><p>พบ " + driftAlerts + " alerts ในช่วง " + esc(monthLabel(activeMonth)) + " · " + drift.length.toLocaleString() + " observations จาก snapshot</p></section><section class=\"st-card\"><div class=\"st-section-heading\"><h2>Online Update · " + modelId(state.replay.model) + "</h2><span>ไม่มีข้อมูลใน snapshot</span></div><p>ไม่มีบันทึก Online Update รายวันในชุดข้อมูลนี้</p></section></div>"
+    + "<div class=\"st-replay-lower-grid\">" + featureDriftCard + "<section class=\"st-card\"><div class=\"st-section-heading\"><h2>Error Drift · ADWIN</h2><span>" + driftAlerts + " เหตุการณ์</span></div><p>พบ " + driftAlerts + " alerts ในช่วง " + esc(monthLabel(activeMonth)) + " · " + drift.length.toLocaleString() + " observations จาก snapshot</p></section><section class=\"st-card\"><div class=\"st-section-heading\"><h2>Online Update · " + modelId(state.replay.model) + "</h2><span>ไม่มีข้อมูลใน snapshot</span></div><p>ไม่มีบันทึก Online Update รายวันในชุดข้อมูลนี้</p></section></div>"
     + "<details class=\"st-source-details\"><summary>เปรียบเทียบทั้งสี่โมเดลในวันเดียวกัน</summary><div class=\"st-table-wrap\"><table class=\"st-table\"><thead><tr><th>โมเดล</th><th>Forecast</th><th>Actual</th><th>Abs Error</th><th>สถานะ</th></tr></thead><tbody>" + comparisons + "</tbody></table></div></details>"
     + "<p class=\"st-source-note\">Replay เป็นการจำลองย้อนหลังจากข้อมูลที่บันทึกไว้ · Actual จะแสดงเมื่อถึง target end และกดเปิดเผย · แถว Pending จะคงซ่อน Actual เสมอ</p>";
 }
@@ -260,11 +281,41 @@ function portfolioPage(snapshot: ReadySnapshot, state: State): string {
     + "<details class=\"st-card st-portfolio-source\"><summary>ดู covariance matrix และข้อมูลต้นทาง</summary><p>Status " + esc(row?.status ?? "ไม่มีแถว") + " · Correlation 20D " + (row?.correlationReady ? "พร้อม" : "ยังไม่พร้อม") + " · Replay run <code>" + esc(row?.replayRunId.slice(0, 12) ?? "—") + "</code></p>"
     + matrix + "<p class=\"st-source-note\">สูตรความเสี่ยง: √(wᵀΣw) · เมทริกซ์ covariance จาก portfolio_risk.csv · ปรับเฉพาะน้ำหนัก ไม่สร้าง forecast ใหม่</p></details>";
 }
-function otherPage(snapshot: ReadySnapshot, page: Page): string {
+function monitoringSelection(state: State): FeatureDriftViewSelection {
+  let date = state.monitoring.date || state.replay.date;
+  if (!date && state.featureDrift.status === "ready") {
+    const dates = state.featureDrift.metrics.filter((row) => row.ticker === state.monitoring.ticker).map((row) => row.asOfDate).sort();
+    date = dates[dates.length - 1] ?? "";
+  }
+  return {
+    ticker: state.monitoring.ticker,
+    date,
+    feature: state.monitoring.feature,
+    windowSize: state.monitoring.windowSize,
+    metric: state.monitoring.metric,
+    tab: state.monitoring.tab,
+    model: state.replay.model,
+  };
+}
+function updateMonitoringUrl(state: State): void {
+  if (state.page !== "monitoring") return;
+  const selection = monitoringSelection(state);
+  const query = new URLSearchParams({
+    date: selection.date,
+    ticker: selection.ticker,
+    model: state.replay.model,
+    feature: selection.feature,
+    window: String(selection.windowSize),
+    metric: selection.metric,
+    tab: selection.tab,
+  });
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#/monitoring?${query}`);
+}
+function otherPage(snapshot: ReadySnapshot, page: Page, state: State): string {
   switch (page) {
     case "overview": return renderOtherPage(snapshot, "overview");
     case "models": return renderOtherPage(snapshot, "models");
-    case "monitoring": return renderOtherPage(snapshot, "monitoring");
+    case "monitoring": return renderOtherPage(snapshot, "monitoring", state.featureDrift, monitoringSelection(state));
     case "evidence": return renderOtherPage(snapshot, "evidence");
     default: return "";
   }
@@ -274,7 +325,7 @@ function content(state: State): string {
   if (state.page === "forecasts") return forecastPage(state.snapshot, state);
   if (state.page === "replay") return replayPage(state.snapshot, state);
   if (state.page === "portfolio") return portfolioPage(state.snapshot, state);
-  return otherPage(state.snapshot, state.page);
+  return otherPage(state.snapshot, state.page, state);
 }
 function render(root: HTMLElement, state: State): void {
   const active = document.activeElement instanceof HTMLElement && root.contains(document.activeElement)
@@ -288,6 +339,7 @@ function render(root: HTMLElement, state: State): void {
       month: document.activeElement.dataset.month,
       ticker: document.activeElement.dataset.ticker,
       scale: document.activeElement.dataset.scale,
+      tab: document.activeElement.dataset.tab,
       tagName: document.activeElement.tagName,
       inputType: document.activeElement instanceof HTMLInputElement ? document.activeElement.type : "",
     }
@@ -309,7 +361,7 @@ function render(root: HTMLElement, state: State): void {
       && element.dataset.scenario === active.scenario && element.dataset.index === active.index
       && element.dataset.direction === active.direction && element.dataset.view === active.view
       && element.dataset.month === active.month && element.dataset.ticker === active.ticker
-      && element.dataset.scale === active.scale && element.tagName === active.tagName
+      && element.dataset.scale === active.scale && element.dataset.tab === active.tab && element.tagName === active.tagName
       && (element instanceof HTMLInputElement ? element.type : "") === active.inputType)?.focus({ preventScroll: true });
   }
 }
@@ -320,24 +372,55 @@ function pageWeight(state: State, index: number, value: number): void {
 }
 export function startStitch(root: HTMLElement): void {
   const state: State = {
-    snapshot: { status: "loading" }, page: currentPage(),
+    snapshot: { status: "loading" }, featureDrift: { status: "loading" }, page: currentPage(),
     forecast: { split: "test", ticker: "SPY", model: "ONLINE_SGD", status: "all", from: "", to: "", asOf: "", reveal: false },
     replay: { ticker: "SPY", model: "ONLINE_SGD", date: "", asOf: "", reveal: false, view: "daily", month: "", scale: "five-day" },
     portfolio: { model: "ONLINE_SGD", date: "", weights: [0.5, 0.3, 0.2] },
+    monitoring: { ticker: "SPY", date: "", feature: "ret_1d_t", windowSize: 60, metric: "wasserstein_normalized", tab: "feature" },
   };
   applyRouteSelection(state);
-  const updatePage = () => { state.page = currentPage(); applyRouteSelection(state); render(root, state); };
+  const updatePage = () => {
+    const previousPage = state.page;
+    state.page = currentPage();
+    applyRouteSelection(state);
+    render(root, state);
+    if (state.page !== previousPage) window.scrollTo(0, 0);
+  };
   window.addEventListener("hashchange", updatePage);
+  const refreshSources = () => {
+    state.snapshot = { status: "loading" };
+    state.featureDrift = { status: "loading" };
+    render(root, state);
+    void loadSnapshot().then((snapshot) => {
+      state.snapshot = snapshot;
+      if (snapshot.status !== "ready") {
+        state.featureDrift = { status: "missing", message: "โหลดข้อมูล Feature Drift ไม่ได้เมื่อ Stage 06 snapshot ยังไม่พร้อม" };
+        render(root, state);
+        return;
+      }
+      render(root, state);
+      void loadFeatureDrift({
+        evaluationId: snapshot.manifest.evaluationId,
+        replayId: snapshot.manifest.replayId,
+        strictCutoff: snapshot.manifest.strictCutoff,
+      }).then((featureDrift) => { state.featureDrift = featureDrift; render(root, state); });
+    });
+  };
   root.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-action]") : null;
     if (target?.dataset.action === "retry") {
-      state.snapshot = { status: "loading" }; render(root, state);
-      void loadSnapshot().then((snapshot) => { state.snapshot = snapshot; render(root, state); });
+      refreshSources();
       return;
     }
     if (!target || state.snapshot.status !== "ready") return;
     const action = target.dataset.action;
-    if (action === "replay-toggle-reveal") {
+    if (action === "monitoring-tab" && (target.dataset.tab === "feature" || target.dataset.tab === "error")) {
+      state.monitoring.tab = target.dataset.tab;
+    } else if (action === "monitoring-date-point" && target.dataset.date) {
+      state.monitoring.date = target.dataset.date;
+      state.replay.date = target.dataset.date;
+      state.replay.month = monthKey(target.dataset.date);
+    } else if (action === "replay-toggle-reveal") {
       state.replay.reveal = !state.replay.reveal;
     } else if (action === "portfolio-reset") {
       state.portfolio.weights = [0.5, 0.3, 0.2];
@@ -376,6 +459,7 @@ export function startStitch(root: HTMLElement): void {
     } else {
       return;
     }
+    if (action === "monitoring-tab" || action === "monitoring-date-point") updateMonitoringUrl(state);
     render(root, state);
   });
   root.addEventListener("change", (event) => {
@@ -400,6 +484,26 @@ export function startStitch(root: HTMLElement): void {
         state.replay.date = target.value;
         state.replay.month = monthKey(target.value);
       }
+      else if (field === "monitoring-ticker" && isTicker(target.value)) {
+        state.monitoring.ticker = target.value;
+        state.replay.ticker = target.value;
+        if (state.featureDrift.status === "ready") {
+          const dates = state.featureDrift.metrics.filter((row) => row.ticker === target.value).map((row) => row.asOfDate).sort();
+          if (!dates.includes(state.monitoring.date)) state.monitoring.date = dates[dates.length - 1] ?? "";
+          if (state.monitoring.date) {
+            state.replay.date = state.monitoring.date;
+            state.replay.month = monthKey(state.monitoring.date);
+          }
+        }
+      }
+      else if (field === "monitoring-date") {
+        state.monitoring.date = target.value;
+        state.replay.date = target.value;
+        if (target.value) state.replay.month = monthKey(target.value);
+      }
+      else if (field === "monitoring-feature" && isDriftFeature(target.value)) state.monitoring.feature = target.value;
+      else if (field === "monitoring-window" && isDriftWindow(target.value)) state.monitoring.windowSize = Number(target.value) as DriftWindowSize;
+      else if (field === "monitoring-metric" && isDriftMetric(target.value)) state.monitoring.metric = target.value;
       else if (field === "portfolio-model" && isModel(target.value)) {
         state.portfolio.model = target.value;
         state.portfolio.date = "";
@@ -426,9 +530,29 @@ export function startStitch(root: HTMLElement): void {
         if (Number.isInteger(index) && index >= 0 && index < 3) pageWeight(state, index, target.valueAsNumber / 100);
       }
     }
+    updateMonitoringUrl(state);
     render(root, state);
+  });
+  root.addEventListener("keydown", (event) => {
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-action]") : null;
+    if (target?.dataset.action === "monitoring-date-point" && target.dataset.date && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      state.monitoring.date = target.dataset.date;
+      state.replay.date = target.dataset.date;
+      state.replay.month = monthKey(target.dataset.date);
+      updateMonitoringUrl(state);
+      render(root, state);
+      return;
+    }
+    if (target?.dataset.action !== "monitoring-tab" || state.snapshot.status !== "ready") return;
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    state.monitoring.tab = event.key === "Home" ? "feature" : event.key === "End" ? "error" : target.dataset.tab === "feature" ? "error" : "feature";
+    updateMonitoringUrl(state);
+    render(root, state);
+    root.querySelector<HTMLElement>(`[data-action="monitoring-tab"][data-tab="${state.monitoring.tab}"]`)?.focus();
   });
   if (!window.location.hash) window.location.hash = "/portfolio";
   render(root, state);
-  void loadSnapshot().then((snapshot) => { state.snapshot = snapshot; render(root, state); });
+  refreshSources();
 }
