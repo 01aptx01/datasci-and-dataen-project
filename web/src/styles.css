@@ -673,6 +673,7 @@ a { color: inherit; text-decoration: none; }
 .decision-lab-stack { display: grid; gap: 13px; }
 .decision-selection-card { padding-bottom: 13px; }
 .decision-selection-card .section-card-heading { margin-bottom: 10px; }
+.portfolio-date-dock { position: sticky; top: 12px; z-index: 30; align-self: start; padding: 9px; border: 1px solid #d9e3ed; border-radius: 10px; background: rgba(255,255,255,.97); box-shadow: 0 8px 24px rgba(31,54,82,.12); backdrop-filter: blur(10px); }
 .portfolio-date-controls { display: grid; grid-template-columns: auto minmax(180px,1fr) auto minmax(180px,.9fr); align-items: end; gap: 8px; }
 .portfolio-date-controls .field-label { min-width: 0; color: #6e8096; font-size: var(--font-compact); letter-spacing: 0; }
 .portfolio-date-controls select { width: 100%; min-width: 0; min-height: 44px; padding: 0 10px; color: #354c69; border: 1px solid #dce3eb; border-radius: 7px; background: #fff; font-size: var(--font-control); font-weight: 650; }
@@ -784,6 +785,7 @@ a { color: inherit; text-decoration: none; }
   .range-filter-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
 }
 @media (max-width: 900px) {
+  .portfolio-date-dock { top: 66px; }
   .metric-summary-grid { gap: 8px; }
   .metric-summary-card { padding: 12px; }
   .analysis-card { padding: 15px; }
@@ -791,6 +793,7 @@ a { color: inherit; text-decoration: none; }
   .decision-kpi-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
 }
 @media (max-width: 680px) {
+  .portfolio-date-dock { padding: 7px; }
   .page-tools { align-items: end; margin-left: auto; }
   .page-tools .snapshot-id-button { display: none; }
   .unit-control { min-width: 78px; font-size: var(--font-micro); }
@@ -844,11 +847,11 @@ a { color: inherit; text-decoration: none; }
   .decision-kpi-grid article { min-height: 92px; padding: 9px; }
   .decision-context-line { align-items: flex-start; }
   .decision-context-line .button { margin-left: 0; }
-  .portfolio-date-controls { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
-  .portfolio-date-field { grid-column: 1 / -1; grid-row: 1; }
-  .portfolio-date-step[data-direction="previous"] { grid-column: 1; grid-row: 2; }
-  .portfolio-date-step[data-direction="next"] { grid-column: 2; grid-row: 2; }
-  .portfolio-model-field { grid-column: 1 / -1; grid-row: 3; }
+  .portfolio-date-controls { grid-template-columns: auto minmax(0,1fr) auto; gap: 6px; }
+  .portfolio-date-field { grid-column: 2; grid-row: 1; }
+  .portfolio-date-step[data-direction="previous"] { grid-column: 1; grid-row: 1; }
+  .portfolio-date-step[data-direction="next"] { grid-column: 3; grid-row: 1; }
+  .portfolio-model-field { grid-column: 1 / -1; grid-row: 2; }
   .portfolio-date-status { grid-template-columns: minmax(0,1fr) auto; }
   .portfolio-date-status span:last-child { grid-column: 1 / -1; }
   .portfolio-playback-row { align-items: stretch; }
