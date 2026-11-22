@@ -57,12 +57,12 @@ paths:
   features_parquet: data/curated/asset_volatility_features.parquet
   labels_parquet: data/curated/asset_volatility_labels.parquet
   correlations_parquet: data/curated/asset_rolling_correlations.parquet
-  feature_manifest: data/audit/features/run_id=feat_readiness_20261115_01/manifest.json
-  target_manifest: data/audit/targets/run_id=target_integration_20261118_04/manifest.json
-  feature_transaction: data/audit/features/run_id=feat_readiness_20261115_01/publish-transaction.json
-  target_transaction: data/audit/targets/run_id=target_integration_20261118_04/publish-transaction.json
-  replay_experiment_dir: data/processed/ml_replay/experiments/3cbf81eb9242d8894d2f67f39065a17ff1ef55a2e098773aead915949ab11b12
-  training_artifact_dir: data/processed/ml_training/run_id=stage04_20261121_03
-  h1_artifact_dir: data/audit/ml_dataset/run_id=stage03_h1_20261120_01
+  feature_manifest: data/audit/features/run_id=feat_20261122T143142_ad87117a/manifest.json
+  target_manifest: data/audit/targets/run_id=target_20261122T143149_c9b24e99/manifest.json
+  feature_transaction: data/audit/features/run_id=feat_20261122T143142_ad87117a/publish-transaction.json
+  target_transaction: data/audit/targets/run_id=target_20261122T143149_c9b24e99/publish-transaction.json
+  replay_experiment_dir: data/processed/ml_replay/experiments/23616e7bab42de22ca0bb3153dfec8b695ea1d51ff9ad816bd02e14f849acfe6
+  training_artifact_dir: data/processed/ml_training/run_id=stage04_b4_20261122_s6
+  h1_artifact_dir: data/audit/ml_dataset/run_id=stage03_h1_b4_20261122_s6
   hypothesis_tests_config: config/hypothesis_tests.yaml
   output_root: data/processed/ml_evaluation/experiments
