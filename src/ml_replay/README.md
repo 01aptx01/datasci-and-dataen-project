@@ -33,7 +33,7 @@ Each XNYS session runs:
 1. Predict with pre-update state and stage immutable B0–B4 forecasts.
 2. Evaluate only forecasts whose valid five-session label has
    `target_end_date <= replay_date`.
-3. Feed each mature B3 absolute error to that ETF's ADWIN monitor once.
+3. In policy mode only, feed each mature served Champion error to its ETF's ADWIN and evaluate any resulting decision.
 4. Call B3 `partial_fit` once per ETF for the deterministic batch of newly
    mature eligible labels. B2 and B4 stay frozen, and all fitted RobustScalers
    stay frozen.
@@ -43,9 +43,7 @@ Each XNYS session runs:
 The commit marker is trusted only when its manifest and every listed file pass
 SHA-256 validation. Resume restores the latest compatible committed state;
 uncommitted staging directories are ignored. A checkpoint includes the full
-pending forecast set, updated-label and processed-error ledgers, River ADWIN
-state, B3 state, frozen scalers, and hashes of the unchanged Stage 04 B2 and
-B4 states.
+pending forecast set, updated-label ledger, B3 state, frozen scalers, and hashes of the unchanged Stage 04 B2 and B4 states. Policy checkpoints additionally contain the three Champion ADWIN detectors and their error ledgers.
 
 ## Files
 
@@ -60,11 +58,10 @@ Each experiment is stored under
 - `outputs/asset_volatility_predictions.csv` retains the exact existing
   16-column prediction schema.
 - `outputs/evaluation.csv` contains only successfully matched mature-label
-  evaluations. Drift errors/alerts, B3 update rows, failures, and coverage are
-  separate supporting files; they do not create logical tables.
+  evaluations. B3 updates, failures, and coverage are separate supporting files.
+  In policy mode, `policy_detector_stream.csv` and `policy_decision_events.csv` record Champion ADWIN observations and decisions.
 
 Forecasts with negative, NaN, or infinite values are rejected and recorded in
-the failure and coverage outputs. ADWIN is monitor-only: an alert never resets,
-re-trains, or retunes a model. The historical replay simulates label
+the failure and coverage outputs. Policy ADWIN can initiate a paired comparison and an eligible Champion promotion; it does not retrain B3. The historical replay simulates label
 availability from maturity and `target_end_date`; the later-downloaded source
 snapshot does not prove point-in-time source availability.

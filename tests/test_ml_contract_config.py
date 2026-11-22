@@ -77,18 +77,13 @@ def test_model_config_defines_locked_b0_through_b3_policies() -> None:
         "predict",
         "save_forecast",
         "evaluate",
-        "adwin_monitor",
         "update_b3",
         "checkpoint",
     ]
     assert config["online_replay"]["update_model"] == "B3"
     assert config["online_replay"]["update_policy"] == "mature_labels_only"
     assert config["online_replay"]["duplicate_updates_allowed"] is False
-    assert config["online_replay"]["adwin"] == {
-        "detector": "ADWIN",
-        "delta": 0.002,
-        "mode": "monitor_only",
-    }
+    assert "adwin" not in config["online_replay"]
 
 
 def test_hypothesis_config_freezes_h1_h2_h3_methods_before_test() -> None:
@@ -150,7 +145,7 @@ def test_contracts_and_data_dictionary_use_the_same_four_model_ids() -> None:
 
     replay_order = (
         "Predict → Save Forecast → Evaluate Mature Labels → "
-        "ADWIN (Monitor-only) → Update B3 → Checkpoint"
+        "Update B3 → Checkpoint"
     )
     assert replay_order in prediction_contract
     assert replay_order in (ROOT / "docs" / "contract" / "target_contract.md").read_text(
@@ -188,8 +183,12 @@ def test_champion_challenger_policy_config_and_contract_preserve_baseline(
     from src.ml_replay.config import ReplayConfig, ReplayError
 
     baseline_cfg = ReplayConfig.from_yaml(ROOT / "config" / "ml_replay.yaml")
-    assert baseline_cfg.replay_config_version == "1.0.0"
-    assert baseline_cfg.adwin_policy == "monitor_only"
+    assert baseline_cfg.replay_config_version == "1.1.0"
+    assert not hasattr(baseline_cfg, "adwin_policy")
+    assert "adwin" not in baseline_cfg.as_dict()
+    assert baseline_cfg.processing_order == (
+        "predict", "save_forecast", "evaluate", "update_b3", "checkpoint_commit"
+    )
     assert baseline_cfg.is_champion_challenger is False
     assert baseline_cfg.champion_challenger is None
     assert len(baseline_cfg.fingerprint()) == 64
@@ -198,8 +197,10 @@ def test_champion_challenger_policy_config_and_contract_preserve_baseline(
         ROOT / "config" / "ml_replay.yaml",
         policy_mode="champion_challenger",
     )
-    assert policy_cfg.replay_config_version == "2.0.0"
-    assert policy_cfg.adwin_policy == "monitor_only"
+    assert policy_cfg.replay_config_version == "2.1.0"
+    assert not hasattr(policy_cfg, "adwin_policy")
+    assert "adwin_monitor" not in policy_cfg.processing_order
+    assert policy_cfg.champion_challenger.as_dict()["adwin"]["detector"] == "ADWIN"
     assert policy_cfg.is_champion_challenger is True
     assert policy_cfg.champion_challenger is not None
     assert policy_cfg.champion_challenger.policy_version == "1.0.0"

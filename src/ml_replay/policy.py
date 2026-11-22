@@ -25,8 +25,8 @@ from src.ml_training.config import TRAINING_CONFIG_VERSION
 from src.ml_training.pipeline import model_state_sha256, scaler_state_sha256
 
 
-BASELINE_CHECKPOINT_VERSION = "1.0.0"
-POLICY_CHECKPOINT_VERSION = "2.1.0"
+BASELINE_CHECKPOINT_VERSION = "1.1.0"
+POLICY_CHECKPOINT_VERSION = "2.2.0"
 POLICY_MODEL_NAMES = {
     "B0": "CONSTANT_BASELINE",
     "B1": "ROLLING_20D_BASELINE",

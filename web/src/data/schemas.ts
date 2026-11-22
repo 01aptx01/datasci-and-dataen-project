@@ -1,4 +1,5 @@
 export interface SnapshotPolicy {
+  schemaVersion: "1.0.0" | "1.1.0" | "1.2.0";
   source: {
     repository: string;
     handoffCommit: string;
@@ -24,7 +25,7 @@ export interface SnapshotPolicy {
     coverage: string;
     portfolioRisk: string;
     rollingMae20: string;
-    driftErrorTimeline: string;
+    driftErrorTimeline?: string;
     h1ScatterData: string;
     h1Results: string;
     h1Sensitivity: string;
@@ -43,7 +44,7 @@ export interface SnapshotPolicy {
     coverage: string[];
     portfolioRisk: string[];
     rollingMae20: string[];
-    driftErrorTimeline: string[];
+    driftErrorTimeline?: string[];
     h1ScatterData: string[];
     h1Results: string[];
     h1Sensitivity: string[];
@@ -64,7 +65,7 @@ export interface SnapshotPolicy {
     coverageRows: number;
     portfolioRiskRows: number;
     rollingMae20Rows: number;
-    driftErrorTimelineRows: number;
+    driftErrorTimelineRows?: number;
     driftAlertRows?: number;
     h1ScatterDataRows: number;
     h1ResultsRows: number;
@@ -83,7 +84,7 @@ export interface SnapshotPolicy {
     coverage: string;
     portfolioRisk: string;
     rollingMae20: string;
-    driftErrorTimeline: string;
+    driftErrorTimeline?: string;
     h1ScatterData: string;
     h1Results: string;
     h1Sensitivity: string;
@@ -104,7 +105,7 @@ export interface SnapshotFileArtifact {
 }
 
 export interface SnapshotManifest {
-  schemaVersion: "1.0.0" | "1.1.0";
+  schemaVersion: SnapshotPolicy["schemaVersion"];
   sourceRepository: string;
   sourceHandoffCommit: string;
   sourceMainCommitAtStart: string;
@@ -401,13 +402,31 @@ export function parsePolicy(value: unknown): SnapshotPolicy {
   const identity = value.identity;
   const members = value.members;
   const counts = value.expectedCounts;
-  if (identity.reportApproval !== "PENDING") throw new Error("reportApproval must remain PENDING");
   const expectedHeaders = value.expectedHeaders;
+  if (value.schemaVersion !== "1.0.0" && value.schemaVersion !== "1.1.0" && value.schemaVersion !== "1.2.0") {
+    throw new Error("Snapshot policy schemaVersion must be 1.0.0, 1.1.0, or 1.2.0");
+  }
+  const schemaVersion = value.schemaVersion;
+  const isCurrentSchema = schemaVersion === "1.2.0";
+  const driftFields = [members.driftErrorTimeline, expectedHeaders.driftErrorTimeline, counts.driftErrorTimelineRows, value.publicOutputs.driftErrorTimeline];
+  const driftMemberHashes = Object.keys(value.memberSha256).filter((name) => name.toLowerCase().includes("drift_error_timeline.csv"));
+  const driftKeyExists = [members, expectedHeaders, counts, value.publicOutputs]
+    .some((section) => Object.keys(section).some((key) => key.toLowerCase().includes("drift")));
+  const driftPathExists = [members, value.publicOutputs]
+    .some((section) => Object.values(section).some((entry) => typeof entry === "string" && entry.toLowerCase().includes("drift_error_timeline.csv")));
+  if (isCurrentSchema && (driftFields.some((field) => field !== undefined) || counts.driftAlertRows !== undefined || driftMemberHashes.length > 0 || driftKeyExists || driftPathExists)) {
+    throw new Error("Snapshot policy schema 1.2.0 must not define the retired B3 drift error timeline");
+  }
+  if (!isCurrentSchema && (driftFields.some((field) => field === undefined) || driftMemberHashes.length !== 1 || driftMemberHashes[0] !== members.driftErrorTimeline)) {
+    throw new Error("Snapshot policy schema 1.0.0/1.1.0 requires the archived B3 drift error timeline fields");
+  }
+  if (identity.reportApproval !== "PENDING") throw new Error("reportApproval must remain PENDING");
   const hashEntries = Object.fromEntries(Object.entries(value.memberSha256).map(([name, hash]) => {
     if (typeof hash !== "string" || !/^[a-f0-9]{64}$/i.test(hash)) throw new Error(`Invalid source member hash for ${name}`);
     return [name, hash.toLowerCase()];
   }));
   return {
+    schemaVersion,
     source: {
       repository: stringField(source, "repository"),
       handoffCommit: stringField(source, "handoffCommit"),
@@ -433,7 +452,7 @@ export function parsePolicy(value: unknown): SnapshotPolicy {
       coverage: stringField(members, "coverage"),
       portfolioRisk: stringField(members, "portfolioRisk"),
       rollingMae20: stringField(members, "rollingMae20"),
-      driftErrorTimeline: stringField(members, "driftErrorTimeline"),
+      ...(members.driftErrorTimeline !== undefined ? { driftErrorTimeline: stringField(members, "driftErrorTimeline") } : {}),
       h1ScatterData: stringField(members, "h1ScatterData"),
       h1Results: stringField(members, "h1Results"),
       h1Sensitivity: stringField(members, "h1Sensitivity"),
@@ -452,7 +471,7 @@ export function parsePolicy(value: unknown): SnapshotPolicy {
       coverage: stringArray(expectedHeaders.coverage, "coverage headers"),
       portfolioRisk: stringArray(expectedHeaders.portfolioRisk, "portfolioRisk headers"),
       rollingMae20: stringArray(expectedHeaders.rollingMae20, "rollingMae20 headers"),
-      driftErrorTimeline: stringArray(expectedHeaders.driftErrorTimeline, "driftErrorTimeline headers"),
+      ...(expectedHeaders.driftErrorTimeline !== undefined ? { driftErrorTimeline: stringArray(expectedHeaders.driftErrorTimeline, "driftErrorTimeline headers") } : {}),
       h1ScatterData: stringArray(expectedHeaders.h1ScatterData, "h1ScatterData headers"),
       h1Results: stringArray(expectedHeaders.h1Results, "h1Results headers"),
       h1Sensitivity: stringArray(expectedHeaders.h1Sensitivity, "h1Sensitivity headers"),
@@ -473,7 +492,7 @@ export function parsePolicy(value: unknown): SnapshotPolicy {
       coverageRows: numberField(counts, "coverageRows"),
       portfolioRiskRows: numberField(counts, "portfolioRiskRows"),
       rollingMae20Rows: numberField(counts, "rollingMae20Rows"),
-      driftErrorTimelineRows: numberField(counts, "driftErrorTimelineRows"),
+      ...(counts.driftErrorTimelineRows !== undefined ? { driftErrorTimelineRows: numberField(counts, "driftErrorTimelineRows") } : {}),
       ...(counts.driftAlertRows !== undefined ? { driftAlertRows: numberField(counts, "driftAlertRows") } : {}),
       h1ScatterDataRows: numberField(counts, "h1ScatterDataRows"),
       h1ResultsRows: numberField(counts, "h1ResultsRows"),
@@ -492,7 +511,7 @@ export function parsePolicy(value: unknown): SnapshotPolicy {
       coverage: stringField(value.publicOutputs, "coverage"),
       portfolioRisk: stringField(value.publicOutputs, "portfolioRisk"),
       rollingMae20: stringField(value.publicOutputs, "rollingMae20"),
-      driftErrorTimeline: stringField(value.publicOutputs, "driftErrorTimeline"),
+      ...(value.publicOutputs.driftErrorTimeline !== undefined ? { driftErrorTimeline: stringField(value.publicOutputs, "driftErrorTimeline") } : {}),
       h1ScatterData: stringField(value.publicOutputs, "h1ScatterData"),
       h1Results: stringField(value.publicOutputs, "h1Results"),
       h1Sensitivity: stringField(value.publicOutputs, "h1Sensitivity"),
@@ -523,7 +542,7 @@ export function parseSnapshotManifest(value: unknown, policy: SnapshotPolicy): S
   const equal = (field: string, expected: string | boolean): void => {
     if (manifest[field] !== expected) throw new Error(`${field} does not match the pinned handoff policy`);
   };
-    if (typeof manifest.schemaVersion !== "string" || (manifest.schemaVersion !== "1.0.0" && manifest.schemaVersion !== "1.1.0")) {
+  if (manifest.schemaVersion !== policy.schemaVersion) {
     throw new Error("schemaVersion does not match the pinned handoff policy");
   }
   equal("sourceRepository", policy.source.repository);
@@ -545,6 +564,14 @@ export function parseSnapshotManifest(value: unknown, policy: SnapshotPolicy): S
   equal("strictCutoff", policy.identity.strictCutoff);
 
   const counts = manifest.expectedCounts as Record<string, unknown>;
+  const hasDriftTimeline = policy.schemaVersion !== "1.2.0";
+  const hasLegacyDriftFields = counts.driftErrorTimelineRows !== undefined || counts.driftAlertRows !== undefined;
+  if (hasDriftTimeline && counts.driftErrorTimelineRows === undefined) {
+    throw new Error("expectedCounts.driftErrorTimelineRows is required for archived snapshot schemas");
+  }
+  if (!hasDriftTimeline && hasLegacyDriftFields) {
+    throw new Error("schema 1.2.0 expectedCounts must not include retired B3 drift fields");
+  }
   const expectedCounts = {
     forecastAuditRows: numberField(counts, "forecastAuditRows"),
     evaluationRows: numberField(counts, "evaluationRows"),
@@ -556,7 +583,7 @@ export function parseSnapshotManifest(value: unknown, policy: SnapshotPolicy): S
     coverageRows: numberField(counts, "coverageRows"),
     portfolioRiskRows: numberField(counts, "portfolioRiskRows"),
     rollingMae20Rows: numberField(counts, "rollingMae20Rows"),
-    driftErrorTimelineRows: numberField(counts, "driftErrorTimelineRows"),
+    ...(hasDriftTimeline ? { driftErrorTimelineRows: numberField(counts, "driftErrorTimelineRows") } : {}),
     ...(counts.driftAlertRows !== undefined ? { driftAlertRows: numberField(counts, "driftAlertRows") } : {}),
     h1ScatterDataRows: numberField(counts, "h1ScatterDataRows"),
     h1ResultsRows: numberField(counts, "h1ResultsRows"),
@@ -568,11 +595,15 @@ export function parseSnapshotManifest(value: unknown, policy: SnapshotPolicy): S
     ...(counts.referenceB0B3MetricsRows !== undefined ? { referenceB0B3MetricsRows: numberField(counts, "referenceB0B3MetricsRows") } : {}),
     recordedTestDates: numberField(counts, "recordedTestDates"),
   };
-  for (const key of ["forecastAuditRows", "evaluationRows", "testForecastRows", "testEvaluableRows", "testPendingRows", "modelMetricsRows", "pairComparisonsRows", "coverageRows", "portfolioRiskRows", "rollingMae20Rows", "driftErrorTimelineRows", "h1ScatterDataRows", "h1ResultsRows", "h1SensitivityRows", "hypothesisResultsRows", "bootstrapDiagnosticsRows", "highVolatilityMetricsRows"] as const) {
+  const policyCountKeys = ["forecastAuditRows", "evaluationRows", "testForecastRows", "testEvaluableRows", "testPendingRows", "modelMetricsRows", "pairComparisonsRows", "coverageRows", "portfolioRiskRows", "rollingMae20Rows", "h1ScatterDataRows", "h1ResultsRows", "h1SensitivityRows", "hypothesisResultsRows", "bootstrapDiagnosticsRows", "highVolatilityMetricsRows"] as const;
+  for (const key of policyCountKeys) {
     if (expectedCounts[key] !== policy.expectedCounts[key]) throw new Error(`expectedCounts.${key} does not match the pinned handoff policy`);
   }
+  if (hasDriftTimeline && expectedCounts.driftErrorTimelineRows !== policy.expectedCounts.driftErrorTimelineRows) {
+    throw new Error("expectedCounts.driftErrorTimelineRows does not match the pinned handoff policy");
+  }
   const files = manifest.files as Record<string, unknown>;
-  const artifactCountKey: Record<keyof SnapshotPolicy["publicOutputs"], keyof typeof expectedCounts> = {
+  const artifactCountKey: Partial<Record<keyof SnapshotPolicy["publicOutputs"], keyof typeof expectedCounts>> = {
     forecastAudit: "forecastAuditRows",
     evaluation: "evaluationRows",
     modelMetrics: "modelMetricsRows",
@@ -601,13 +632,14 @@ export function parseSnapshotManifest(value: unknown, policy: SnapshotPolicy): S
     if (!expectedPath || !memberKey || !expectedHeaders) throw new Error(`Snapshot policy is missing definition for ${key}`);
     if (artifact.path !== expectedPath) throw new Error(`Snapshot manifest uses an unapproved output path for ${key}`);
     if (artifact.sha256 !== policy.memberSha256[memberKey]) throw new Error(`Snapshot manifest ${key} hash differs from the pinned source hash`);
-    if (artifact.rowCount !== expectedCounts[artifactCountKey[key]]) throw new Error(`Snapshot manifest ${key} row count does not match the pinned source`);
+    const countKey = artifactCountKey[key];
+    if (!countKey || artifact.rowCount !== expectedCounts[countKey]) throw new Error(`Snapshot manifest ${key} row count does not match the pinned source`);
     if (!sameArray(artifact.headers, expectedHeaders)) throw new Error(`Snapshot manifest ${key} headers do not match the pinned source schema`);
     parsedFiles[key] = artifact;
   }
 
   return {
-    schemaVersion: manifest.schemaVersion as "1.0.0" | "1.1.0",
+    schemaVersion: policy.schemaVersion,
     sourceRepository: policy.source.repository,
     sourceHandoffCommit: policy.source.handoffCommit,
     sourceMainCommitAtStart: policy.source.mainCommitAtStart,

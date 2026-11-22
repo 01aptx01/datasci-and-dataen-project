@@ -8,7 +8,8 @@ import { parseForecastAuditRow, parsePolicy, parseSnapshotManifest } from "../di
 const schemas = await import("../dist/assets/data/schemas.js");
 const selectors = await import("../dist/assets/data/loadSnapshot.js");
 
-const policy = parsePolicy(JSON.parse(await readFile(new URL("../snapshot.policy.json", import.meta.url), "utf8")));
+const policyInput = JSON.parse(await readFile(new URL("../snapshot.policy.json", import.meta.url), "utf8"));
+const policy = parsePolicy(policyInput);
 const snapshotDirectory = new URL(`../public/snapshots/${policy.identity.evaluationId}/`, import.meta.url);
 const manifestJson = JSON.parse(await readFile(new URL("dashboard_snapshot_manifest.json", snapshotDirectory), "utf8"));
 const manifest = parseSnapshotManifest(manifestJson, policy);
@@ -101,6 +102,60 @@ test("an Evaluation ID or Replay ID mismatch is rejected", () => {
     () => parseSnapshotManifest({ ...manifestJson, replayId: "another-replay" }, policy),
     /replayId does not match/,
   );
+});
+
+test("baseline schema 1.2.0 omits the retired B3 timeline while archived schemas require it", async () => {
+  const currentPolicyInput = JSON.parse(JSON.stringify(policyInput));
+  currentPolicyInput.schemaVersion = "1.2.0";
+  delete currentPolicyInput.members.driftErrorTimeline;
+  delete currentPolicyInput.expectedHeaders.driftErrorTimeline;
+  delete currentPolicyInput.expectedCounts.driftErrorTimelineRows;
+  delete currentPolicyInput.expectedCounts.driftAlertRows;
+  delete currentPolicyInput.publicOutputs.driftErrorTimeline;
+  for (const member of Object.keys(currentPolicyInput.memberSha256)) {
+    if (member.toLowerCase().includes("drift_error_timeline.csv")) delete currentPolicyInput.memberSha256[member];
+  }
+  const currentPolicy = parsePolicy(currentPolicyInput);
+  assert.equal(currentPolicy.schemaVersion, "1.2.0");
+  assert.equal(currentPolicy.members.driftErrorTimeline, undefined);
+  assert.equal(currentPolicy.expectedCounts.driftErrorTimelineRows, undefined);
+
+  const currentManifestInput = JSON.parse(JSON.stringify(manifestJson));
+  currentManifestInput.schemaVersion = "1.2.0";
+  delete currentManifestInput.expectedCounts.driftErrorTimelineRows;
+  delete currentManifestInput.expectedCounts.driftAlertRows;
+  delete currentManifestInput.files.driftErrorTimeline;
+  assert.doesNotThrow(() => parseSnapshotManifest(currentManifestInput, currentPolicy));
+
+  const currentFiles = new Map([
+    ["snapshot.policy.json", new TextEncoder().encode(JSON.stringify(currentPolicyInput))],
+    [`snapshots/${currentPolicy.identity.evaluationId}/dashboard_snapshot_manifest.json`, new TextEncoder().encode(JSON.stringify(currentManifestInput))],
+    ...Object.values(currentManifestInput.files).map((artifact) => [
+      `snapshots/${currentPolicy.identity.evaluationId}/${artifact.path}`,
+      sourceBytes[artifact.path],
+    ]),
+  ]);
+  const requestedFiles = [];
+  const currentFetch = async (input) => {
+    const key = new URL(String(input)).pathname.replace(/^\//, "");
+    requestedFiles.push(key);
+    const bytes = currentFiles.get(key);
+    return bytes ? new Response(bytes, { status: 200 }) : new Response("missing", { status: 404 });
+  };
+  const loaded = await loadSnapshot(currentFetch, "http://localhost:4173/");
+  assert.equal(loaded.status, "ready");
+  if (loaded.status === "ready") assert.deepEqual(loaded.driftTimeline, []);
+  assert.ok(!requestedFiles.some((path) => path.endsWith("drift_error_timeline.csv")));
+
+  for (const section of ["members", "expectedHeaders", "expectedCounts", "publicOutputs"]) {
+    const incompleteArchivedPolicy = JSON.parse(JSON.stringify(policyInput));
+    delete incompleteArchivedPolicy[section][section === "expectedCounts" ? "driftErrorTimelineRows" : "driftErrorTimeline"];
+    assert.throws(() => parsePolicy(incompleteArchivedPolicy), /requires the archived B3 drift error timeline fields/);
+  }
+
+  const incompleteArchivedManifest = JSON.parse(JSON.stringify(manifestJson));
+  delete incompleteArchivedManifest.expectedCounts.driftErrorTimelineRows;
+  assert.throws(() => parseSnapshotManifest(incompleteArchivedManifest, policy), /driftErrorTimelineRows is required/);
 });
 
 test("Pending rows preserve blank actual/error values and reject scored Pending values", () => {

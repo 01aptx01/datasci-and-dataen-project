@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from scripts.export_ml_results_handoff import (
+    CURRENT_OUTPUT_FILES,
     REQUIRED_OUTPUT_FILES,
     ArtifactVerificationError,
     export_results_bundle,
@@ -89,6 +90,26 @@ def completed_source(tmp_path: Path) -> tuple[Path, Path]:
     return source_dir, replay_dir
 
 
+@pytest.fixture
+def current_completed_source(completed_source: tuple[Path, Path]) -> tuple[Path, Path]:
+    source_dir, replay_dir = completed_source
+    manifest_path = source_dir / "execution_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = "1.1.0"
+    manifest["outputs_sha256"].pop("drift_error_timeline.csv")
+    (source_dir / "drift_error_timeline.csv").unlink()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    replay_manifest_path = replay_dir / "experiment_manifest.json"
+    replay_manifest = json.loads(replay_manifest_path.read_text(encoding="utf-8"))
+    replay_manifest["replay_config"] = {
+        "replay_config_version": "1.1.0",
+        "processing_order": ["predict", "save_forecast", "evaluate", "update_b3", "checkpoint_commit"],
+    }
+    replay_manifest_path.write_text(json.dumps(replay_manifest), encoding="utf-8")
+    return source_dir, replay_dir
+
+
 def test_export_copies_one_verified_run_and_redacts_local_paths(
     completed_source: tuple[Path, Path], tmp_path: Path
 ) -> None:
@@ -123,6 +144,97 @@ def test_export_copies_one_verified_run_and_redacts_local_paths(
     ).splitlines()
     assert any(line.endswith("approved_results/model_metrics.csv") for line in checksum_lines)
     assert all(len(line.split("  ", 1)[0]) == 64 for line in checksum_lines)
+
+
+def test_export_current_schema_omits_legacy_b3_timeline(
+    current_completed_source: tuple[Path, Path], tmp_path: Path
+) -> None:
+    source_dir, replay_dir = current_completed_source
+    output_dir = tmp_path / "current-handoff"
+
+    identity = export_results_bundle(source_dir, replay_dir, output_dir)
+
+    exported_results = output_dir / "approved_results"
+    assert identity["handoff_schema_version"] == "1.2.0"
+    assert set(path.name for path in exported_results.iterdir()) == set(CURRENT_OUTPUT_FILES) | {
+        "execution_manifest.json",
+        "stage05_experiment_manifest.json",
+    }
+    assert "drift_error_timeline.csv" not in identity["csv_data_rows"]
+    exported_manifest = json.loads(
+        (exported_results / "execution_manifest.json").read_text(encoding="utf-8")
+    )
+    assert exported_manifest["schema_version"] == "1.1.0"
+    assert "drift_error_timeline.csv" not in exported_manifest["outputs_sha256"]
+
+
+def test_export_rejects_legacy_timeline_listed_in_current_manifest(
+    current_completed_source: tuple[Path, Path]
+) -> None:
+    source_dir, replay_dir = current_completed_source
+    timeline_path = source_dir / "drift_error_timeline.csv"
+    timeline_path.write_text("column\nvalue\n", encoding="utf-8")
+    manifest_path = source_dir / "execution_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["outputs_sha256"][timeline_path.name] = _sha256(timeline_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ArtifactVerificationError, match="must not publish the legacy B3 ADWIN timeline"):
+        verify_source_artifacts(source_dir, replay_dir)
+
+
+def test_export_verification_rejects_unlisted_physical_stage06_b3_timeline(
+    current_completed_source: tuple[Path, Path]
+) -> None:
+    source_dir, replay_dir = current_completed_source
+    (source_dir / "drift_error_timeline.csv").write_text("legacy\n", encoding="utf-8")
+
+    with pytest.raises(ArtifactVerificationError, match="must not contain a legacy B3 ADWIN timeline file"):
+        verify_source_artifacts(source_dir, replay_dir)
+
+
+def test_export_verification_rejects_unlisted_physical_stage05_b3_drift_output(
+    current_completed_source: tuple[Path, Path]
+) -> None:
+    source_dir, replay_dir = current_completed_source
+    replay_outputs = replay_dir / "outputs"
+    (replay_outputs / "drift_alerts.csv").write_text("legacy\n", encoding="utf-8")
+
+    with pytest.raises(ArtifactVerificationError, match="current Stage 05 must not contain legacy B3 ADWIN output files"):
+        verify_source_artifacts(source_dir, replay_dir)
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["completed_source", "current_completed_source"],
+    ids=["archived-schema", "current-schema"],
+)
+def test_export_rejects_unexpected_hashed_stage06_outputs(
+    request: pytest.FixtureRequest, fixture_name: str, tmp_path: Path
+) -> None:
+    source_dir, replay_dir = request.getfixturevalue(fixture_name)
+    extra_output = source_dir / "unexpected.csv"
+    extra_output.write_text("column\nvalue\n", encoding="utf-8")
+    manifest_path = source_dir / "execution_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["outputs_sha256"][extra_output.name] = _sha256(extra_output)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    destination = tmp_path / "must-not-export"
+    with pytest.raises(ArtifactVerificationError, match="unexpected: unexpected.csv"):
+        export_results_bundle(source_dir, replay_dir, destination)
+    assert not destination.exists()
+
+
+def test_export_rejects_unknown_stage06_schema_version(completed_source: tuple[Path, Path]) -> None:
+    source_dir, replay_dir = completed_source
+    manifest_path = source_dir / "execution_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = "9.9.9"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ArtifactVerificationError, match="unsupported Stage 06 schema version"):
+        verify_source_artifacts(source_dir, replay_dir)
 
 
 def test_export_rejects_a_changed_source_artifact(
@@ -213,8 +325,6 @@ def _build_policy_source_pair(
     all_files = {
         "asset_volatility_predictions.csv": pd.DataFrame(columns=["prediction_id"]),
         "evaluation.csv": tables["evaluation.csv"],
-        "drift_errors.csv": pd.DataFrame(columns=["prediction_id"]),
-        "drift_alerts.csv": pd.DataFrame(columns=["prediction_id"]),
         "updates.csv": pd.DataFrame(columns=["batch_id"]),
         "forecast_failures.csv": pd.DataFrame(columns=["reason"]),
         "coverage.csv": pd.DataFrame(columns=["ticker"]),
@@ -244,7 +354,6 @@ def _build_policy_source_pair(
         "replay_config": {
             "replay_config_version": POLICY_REPLAY_CONFIG_VERSION,
             "processing_order": list(POLICY_PROCESSING_ORDER),
-            "adwin": {"policy": "monitor_only"},
         },
         "champion_challenger_policy": {"policy_version": "1.0.0"},
         "policy_config_fingerprint": "f" * 64,
@@ -274,6 +383,41 @@ def _rehash_policy_payloads(payloads: dict[str, bytes]) -> dict[str, bytes]:
     ]
     updated["CHECKSUMS.sha256"] = ("\n".join(lines) + "\n").encode("utf-8")
     return updated
+
+
+def _reversion_policy_bundle(
+    payloads: dict[str, bytes], *, replay_version: str, checkpoint_version: str, processing_order: list[str] | None = None,
+    include_legacy_adwin: bool | None = None,
+) -> dict[str, bytes]:
+    updated = dict(payloads)
+    identity = json.loads(updated["policy_source_identity.json"].decode("utf-8"))
+    stage05_path = "policy_results/stage05_policy_manifest.json"
+    stage05 = json.loads(updated[stage05_path].decode("utf-8"))
+    identity["replay_config_version"] = replay_version
+    identity["checkpoint_version"] = checkpoint_version
+    stage05["checkpoint_version"] = checkpoint_version
+    replay_config = stage05["replay_config"]
+    replay_config["replay_config_version"] = replay_version
+    if processing_order is None:
+        processing_order = [
+            "predict", "save_forecast", "evaluate", "adwin_monitor", "policy_adwin_and_decision", "update_b3", "checkpoint_commit",
+        ] if replay_version == "2.0.0" else [
+            "predict", "save_forecast", "evaluate", "policy_adwin_and_decision", "update_b3", "checkpoint_commit",
+        ]
+    replay_config["processing_order"] = processing_order
+    has_legacy_adwin = replay_version == "2.0.0" if include_legacy_adwin is None else include_legacy_adwin
+    final_outputs = stage05["final_outputs_sha256"]
+    if has_legacy_adwin:
+        replay_config["adwin"] = {"policy": "monitor_only"}
+        final_outputs["drift_errors.csv"] = "a" * 64
+        final_outputs["drift_alerts.csv"] = "b" * 64
+    else:
+        replay_config.pop("adwin", None)
+        final_outputs.pop("drift_errors.csv", None)
+        final_outputs.pop("drift_alerts.csv", None)
+    updated["policy_source_identity.json"] = json.dumps(identity).encode("utf-8")
+    updated[stage05_path] = json.dumps(stage05).encode("utf-8")
+    return _rehash_policy_payloads(updated)
 
 
 def test_policy_handoff_export_and_prepare_snapshot_supports_nonzero_and_zero_alerts_preserving_baseline(
@@ -418,3 +562,78 @@ def test_policy_snapshot_validation_rejects_forged_events_mismatches_duplicates_
     with pytest.raises(SnapshotError, match="must switch to B3 snapshot"):
         validate_policy_bundle_payloads(_rehash_policy_payloads(bad_model))
     assert id_info["policy_evaluation_id"] == eval_dir.name
+
+
+def test_policy_bundle_accepts_only_exact_archived_and_current_replay_contracts(tmp_path: Path) -> None:
+    from scripts.export_ml_results_handoff import export_policy_results_bundle
+    from scripts.web.prepare_snapshot import SnapshotError, _load_policy_bundle_payloads, validate_policy_bundle_payloads
+
+    eval_dir, replay_dir = _build_policy_source_pair(tmp_path, with_events=True, tag="versions")
+    bundle_dir = tmp_path / "handoff-versions"
+    export_policy_results_bundle(eval_dir, replay_dir, bundle_dir)
+    payloads, _ = _load_policy_bundle_payloads(bundle_dir)
+
+    for checkpoint_version in ("2.0.0", "2.1.0"):
+        archived = _reversion_policy_bundle(
+            payloads, replay_version="2.0.0", checkpoint_version=checkpoint_version,
+        )
+        validate_policy_bundle_payloads(archived)
+
+    current = _reversion_policy_bundle(
+        payloads, replay_version="2.1.0", checkpoint_version="2.2.0",
+    )
+    validate_policy_bundle_payloads(current)
+
+    wrong_current_checkpoint = _reversion_policy_bundle(
+        payloads, replay_version="2.1.0", checkpoint_version="2.1.0",
+    )
+    with pytest.raises(SnapshotError, match="requires replay_config_version 2.1.0 and checkpoint_version 2.2.0"):
+        validate_policy_bundle_payloads(wrong_current_checkpoint)
+
+    wrong_archived_checkpoint = _reversion_policy_bundle(
+        payloads, replay_version="2.0.0", checkpoint_version="2.2.0",
+    )
+    with pytest.raises(SnapshotError, match="requires checkpoint 2.0.0 or 2.1.0"):
+        validate_policy_bundle_payloads(wrong_archived_checkpoint)
+
+    wrong_order = _reversion_policy_bundle(
+        payloads, replay_version="2.1.0", checkpoint_version="2.2.0",
+        processing_order=["predict", "evaluate", "save_forecast", "policy_adwin_and_decision", "update_b3", "checkpoint_commit"],
+    )
+    with pytest.raises(SnapshotError, match="processing_order does not match its exact 2.1.0 contract"):
+        validate_policy_bundle_payloads(wrong_order)
+
+    forged_legacy_output = _reversion_policy_bundle(
+        payloads, replay_version="2.1.0", checkpoint_version="2.2.0", include_legacy_adwin=True,
+    )
+    with pytest.raises(SnapshotError, match="must not contain retired B3 ADWIN configuration or outputs"):
+        validate_policy_bundle_payloads(forged_legacy_output)
+
+
+def test_baseline_snapshot_policy_schema_versions_gate_the_legacy_drift_timeline() -> None:
+    from scripts.web.prepare_snapshot import SnapshotError, validate_snapshot_policy_schema
+
+    policy_path = Path(__file__).resolve().parents[1] / "web" / "snapshot.policy.json"
+    archived = json.loads(policy_path.read_text(encoding="utf-8"))
+    validate_snapshot_policy_schema(archived)
+
+    missing_archived_timeline = json.loads(json.dumps(archived))
+    del missing_archived_timeline["members"]["driftErrorTimeline"]
+    with pytest.raises(SnapshotError, match="requires the archived B3 drift timeline"):
+        validate_snapshot_policy_schema(missing_archived_timeline)
+
+    current = json.loads(json.dumps(archived))
+    current["schemaVersion"] = "1.2.0"
+    del current["members"]["driftErrorTimeline"]
+    del current["expectedHeaders"]["driftErrorTimeline"]
+    del current["expectedCounts"]["driftErrorTimelineRows"]
+    del current["publicOutputs"]["driftErrorTimeline"]
+    for member in list(current["memberSha256"]):
+        if "drift_error_timeline.csv" in member.lower():
+            del current["memberSha256"][member]
+    validate_snapshot_policy_schema(current)
+
+    forged_current_timeline = json.loads(json.dumps(current))
+    forged_current_timeline["expectedCounts"]["driftAlertRows"] = 1
+    with pytest.raises(SnapshotError, match="schema 1.2.0 must not define"):
+        validate_snapshot_policy_schema(forged_current_timeline)

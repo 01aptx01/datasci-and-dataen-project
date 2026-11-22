@@ -179,7 +179,6 @@ def test_final_replay_saves_contract_forecasts_and_evaluates_only_mature_labels(
     assert (evaluations["label_available_replay_date"] >= evaluations["target_end_date"]).all()
     assert not result.updated_labels.duplicated(["ticker", "anchor_date"]).any()
     assert (result.updated_labels["target_end_date"] <= result.updated_labels["update_date"]).all()
-    assert (result.drift_errors["prediction_id"].value_counts() <= 1).all()
     assert result.coverage["mature_evaluable_count"].sum() == len(evaluations)
     assert result.coverage["pending_label_count"].sum() == len(predictions) - len(evaluations)
     assert result.coverage["evaluation_failure_count"].sum() == 0
@@ -187,6 +186,8 @@ def test_final_replay_saves_contract_forecasts_and_evaluates_only_mature_labels(
     assert result.experiment_manifest["point_in_time_source_availability_verified"] is False
     assert result.experiment_manifest["b2_frozen_state_verified"] is True
     assert result.experiment_manifest["b4_frozen_state_verified"] is True
+    assert not (result.artifact_dir / "outputs" / "drift_errors.csv").exists()
+    assert not (result.artifact_dir / "outputs" / "drift_alerts.csv").exists()
     assert result.final_b2_state_sha256_by_ticker == {
         ticker: manifest_hash
         for ticker, manifest_hash in result.experiment_manifest[
@@ -414,7 +415,6 @@ def _without_execution_metadata(frame: pd.DataFrame, excluded: tuple[str, ...]) 
     (
         "after_predict",
         "after_forecast_staged",
-        "after_adwin",
         "after_b3_update",
         "before_checkpoint_serialization",
         "after_checkpoint_serialization",
@@ -491,25 +491,14 @@ def test_replay_recovers_from_uncommitted_daily_failure_without_duplicate_learni
         check_exact=True,
     )
     assert_frame_equal(
-        _without_execution_metadata(resumed.drift_errors, ("prediction_run_id", "evaluation_run_id")),
-        _without_execution_metadata(
-            uninterrupted.drift_errors,
-            ("prediction_run_id", "evaluation_run_id"),
-        ),
-        check_dtype=False,
-        check_exact=True,
-    )
-    assert_frame_equal(
         _without_execution_metadata(resumed.updated_labels, ("run_id",)),
         _without_execution_metadata(uninterrupted.updated_labels, ("run_id",)),
         check_dtype=False,
         check_exact=True,
     )
     assert resumed.final_b3_state_sha256_by_ticker == uninterrupted.final_b3_state_sha256_by_ticker
-    assert resumed.final_adwin_state_sha256_by_ticker == uninterrupted.final_adwin_state_sha256_by_ticker
     assert len(resumed.committed_sessions) == 14
     assert not resumed.updated_labels.duplicated(["ticker", "anchor_date"]).any()
-    assert not resumed.drift_errors["prediction_id"].duplicated().any()
 
 
 def test_b4_replay_predictions_match_direct_artifact_and_stay_frozen(
@@ -912,7 +901,16 @@ def test_policy_replay_no_drift_and_preserves_b0_through_b4_outputs(tmp_path: Pa
     assert res_policy.policy_decision_events is not None
     assert res_policy.policy_champion_timeline is not None
 
-    # B0-B4 benchmark predictions, evaluations, ADWIN drift, and updates remain invariant.
+    # B0-B4 benchmark predictions, evaluations, and updates remain invariant.
+    assert not (res_base.artifact_dir / "outputs" / "drift_errors.csv").exists()
+    assert not (res_base.artifact_dir / "outputs" / "drift_alerts.csv").exists()
+    assert not (res_policy.artifact_dir / "outputs" / "drift_errors.csv").exists()
+    assert not (res_policy.artifact_dir / "outputs" / "drift_alerts.csv").exists()
+    policy_checkpoint = joblib.load(
+        res_policy.artifact_dir / "checkpoints" / "committed" / replay_end.isoformat() / "checkpoint.joblib"
+    )
+    assert "adwin_detectors" not in policy_checkpoint
+    assert "adwin_state_sha256_by_ticker" not in policy_checkpoint
     assert_frame_equal(
         _without_execution_metadata(res_base.predictions, ("run_id", "prediction_created_at_utc")),
         _without_execution_metadata(res_policy.predictions, ("run_id", "prediction_created_at_utc")),
@@ -926,18 +924,6 @@ def test_policy_replay_no_drift_and_preserves_b0_through_b4_outputs(tmp_path: Pa
         ),
         _without_execution_metadata(
             res_policy.evaluations,
-            ("experiment_id", "prediction_run_id", "evaluation_run_id"),
-        ),
-        check_dtype=False,
-        check_exact=True,
-    )
-    assert_frame_equal(
-        _without_execution_metadata(
-            res_base.drift_errors,
-            ("experiment_id", "prediction_run_id", "evaluation_run_id"),
-        ),
-        _without_execution_metadata(
-            res_policy.drift_errors,
             ("experiment_id", "prediction_run_id", "evaluation_run_id"),
         ),
         check_dtype=False,
@@ -1432,7 +1418,6 @@ def _assert_policy_results_equal(left: object, right: object) -> None:
     assert left.committed_sessions == right.committed_sessions
     assert left.final_b3_state_sha256_by_ticker == right.final_b3_state_sha256_by_ticker
     assert left.final_b2_state_sha256_by_ticker == right.final_b2_state_sha256_by_ticker
-    assert left.final_adwin_state_sha256_by_ticker == right.final_adwin_state_sha256_by_ticker
     assert (
         left.final_policy_champion_state_sha256_by_ticker
         == right.final_policy_champion_state_sha256_by_ticker
@@ -1440,7 +1425,6 @@ def _assert_policy_results_equal(left: object, right: object) -> None:
     comparisons = (
         (left.predictions, right.predictions, ("run_id", "prediction_created_at_utc")),
         (left.evaluations, right.evaluations, ("prediction_run_id", "evaluation_run_id")),
-        (left.drift_errors, right.drift_errors, ("prediction_run_id", "evaluation_run_id")),
         (left.updated_labels, right.updated_labels, ("run_id",)),
         (left.policy_forecasts, right.policy_forecasts, ("run_id", "prediction_created_at_utc")),
         (left.policy_evaluations, right.policy_evaluations, ("prediction_run_id", "evaluation_run_id")),
@@ -1559,7 +1543,6 @@ def test_policy_checkpoint_stop_resume_and_failure_injection_across_promotion_da
     failure_points = (
         "after_predict",
         "after_forecast_staged",
-        "after_adwin",
         "after_policy_decision",
         "after_b3_update",
         "before_checkpoint_serialization",
@@ -1633,8 +1616,8 @@ def test_policy_checkpoint_rejects_incompatible_version_and_tampered_state(tmp_p
     policy_ck = joblib.load(
         res_policy.artifact_dir / "checkpoints" / "committed" / replay_end.isoformat() / "checkpoint.joblib"
     )
-    assert base_ck["checkpoint_version"] == "1.0.0"
-    assert policy_ck["checkpoint_version"] == "2.1.0"
+    assert base_ck["checkpoint_version"] == "1.1.0"
+    assert policy_ck["checkpoint_version"] == "2.2.0"
 
     # Cross-version incompatibility must be rejected explicitly.
     with pytest.raises(ReplayError, match="unsupported or incompatible Stage 05 checkpoint version"):

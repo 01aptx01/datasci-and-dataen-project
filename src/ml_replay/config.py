@@ -17,8 +17,8 @@ class ReplayError(ValueError):
     """Raised when replay configuration or artifacts violate the Stage 05 contract."""
 
 
-BASELINE_REPLAY_CONFIG_VERSION = "1.0.0"
-POLICY_REPLAY_CONFIG_VERSION = "2.0.0"
+BASELINE_REPLAY_CONFIG_VERSION = "1.1.0"
+POLICY_REPLAY_CONFIG_VERSION = "2.1.0"
 SUPPORTED_REPLAY_CONFIG_VERSIONS = {
     BASELINE_REPLAY_CONFIG_VERSION,
     POLICY_REPLAY_CONFIG_VERSION,
@@ -27,7 +27,6 @@ POLICY_PROCESSING_ORDER = (
     "predict",
     "save_forecast",
     "evaluate",
-    "adwin_monitor",
     "policy_adwin_and_decision",
     "update_b3",
     "checkpoint_commit",
@@ -36,7 +35,6 @@ BASELINE_PROCESSING_ORDER = (
     "predict",
     "save_forecast",
     "evaluate",
-    "adwin_monitor",
     "update_b3",
     "checkpoint_commit",
 )
@@ -259,9 +257,6 @@ class ReplayConfig:
     update_model: str = "B3"
     duplicate_updates_allowed: bool = False
     processing_order: tuple[str, ...] = BASELINE_PROCESSING_ORDER
-    adwin_detector: str = "ADWIN"
-    adwin_delta: float = 0.002
-    adwin_policy: str = "monitor_only"
     checkpoint_cadence: str = "every_xnys_session"
     atomic_commit: bool = True
     resume_policy: str = "latest_valid_committed_checkpoint_only"
@@ -285,8 +280,6 @@ class ReplayConfig:
             "update_policy": "mature_labels_only",
             "update_model": "B3",
             "duplicate_updates_allowed": False,
-            "adwin_detector": "ADWIN",
-            "adwin_delta": 0.002,
             "checkpoint_cadence": "every_xnys_session",
             "atomic_commit": True,
             "resume_policy": "latest_valid_committed_checkpoint_only",
@@ -297,17 +290,13 @@ class ReplayConfig:
         if self.replay_config_version == BASELINE_REPLAY_CONFIG_VERSION:
             if self.processing_order != BASELINE_PROCESSING_ORDER:
                 raise ReplayError("processing_order is locked by the approved Stage 05 contract")
-            if self.adwin_policy != "monitor_only":
-                raise ReplayError("adwin_policy is locked by the approved Stage 05 contract")
             if self.champion_challenger is not None:
-                raise ReplayError("baseline replay_config_version 1.0.0 cannot attach champion_challenger policy")
+                raise ReplayError("baseline replay_config_version 1.1.0 cannot attach champion_challenger policy")
         else:
             if self.processing_order != POLICY_PROCESSING_ORDER:
                 raise ReplayError("policy processing_order must match the Champion-Challenger contract")
-            if self.adwin_policy != "monitor_only":
-                raise ReplayError("baseline B3 ADWIN monitor must remain monitor_only even in policy mode")
             if self.champion_challenger is None:
-                raise ReplayError("replay_config_version 2.0.0 requires champion_challenger configuration")
+                raise ReplayError("replay_config_version 2.1.0 requires champion_challenger configuration")
 
     @property
     def is_champion_challenger(self) -> bool:
@@ -324,8 +313,8 @@ class ReplayConfig:
         if not config_path.is_file():
             raise FileNotFoundError(f"ML Replay config not found: {config_path}")
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict) or not isinstance(raw.get("adwin"), dict):
-            raise ReplayError("ML Replay config must be a YAML mapping with an ADWIN section")
+        if not isinstance(raw, dict):
+            raise ReplayError("ML Replay config must be a YAML mapping")
         if not isinstance(raw.get("checkpoint"), dict):
             raise ReplayError("ML Replay config must include a checkpoint section")
         if policy_mode not in {"baseline", "champion_challenger"}:
@@ -345,9 +334,6 @@ class ReplayConfig:
                     update_model=str(raw["update_model"]),
                     duplicate_updates_allowed=raw["duplicate_updates_allowed"],
                     processing_order=tuple(raw["processing_order"]),
-                    adwin_detector=str(raw["adwin"]["detector"]),
-                    adwin_delta=float(raw["adwin"]["delta"]),
-                    adwin_policy=str(raw["adwin"]["policy"]),
                     checkpoint_cadence=str(raw["checkpoint"]["cadence"]),
                     atomic_commit=raw["checkpoint"]["atomic_commit"],
                     resume_policy=str(raw["checkpoint"]["resume_policy"]),
@@ -369,9 +355,6 @@ class ReplayConfig:
                 update_model=str(raw["update_model"]),
                 duplicate_updates_allowed=raw["duplicate_updates_allowed"],
                 processing_order=tuple(policy_raw["processing_order"]),
-                adwin_detector=str(raw["adwin"]["detector"]),
-                adwin_delta=float(raw["adwin"]["delta"]),
-                adwin_policy=str(raw["adwin"]["policy"]),
                 checkpoint_cadence=str(raw["checkpoint"]["cadence"]),
                 atomic_commit=raw["checkpoint"]["atomic_commit"],
                 resume_policy=str(raw["checkpoint"]["resume_policy"]),
@@ -395,11 +378,6 @@ class ReplayConfig:
             "update_model": self.update_model,
             "duplicate_updates_allowed": self.duplicate_updates_allowed,
             "processing_order": list(self.processing_order),
-            "adwin": {
-                "detector": self.adwin_detector,
-                "delta": self.adwin_delta,
-                "policy": self.adwin_policy,
-            },
             "checkpoint": {
                 "cadence": self.checkpoint_cadence,
                 "atomic_commit": self.atomic_commit,

@@ -4,7 +4,7 @@ import { loadPolicySnapshot, type PolicySnapshotState } from "./data/policySnaps
 import { computePortfolioVolatility, portfolioRiskSourceDates, validateScenarioWeights, type PortfolioWeights } from "./data/portfolio.js";
 import { resolveAsOfLabelView, selectSameDateForecasts } from "./data/replay.js";
 import { modelId, type ForecastAuditRow, type ModelName, type Ticker } from "./data/schemas.js";
-import { renderReplayFeatureDriftCard, type FeatureDriftViewSelection } from "./featureDriftView.js";
+import { monitoringTabFromRoute, renderReplayFeatureDriftCard, type FeatureDriftViewSelection, type MonitoringTab } from "./featureDriftView.js";
 import { renderReplayPolicyCard } from "./policyView.js";
 import { renderOtherPage } from "./stitchOther.js";
 import { CANVA_PRESENTATION_URL } from "./config.js";
@@ -31,7 +31,7 @@ interface State {
   forecast: { split: "test" | "validation"; ticker: Ticker; model: ModelName; status: ForecastStatusFilter; from: string; to: string; asOf: string; reveal: boolean };
   replay: { ticker: Ticker; model: ModelName; date: string; asOf: string; reveal: boolean; view: "monthly" | "daily"; month: string; scale: "five-day" | "annualized" };
   portfolio: { model: ModelName; date: string; weights: PortfolioWeights };
-  monitoring: { ticker: DriftTicker; date: string; feature: string; windowSize: DriftWindowSize; metric: DriftMetricName; tab: "feature" | "error" | "policy" };
+  monitoring: { ticker: DriftTicker; date: string; feature: string; windowSize: DriftWindowSize; metric: DriftMetricName; tab: MonitoringTab };
 }
 
 function esc(value: unknown): string {
@@ -73,7 +73,8 @@ function applyRouteSelection(state: State): void {
   if (feature && isDriftFeature(feature)) state.monitoring.feature = feature;
   if (windowValue && isDriftWindow(windowValue)) state.monitoring.windowSize = Number(windowValue) as DriftWindowSize;
   if (metric && isDriftMetric(metric)) state.monitoring.metric = metric;
-  if (tab === "feature" || tab === "error" || tab === "policy") state.monitoring.tab = tab;
+  const monitoringTab = monitoringTabFromRoute(tab);
+  if (monitoringTab) state.monitoring.tab = monitoringTab;
 }
 function selectOptions(values: string[], labels: Record<string, string>, selected: string): string {
   return values.map((value) => "<option value=\"" + esc(value) + "\"" + (value === selected ? " selected" : "") + ">" + esc(labels[value] ?? value) + "</option>").join("");
@@ -228,8 +229,6 @@ function replayPage(snapshot: ReadySnapshot, state: State): string {
     : reveal.actual !== null ? "st-replay-status st-replay-evaluable" : "st-replay-status";
   const visibleForecast = row.predictionDate <= asOf ? row.predictedVolAnnualized : null;
   const datesInMonth = monthSessions.map((item) => item.predictionDate);
-  const drift = snapshot.driftTimeline.filter((item) => item.ticker === state.replay.ticker && item.predictionDate >= (datesInMonth[0] ?? row.predictionDate) && item.predictionDate <= (datesInMonth[datesInMonth.length - 1] ?? row.predictionDate));
-  const driftAlerts = drift.filter((item) => item.driftDetected || item.alertRecordPresent).length;
   const featureDriftCard = renderReplayFeatureDriftCard(state.featureDrift, row.predictionDate, state.replay.ticker, state.replay.model);
   const policyCard = renderReplayPolicyCard(state.policySnapshot, row.predictionDate, state.replay.ticker);
   const policyHistoryText = state.policySnapshot.status === "ready"
@@ -256,7 +255,7 @@ function replayPage(snapshot: ReadySnapshot, state: State): string {
     + "<div class=\"st-replay-target\"><span>ช่วงเป้าหมาย t+1…t+5</span><strong>" + esc(row.targetStartDate) + " – " + esc(row.targetEndDate) + "</strong></div>"
     + "<div class=\"st-replay-metrics\"><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Forecast</span><strong class=\"st-replay-metric-value\">" + replayRisk(visibleForecast, state.replay.scale) + "</strong></div><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Actual</span><strong class=\"st-replay-metric-value\">" + replayRisk(reveal.actual, state.replay.scale) + "</strong></div><div class=\"st-replay-metric\"><span class=\"st-replay-metric-label\">Abs Error</span><strong class=\"st-replay-metric-value\">" + replayRisk(reveal.error, state.replay.scale) + "</strong></div></div>"
     + "<div class=\"st-source-meta\"><span>Forecast ที่บันทึก: <strong>" + esc(modelId(state.replay.model)) + " " + esc(state.replay.model.replaceAll("_", " ")) + "</strong></span><span>สถานะ source: " + esc(row.forecastStatus) + " / " + esc(row.labelStatus) + " / " + esc(row.evaluationStatus) + "</span><span>Prediction ID <code>" + esc(row.predictionId) + "</code></span></div><p class=\"st-source-note\">" + (row.evaluationStatus === "PENDING_LABEL" ? "แถวนี้ยัง Pending จากต้นทาง จึงไม่มี Actual หรือ error ให้เปิดเผย" : "Actual แสดงจาก evaluation row ที่ตรงกับ prediction ID เมื่อ target ครบและกดเปิดเผย") + "</p></section></aside></div>"
-    + "<div class=\"st-replay-lower-grid\">" + policyCard + featureDriftCard + "<section class=\"st-card\"><div class=\"st-section-heading\"><h2>B3 Error Drift · ADWIN (Monitor เดิม)</h2><span>" + driftAlerts + " เหตุการณ์</span></div><p>พบ " + driftAlerts + " alerts ในช่วง " + esc(monthLabel(activeMonth)) + " · " + drift.length.toLocaleString() + " observations จาก B3 benchmark snapshot (monitor-only)</p></section><section class=\"st-card\"><div class=\"st-section-heading\"><h2>Online Update · " + modelId(state.replay.model) + "</h2><span>แยกจาก Policy</span></div><p>Benchmark B3 อัปเดตเมื่อ label ครบ 5 วันตามสัญญา Stage 05 · ดูสถานะ Shadow B3 และการสลับรุ่นในแท็บ Policy</p></section></div>"
+    + "<div class=\"st-replay-lower-grid\">" + policyCard + featureDriftCard + "<section class=\"st-card\"><div class=\"st-section-heading\"><h2>Shadow B3 · Online Update</h2><span>อัปเดตเมื่อ label ครบกำหนด</span></div><p>โมเดลท้าชิง B3 รับ label ที่ครบ 5 วันหลังบันทึก forecast · เปรียบเทียบกับ Champion ใน Champion–Challenger Policy</p></section></div>"
     + "<details class=\"st-source-details\"><summary>เปรียบเทียบทุกโมเดลในวันเดียวกัน</summary><div class=\"st-table-wrap\"><table class=\"st-table\"><thead><tr><th>โมเดล</th><th>Forecast</th><th>Actual</th><th>Abs Error</th><th>สถานะ</th></tr></thead><tbody>" + comparisons + "</tbody></table></div></details>"
     + "<p class=\"st-source-note\">Replay เป็นการจำลองย้อนหลังจากข้อมูลที่บันทึกไว้ · Actual จะแสดงเมื่อถึง target end และกดเปิดเผย · แถว Pending จะคงซ่อน Actual เสมอ</p>";
 }
@@ -431,7 +430,7 @@ export function startStitch(root: HTMLElement): void {
     }
     if (!target || state.snapshot.status !== "ready") return;
     const action = target.dataset.action;
-    if (action === "monitoring-tab" && (target.dataset.tab === "feature" || target.dataset.tab === "error" || target.dataset.tab === "policy")) {
+    if (action === "monitoring-tab" && (target.dataset.tab === "feature" || target.dataset.tab === "policy")) {
       state.monitoring.tab = target.dataset.tab;
     } else if (action === "monitoring-date-point" && target.dataset.date) {
       state.monitoring.date = target.dataset.date;
@@ -571,8 +570,8 @@ export function startStitch(root: HTMLElement): void {
     if (target?.dataset.action !== "monitoring-tab" || state.snapshot.status !== "ready") return;
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const tabOrder: Array<"feature" | "error" | "policy"> = ["feature", "error", "policy"];
-    const currentIdx = tabOrder.indexOf((target.dataset.tab as "feature" | "error" | "policy") ?? "feature");
+    const tabOrder: Array<State["monitoring"]["tab"]> = ["feature", "policy"];
+    const currentIdx = Math.max(tabOrder.indexOf(state.monitoring.tab), 0);
     state.monitoring.tab = event.key === "Home"
       ? "feature"
       : event.key === "End"

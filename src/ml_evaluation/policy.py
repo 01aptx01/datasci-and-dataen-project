@@ -21,6 +21,17 @@ from src.ml_replay.policy import POLICY_CHECKPOINT_VERSION
 
 
 POLICY_EVALUATION_VERSION = "1.2.0"
+ARCHIVED_POLICY_REPLAY_CONFIG_VERSION = "2.0.0"
+ARCHIVED_POLICY_CHECKPOINT_VERSIONS = {"2.0.0", "2.1.0"}
+ARCHIVED_POLICY_PROCESSING_ORDER = (
+    "predict",
+    "save_forecast",
+    "evaluate",
+    "adwin_monitor",
+    "policy_adwin_and_decision",
+    "update_b3",
+    "checkpoint_commit",
+)
 POLICY_MODEL_ID_TO_NAME = {
     "B0": "CONSTANT_BASELINE",
     "B1": "ROLLING_20D_BASELINE",
@@ -41,11 +52,15 @@ EVALUATED_POLICY_STRATEGIES = (
 BENCHMARK_REPLAY_FILES = (
     "asset_volatility_predictions.csv",
     "evaluation.csv",
-    "drift_errors.csv",
-    "drift_alerts.csv",
     "updates.csv",
     "forecast_failures.csv",
     "coverage.csv",
+)
+ARCHIVED_BENCHMARK_REPLAY_FILES = (
+    *BENCHMARK_REPLAY_FILES[:2],
+    "drift_errors.csv",
+    "drift_alerts.csv",
+    *BENCHMARK_REPLAY_FILES[2:],
 )
 POLICY_REPLAY_FILES = (
     "policy_forecasts.csv",
@@ -151,6 +166,33 @@ def _bool_series(series: pd.Series) -> pd.Series:
     )
 
 
+def _policy_replay_output_contract(manifest: Mapping[str, Any]) -> tuple[str, ...]:
+    """Select the verified Stage 05 outputs for a current or archived policy replay."""
+    replay_cfg = manifest.get("replay_config", {})
+    replay_version = str(replay_cfg.get("replay_config_version", ""))
+    processing_order = list(replay_cfg.get("processing_order", []))
+    checkpoint_version = str(manifest.get("checkpoint_version", ""))
+
+    if replay_version == ARCHIVED_POLICY_REPLAY_CONFIG_VERSION:
+        if processing_order != list(ARCHIVED_POLICY_PROCESSING_ORDER):
+            raise EvaluationError("archived policy replay processing_order does not match its v2.0.0 contract")
+        if checkpoint_version not in ARCHIVED_POLICY_CHECKPOINT_VERSIONS:
+            raise EvaluationError("archived policy replay checkpoint_version must be 2.0.0 or 2.1.0")
+        if replay_cfg.get("adwin", {}).get("policy") != "monitor_only":
+            raise EvaluationError("archived policy replay must declare the legacy B3 ADWIN monitor-only policy")
+        return ARCHIVED_BENCHMARK_REPLAY_FILES + POLICY_REPLAY_FILES
+
+    if replay_version != POLICY_REPLAY_CONFIG_VERSION:
+        raise EvaluationError(f"policy evaluation requires replay_config_version {POLICY_REPLAY_CONFIG_VERSION}")
+    if processing_order != list(POLICY_PROCESSING_ORDER):
+        raise EvaluationError("policy replay processing_order does not match the current approved contract")
+    if checkpoint_version != POLICY_CHECKPOINT_VERSION:
+        raise EvaluationError(f"policy replay checkpoint_version must be {POLICY_CHECKPOINT_VERSION}")
+    if "adwin" in replay_cfg:
+        raise EvaluationError("current policy replay must not include the legacy B3 ADWIN configuration")
+    return BENCHMARK_REPLAY_FILES + POLICY_REPLAY_FILES
+
+
 def verify_policy_replay_artifacts(
     replay_dir: str | Path,
     *,
@@ -171,26 +213,22 @@ def verify_policy_replay_artifacts(
     if manifest.get("b2_frozen_state_verified") is not True or manifest.get("b4_frozen_state_verified") is not True:
         raise EvaluationError("policy replay does not prove frozen B2/B4 states")
 
-    replay_cfg = manifest.get("replay_config", {})
-    if replay_cfg.get("replay_config_version") != POLICY_REPLAY_CONFIG_VERSION:
-        raise EvaluationError(
-            f"policy evaluation requires replay_config_version {POLICY_REPLAY_CONFIG_VERSION}"
-        )
-    if list(replay_cfg.get("processing_order", [])) != list(POLICY_PROCESSING_ORDER):
-        raise EvaluationError("policy replay processing_order does not match the approved contract")
-    if manifest.get("checkpoint_version") != POLICY_CHECKPOINT_VERSION:
-        raise EvaluationError(f"policy replay checkpoint_version must be {POLICY_CHECKPOINT_VERSION}")
-    if replay_cfg.get("adwin", {}).get("policy") != "monitor_only":
-        raise EvaluationError("benchmark B3 ADWIN must remain monitor_only in policy replay")
+    replay_files = _policy_replay_output_contract(manifest)
 
     expected_hashes = manifest.get("final_outputs_sha256")
-    all_files = BENCHMARK_REPLAY_FILES + POLICY_REPLAY_FILES
+    all_files = replay_files
     if not isinstance(expected_hashes, dict) or set(all_files) - set(expected_hashes):
-        raise EvaluationError("policy replay manifest does not hash every benchmark and policy output")
+        raise EvaluationError("policy replay manifest does not hash every output required by its versioned contract")
+    output_dir = directory / "outputs"
+    if replay_files == BENCHMARK_REPLAY_FILES + POLICY_REPLAY_FILES:
+        legacy_drift_files = {"drift_errors.csv", "drift_alerts.csv"}
+        if legacy_drift_files.intersection(expected_hashes) or any(
+            (output_dir / name).exists() for name in legacy_drift_files
+        ):
+            raise EvaluationError("current policy replay manifest contains retired B3 ADWIN outputs")
 
     outputs: dict[str, pd.DataFrame] = {}
     verified_hashes: dict[str, str] = {}
-    output_dir = directory / "outputs"
     for filename in all_files:
         path = output_dir / filename
         if not path.is_file():

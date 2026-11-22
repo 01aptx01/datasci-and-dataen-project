@@ -178,10 +178,9 @@ export function renderPolicyMonitoringPanel(
 
   return `<div class="st-fd-tab-panel">`
     + `<div class="st-policy-banner"><div><strong>Simulated Historical Replay · Exploratory Policy v${esc(manifest.policyVersion)}</strong><p>แยกจากผลทดสอบสมมติฐาน H1–H3 เดิม (Confirmatory ไม่เปลี่ยนแปลง) · ไม่ใช่ Live Inference · Point-in-time source availability: ยังไม่ยืนยัน (<code>false</code>) · Shadow B3 อัปเดตต่อเนื่องแยกจาก Frozen Snapshot ที่เสิร์ฟจริง</p></div><span class="st-secondary-badge">Eval ${esc(shortHash(manifest.policyEvaluationId))}</span></div>`
-    + `<div class="st-secondary-triple st-policy-signal-grid">`
-    + `<div class="st-lineage-status"><span>สัญญาณที่ 1 (แท็บนี้)</span><strong>Policy ADWIN (Served Mature Error)</strong><p>ตรวจ error ของแชมเปี้ยนที่เสิร์ฟจริงและตัดสินใจสลับรุ่นด้วย paired window 60 วัน (min 30, ≥5%, cooldown 20)</p></div>`
-    + `<div class="st-lineage-status"><span>สัญญาณที่ 2 (แท็บ B3 Error Drift)</span><strong>B3 Monitor ADWIN (Monitor-only เดิม)</strong><p>ติดตาม error stream ของ B3 Benchmark เดิมเท่านั้น ไม่สั่งสลับรุ่นหรือแก้ผล H1–H3</p></div>`
-    + `<div class="st-lineage-status"><span>สัญญาณที่ 3 (แท็บ Feature Drift)</span><strong>Feature Drift (W1 / PSI)</strong><p>วัดการเปลี่ยนกระจายตัวของ Core 8 features เทียบ Train ไม่ใช่ตัวสั่ง promote โมเดล</p></div>`
+    + `<div class="st-secondary-pair st-policy-signal-grid">`
+    + `<div class="st-lineage-status"><span>Champion–Challenger Signal</span><strong>Policy ADWIN (Served Mature Error)</strong><p>ตรวจ error ของแชมเปี้ยนที่เสิร์ฟจริงและตัดสินใจสลับรุ่นด้วย paired window 60 วัน (min 30, ≥5%, cooldown 20)</p></div>`
+    + `<div class="st-lineage-status"><span>Input Distribution Signal</span><strong>Feature Drift (W1 / PSI)</strong><p>วัดการเปลี่ยนกระจายตัวของ Core 8 features เทียบ Train ไม่ใช่ตัวสั่ง promote โมเดล</p></div>`
     + `</div>`
     + `<div class="st-fd-toolbar st-policy-toolbar"><label>ETF<select data-field="monitoring-ticker">${tickerOptions}</select></label><label>วันที่ตรวจ<select data-field="monitoring-date">${dateOptions}</select></label></div>`
     + quickJumpHtml

@@ -22,6 +22,9 @@ from src.ml_evaluation.metrics import (
 from src.ml_evaluation.portfolio import calculate_portfolio_risk
 from src.ml_evaluation.config import EvaluationConfig, EvaluationError
 from src.ml_evaluation.pipeline import (
+    CURRENT_EVALUATION_OUTPUTS,
+    FINAL_EVALUATION_OUTPUTS,
+    PREDICTION_COLUMNS,
     _build_b4_comparisons,
     _build_coverage_summary,
     _build_drift_error_timeline,
@@ -31,11 +34,92 @@ from src.ml_evaluation.pipeline import (
     _build_reference_b0_b3_metrics,
     _mark_common_panel,
     _train_high_vol_thresholds,
+    _load_existing_result,
+    _verify_replay_artifacts,
     _verify_training_artifacts,
 )
 
 
 TICKERS = ("SPY", "IEF", "GLD")
+
+
+def _write_baseline_replay_fixture(replay_dir: Path, *, archived: bool) -> None:
+    from src.ml_evaluation.config import EvaluationConfig, MODEL_NAMES
+    from src.ml_evaluation.pipeline import CURRENT_REPLAY_OUTPUTS, REPLAY_OUTPUTS
+
+    replay_dir.mkdir(parents=True)
+    output_dir = replay_dir / "outputs"
+    output_dir.mkdir()
+    replay_id = replay_dir.name
+    prediction_rows = []
+    for ticker in TICKERS:
+        for model_name in MODEL_NAMES:
+            prediction_rows.append(
+                {
+                    "prediction_id": f"{ticker}-{model_name}",
+                    "prediction_date": "2025-10-01",
+                    "ticker": ticker,
+                    "model_name": model_name,
+                    "model_version": "v1",
+                    "prediction_mode": "HISTORICAL_REPLAY",
+                    "forecast_horizon_trading_days": 5,
+                    "target_start_date": "2025-10-08",
+                    "target_end_date": "2025-10-14",
+                    "predicted_vol_annualized": 0.2,
+                    "feature_set_version": "v1",
+                    "feature_run_id": "feature-1",
+                    "input_snapshot_id": "snapshot-1",
+                    "last_training_target_end_date": "2025-09-30",
+                    "run_id": replay_id,
+                    "prediction_created_at_utc": "2025-10-01T00:00:00Z",
+                }
+            )
+    hashes = {}
+    output_names = REPLAY_OUTPUTS if archived else CURRENT_REPLAY_OUTPUTS
+    for name in output_names:
+        path = output_dir / name
+        if name == "asset_volatility_predictions.csv":
+            pd.DataFrame(prediction_rows, columns=PREDICTION_COLUMNS).to_csv(path, index=False)
+        else:
+            path.write_text("column\nvalue\n", encoding="utf-8")
+        hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    config = EvaluationConfig()
+    replay_config = {
+        "replay_config_version": "1.0.0" if archived else "1.1.0",
+        "prediction_mode": "HISTORICAL_REPLAY",
+        "data_cutoff": config.data_cutoff.isoformat(),
+        "update_model": "B3",
+        "update_policy": "mature_labels_only",
+        "duplicate_updates_allowed": False,
+        "processing_order": [
+            "predict",
+            "save_forecast",
+            "evaluate",
+            *( ["adwin_monitor"] if archived else [] ),
+            "update_b3",
+            "checkpoint_commit",
+        ],
+    }
+    if archived:
+        replay_config["adwin"] = {"policy": "monitor_only"}
+    manifest = {
+        "phase": "FINAL_REPLAY",
+        "status": "COMPLETED",
+        "experiment_id": replay_id,
+        "last_fully_committed_session": config.data_cutoff.isoformat(),
+        "replay_window": {
+            "test": [config.test_start_date.isoformat(), config.test_end_date.isoformat()],
+            "strict_data_cutoff": config.data_cutoff.isoformat(),
+        },
+        "replay_config": replay_config,
+        "source_quality_passed": True,
+        "b2_frozen_state_verified": True,
+        "input_snapshot_id": "snapshot-1",
+        "source_lineage": {"feature_run_id": "feature-1"},
+        "final_outputs_sha256": hashes,
+    }
+    (replay_dir / "experiment_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def _training_artifact_lineage(tmp_path, *, include_b4_hash: bool, b4_suite: bool = True):
@@ -97,6 +181,23 @@ def test_training_artifact_verification_preserves_legacy_b0_b3_lineage(tmp_path)
     verified = _verify_training_artifacts(tmp_path, replay_manifest)
 
     assert "b4_validation_evaluations.csv" not in verified
+
+
+def test_training_artifact_verification_requires_complete_champion_lineage(tmp_path) -> None:
+    replay_manifest, _ = _training_artifact_lineage(tmp_path, include_b4_hash=True)
+    names = ("initial_champion_selection.json", "initial_champion_validation_scores.csv")
+    for name in names:
+        path = tmp_path / name
+        path.write_text(name, encoding="utf-8")
+        replay_manifest["stage04_artifact_sha256"][name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    verified = _verify_training_artifacts(tmp_path, replay_manifest)
+    assert all(verified[name] == replay_manifest["stage04_artifact_sha256"][name] for name in names)
+    (tmp_path / names[0]).write_text("tampered", encoding="utf-8")
+    with pytest.raises(EvaluationError, match=names[0]):
+        _verify_training_artifacts(tmp_path, replay_manifest)
+    del replay_manifest["stage04_artifact_sha256"][names[1]]
+    with pytest.raises(EvaluationError, match="initial champion lineage is incomplete"):
+        _verify_training_artifacts(tmp_path, replay_manifest)
 
 
 def test_forecast_audit_separates_pending_targets_from_invalid_forecasts() -> None:
@@ -615,6 +716,130 @@ def test_adwin_timeline_matches_test_errors_and_overlays_alerts() -> None:
     assert len(timeline) == 2
     assert timeline["drift_detected"].tolist() == [False, True]
     assert timeline["alert_record_present"].tolist() == [False, True]
+
+
+@pytest.mark.parametrize("archived", [False, True], ids=["current-no-b3-adwin", "archived-b3-adwin"])
+def test_baseline_replay_verification_supports_current_and_archived_output_contracts(
+    tmp_path: Path, archived: bool
+) -> None:
+    from src.ml_evaluation.config import EvaluationConfig
+
+    replay_dir = tmp_path / ("archived-replay" if archived else "current-replay")
+    _write_baseline_replay_fixture(replay_dir, archived=archived)
+
+    _, outputs, hashes = _verify_replay_artifacts(replay_dir, EvaluationConfig())
+
+    assert ("drift_errors.csv" in outputs) is archived
+    assert ("drift_alerts.csv" in outputs) is archived
+    assert ("drift_errors.csv" in hashes) is archived
+    assert ("drift_alerts.csv" in hashes) is archived
+
+
+def test_baseline_replay_verification_rejects_b3_adwin_hashes_in_current_manifest(tmp_path: Path) -> None:
+    from src.ml_evaluation.config import EvaluationConfig
+
+    replay_dir = tmp_path / "current-replay"
+    _write_baseline_replay_fixture(replay_dir, archived=False)
+    manifest_path = replay_dir / "experiment_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["final_outputs_sha256"]["drift_errors.csv"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(EvaluationError, match="must not include legacy B3 ADWIN outputs"):
+        _verify_replay_artifacts(replay_dir, EvaluationConfig())
+
+
+@pytest.mark.parametrize("archived", [False, True], ids=["current", "archived"])
+def test_baseline_replay_verification_rejects_unexpected_hashed_outputs(
+    tmp_path: Path, archived: bool
+) -> None:
+    from src.ml_evaluation.config import EvaluationConfig
+
+    replay_dir = tmp_path / ("archived-replay" if archived else "current-replay")
+    _write_baseline_replay_fixture(replay_dir, archived=archived)
+    manifest_path = replay_dir / "experiment_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["final_outputs_sha256"]["unexpected.csv"] = "a" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(EvaluationError, match="output set does not match its replay contract"):
+        _verify_replay_artifacts(replay_dir, EvaluationConfig())
+
+
+def test_baseline_replay_verification_rejects_unlisted_physical_b3_adwin_outputs(
+    tmp_path: Path,
+) -> None:
+    from src.ml_evaluation.config import EvaluationConfig
+
+    replay_dir = tmp_path / "current-replay"
+    _write_baseline_replay_fixture(replay_dir, archived=False)
+    (replay_dir / "outputs" / "drift_errors.csv").write_text("legacy\n", encoding="utf-8")
+
+    with pytest.raises(EvaluationError, match="must not include legacy B3 ADWIN output files"):
+        _verify_replay_artifacts(replay_dir, EvaluationConfig())
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "expected_outputs"),
+    [("1.1.0", CURRENT_EVALUATION_OUTPUTS), ("1.0.0", FINAL_EVALUATION_OUTPUTS)],
+    ids=["current-schema", "archived-schema"],
+)
+def test_existing_final_evaluation_accepts_current_and_archived_output_sets(
+    tmp_path: Path, schema_version: str, expected_outputs: frozenset[str]
+) -> None:
+    artifact_dir = tmp_path / "evaluation"
+    artifact_dir.mkdir()
+    output_hashes = {}
+    for name in expected_outputs:
+        path = artifact_dir / name
+        if name.endswith(".csv"):
+            path.write_text("column\nvalue\n", encoding="utf-8")
+        elif name.endswith(".png"):
+            path.write_bytes(b"plot")
+        else:
+            path.write_text("{}\n", encoding="utf-8")
+        output_hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest = {
+        "schema_version": schema_version,
+        "evaluation_id": "evaluation-1",
+        "input_identity_sha256": "identity-1",
+        "outputs_sha256": output_hashes,
+    }
+    (artifact_dir / "execution_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = _load_existing_result(artifact_dir, "evaluation-1", "identity-1")
+
+    assert result.manifest["schema_version"] == schema_version
+    assert set(result.manifest["outputs_sha256"]) == expected_outputs
+
+
+def test_existing_final_evaluation_rejects_unknown_schema_version(tmp_path: Path) -> None:
+    artifact_dir = tmp_path / "evaluation"
+    artifact_dir.mkdir()
+    output_hashes = {}
+    for name in FINAL_EVALUATION_OUTPUTS:
+        path = artifact_dir / name
+        if name.endswith(".csv"):
+            path.write_text("column\nvalue\n", encoding="utf-8")
+        elif name.endswith(".png"):
+            path.write_bytes(b"plot")
+        else:
+            path.write_text("{}\n", encoding="utf-8")
+        output_hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    (artifact_dir / "execution_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "9.9.9",
+                "evaluation_id": "evaluation-1",
+                "input_identity_sha256": "identity-1",
+                "outputs_sha256": output_hashes,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(EvaluationError, match="unsupported.*schema"):
+        _load_existing_result(artifact_dir, "evaluation-1", "identity-1")
 
 
 def _synthetic_audit_five_models() -> pd.DataFrame:
@@ -1264,24 +1489,35 @@ def test_policy_evaluation_hand_computed_metrics_comparisons_latency_and_edge_ca
         )
 
 
-def test_run_policy_evaluation_verifies_checksums_reconciliation_and_rejects_forged_events(
+@pytest.mark.parametrize(
+    "replay_case",
+    ["current", "archived-checkpoint-2.0.0", "archived-checkpoint-2.1.0"],
+    ids=["current-no-b3-adwin", "archived-v2.0-checkpoint-2.0", "archived-v2.0-checkpoint-2.1"],
+)
+def test_run_policy_evaluation_verifies_current_and_archived_replays_and_rejects_forged_events(
     tmp_path: Path,
+    replay_case: str,
 ) -> None:
-    from src.ml_evaluation import POLICY_EVALUATION_VERSION, reconcile_policy_replay_tables, run_policy_evaluation
+    from src.ml_evaluation import (
+        POLICY_EVALUATION_VERSION,
+        reconcile_policy_replay_tables,
+        run_policy_evaluation,
+        verify_policy_replay_artifacts,
+    )
     from src.ml_replay.config import POLICY_PROCESSING_ORDER, POLICY_REPLAY_CONFIG_VERSION
     from src.ml_replay.policy import POLICY_CHECKPOINT_VERSION
 
     tables = _synthetic_policy_eval_tables(with_events=True)
+    archived = replay_case != "current"
+    archived_checkpoint = replay_case.rsplit("-", 1)[-1] if archived else None
     replay_dir = tmp_path / "exp-policy-test"
     out_dir = replay_dir / "outputs"
     out_dir.mkdir(parents=True)
 
-    # Write all 7 benchmark + 6 policy CSVs and hash them cleanly.
+    # Current runs omit legacy B3 ADWIN files. Archived v2.0.0 replays retain them.
     all_files = {
         "asset_volatility_predictions.csv": pd.DataFrame(columns=["prediction_id"]),
         "evaluation.csv": tables["evaluation.csv"],
-        "drift_errors.csv": pd.DataFrame(columns=["prediction_id"]),
-        "drift_alerts.csv": pd.DataFrame(columns=["prediction_id"]),
         "updates.csv": pd.DataFrame(columns=["batch_id"]),
         "forecast_failures.csv": pd.DataFrame(columns=["reason"]),
         "coverage.csv": pd.DataFrame(columns=["ticker"]),
@@ -1292,6 +1528,9 @@ def test_run_policy_evaluation_verifies_checksums_reconciliation_and_rejects_for
         "policy_champion_timeline.csv": tables["policy_champion_timeline.csv"],
         "policy_failures.csv": tables["policy_failures.csv"],
     }
+    if archived:
+        all_files["drift_errors.csv"] = pd.DataFrame(columns=["prediction_id"])
+        all_files["drift_alerts.csv"] = pd.DataFrame(columns=["prediction_id"])
     hashes = {}
     for name, df in all_files.items():
         path = out_dir / name
@@ -1305,11 +1544,14 @@ def test_run_policy_evaluation_verifies_checksums_reconciliation_and_rejects_for
         "last_fully_committed_session": "2026-09-25",
         "b2_frozen_state_verified": True,
         "b4_frozen_state_verified": True,
-        "checkpoint_version": POLICY_CHECKPOINT_VERSION,
+        "checkpoint_version": archived_checkpoint if archived else POLICY_CHECKPOINT_VERSION,
         "replay_config": {
-            "replay_config_version": POLICY_REPLAY_CONFIG_VERSION,
-            "processing_order": list(POLICY_PROCESSING_ORDER),
-            "adwin": {"policy": "monitor_only"},
+            "replay_config_version": "2.0.0" if archived else POLICY_REPLAY_CONFIG_VERSION,
+            "processing_order": (
+                ["predict", "save_forecast", "evaluate", "adwin_monitor", "policy_adwin_and_decision", "update_b3", "checkpoint_commit"]
+                if archived else list(POLICY_PROCESSING_ORDER)
+            ),
+            **({"adwin": {"policy": "monitor_only"}} if archived else {}),
         },
         "champion_challenger_policy": {"policy_version": "1.0.0"},
         "policy_config_fingerprint": "f" * 64,
@@ -1318,6 +1560,16 @@ def test_run_policy_evaluation_verifies_checksums_reconciliation_and_rejects_for
         "final_policy_summary": {"total_policy_decisions": 2, "total_policy_promotions": 1},
     }
     (replay_dir / "experiment_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    _, verified_outputs, _, _ = verify_policy_replay_artifacts(replay_dir)
+    assert ("drift_errors.csv" in verified_outputs) is archived
+    assert ("drift_alerts.csv" in verified_outputs) is archived
+    if not archived:
+        retired_file = out_dir / "drift_errors.csv"
+        retired_file.write_text("legacy\n", encoding="utf-8")
+        with pytest.raises(EvaluationError, match="retired B3 ADWIN outputs"):
+            verify_policy_replay_artifacts(replay_dir)
+        retired_file.unlink()
 
     eval_out = tmp_path / "stage06-policy-eval"
     result = run_policy_evaluation(replay_dir, output_root=eval_out)

@@ -243,7 +243,8 @@ test("policy snapshot verifies checksums, next-session promotion timing, pending
 
   const gldDecisionHtml = renderPolicyMonitoringPanel(loaded, { ticker: "GLD", date: "2026-01-08" });
   assert.match(gldDecisionHtml, /Simulated Historical Replay/);
-  assert.match(gldDecisionHtml, /B3 Monitor ADWIN/);
+  assert.doesNotMatch(gldDecisionHtml, /B3 Monitor ADWIN|B3 Error Drift/);
+  assert.match(gldDecisionHtml, /Policy ADWIN \(Served Mature Error\)/);
   assert.match(gldDecisionHtml, /Feature Drift \(W1 \/ PSI\)/);
   assert.match(gldDecisionHtml, /Pending Promotion/);
   assert.match(gldDecisionHtml, /2026-01-09/);
@@ -276,12 +277,12 @@ test("no-alert policy snapshot renders honest empty state without fabricating al
   const tabsHtml = renderMonitoringFeatureDrift(
     { status: "missing", message: "No feature drift" },
     { ticker: "SPY", date: "2026-01-02", feature: "ret_1d_t", windowSize: 60, metric: "wasserstein_normalized", tab: "policy", model: "ONLINE_SGD" },
-    "<div>Error panel</div>",
     html,
   );
   assert.match(tabsHtml, /id="monitor-policy-tab"/);
   assert.match(tabsHtml, /id="monitor-policy-panel"[^>]*>/);
   assert.doesNotMatch(tabsHtml, /id="monitor-policy-panel"[^>]*hidden/);
+  assert.doesNotMatch(tabsHtml, /B3 Error Drift|B3 Monitor ADWIN|monitor-error-tab/);
 });
 
 test("policy loader handles missing sidecar and fails closed on tampered or forged events", async () => {

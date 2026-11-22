@@ -155,7 +155,9 @@ export function parseRollingMae20(text: string, policy: SnapshotPolicy): Rolling
 }
 
 export function parseDriftTimeline(text: string, policy: SnapshotPolicy): DriftTimelineRow[] {
-  return parseRows(text, policy.expectedHeaders.driftErrorTimeline, "drift_error_timeline.csv", parseDriftTimelineRow);
+  const headers = policy.expectedHeaders.driftErrorTimeline;
+  if (!headers) throw new SnapshotLoadError("Snapshot policy does not define an archived B3 drift error timeline", "integrity");
+  return parseRows(text, headers, "drift_error_timeline.csv", parseDriftTimelineRow);
 }
 
 export function parseH1Scatter(text: string, policy: SnapshotPolicy): H1ScatterRow[] {
@@ -348,7 +350,6 @@ function validateAdditionalSources(
   const countPairs: [number, number, string][] = [
     [portfolio.length, expectedCounts.portfolioRiskRows, "portfolio_risk.csv"],
     [rolling.length, expectedCounts.rollingMae20Rows, "rolling_mae20.csv"],
-    [drift.length, expectedCounts.driftErrorTimelineRows, "drift_error_timeline.csv"],
     [h1Scatter.length, expectedCounts.h1ScatterDataRows, "H1_scatter_data.csv"],
     [h1Results.length, expectedCounts.h1ResultsRows, "H1_results.csv"],
     [h1Sensitivity.length, expectedCounts.h1SensitivityRows, "H1_sensitivity.csv"],
@@ -357,6 +358,11 @@ function validateAdditionalSources(
     [highVolatility.length, expectedCounts.highVolatilityMetricsRows, "high_volatility_metrics.csv"],
   ];
   for (const [actual, expected, filename] of countPairs) if (actual !== expected) throw new SnapshotLoadError(`${filename} row count does not match the verified manifest`, "integrity");
+  if (manifest.schemaVersion === "1.2.0") {
+    if (drift.length > 0) throw new SnapshotLoadError("schema 1.2.0 must not contain the retired B3 drift error timeline", "integrity");
+  } else if (drift.length !== expectedCounts.driftErrorTimelineRows) {
+    throw new SnapshotLoadError("drift_error_timeline.csv row count does not match the verified manifest", "integrity");
+  }
 
   const keyed = <T>(rows: T[], keyFor: (row: T) => string, filename: string): Map<string, T> => {
     const map = new Map<string, T>();
@@ -402,23 +408,25 @@ function validateAdditionalSources(
   }
   const rollingByScope = keyed(rolling, (row) => `${row.split}:${row.ticker}:${row.modelName}:${row.windowEnd}`, "rolling_mae20.csv");
   const evaluableById = new Map(evaluations.filter((row) => row.modelName === "ONLINE_SGD").map((row) => [row.predictionId, row]));
-  const driftIds = new Set<string>();
-  for (const row of drift) {
-    if (driftIds.has(row.predictionId)) throw new SnapshotLoadError("drift_error_timeline.csv contains duplicate prediction IDs", "integrity");
-    driftIds.add(row.predictionId);
-    const evaluation = evaluableById.get(row.predictionId);
-    if (!evaluation || evaluation.predictionDate !== row.predictionDate || evaluation.ticker !== row.ticker || Math.abs(evaluation.absoluteError - row.absoluteErrorEvaluation) > 1e-12) {
-      throw new SnapshotLoadError(`drift_error_timeline.csv row does not match a verified B3 Test evaluation: ${row.predictionId}`, "integrity");
+  if (manifest.schemaVersion !== "1.2.0") {
+    const driftIds = new Set<string>();
+    for (const row of drift) {
+      if (driftIds.has(row.predictionId)) throw new SnapshotLoadError("drift_error_timeline.csv contains duplicate prediction IDs", "integrity");
+      driftIds.add(row.predictionId);
+      const evaluation = evaluableById.get(row.predictionId);
+      if (!evaluation || evaluation.predictionDate !== row.predictionDate || evaluation.ticker !== row.ticker || Math.abs(evaluation.absoluteError - row.absoluteErrorEvaluation) > 1e-12) {
+        throw new SnapshotLoadError(`drift_error_timeline.csv row does not match a verified B3 Test evaluation: ${row.predictionId}`, "integrity");
+      }
     }
-  }
-  const expectedDriftAlerts = manifest.expectedCounts.driftAlertRows ?? 0;
-  const observedDriftAlerts = drift.filter((row) => row.driftDetected).length;
-  if (
-    driftIds.size !== evaluableById.size
-    || drift.some((row) => row.driftDetected !== row.alertRecordPresent)
-    || observedDriftAlerts !== expectedDriftAlerts
-  ) {
-    throw new SnapshotLoadError("Drift source IDs or recorded alert count do not match the pinned B3 Test snapshot", "integrity");
+    const expectedDriftAlerts = manifest.expectedCounts.driftAlertRows ?? 0;
+    const observedDriftAlerts = drift.filter((row) => row.driftDetected).length;
+    if (
+      driftIds.size !== evaluableById.size
+      || drift.some((row) => row.driftDetected !== row.alertRecordPresent)
+      || observedDriftAlerts !== expectedDriftAlerts
+    ) {
+      throw new SnapshotLoadError("Drift source IDs or recorded alert count do not match the pinned B3 Test snapshot", "integrity");
+    }
   }
 
   const h1ByTicker = keyed(h1Results, (row) => row.ticker, "H1_results.csv");
@@ -476,7 +484,9 @@ export async function loadSnapshot(fetcher: typeof fetch = fetch, baseHref: stri
     const coverage = parseCoverage(content.coverage, policy);
     const portfolioRisk = parsePortfolioRisk(content.portfolioRisk, policy);
     const rollingMae20 = parseRollingMae20(content.rollingMae20, policy);
-    const driftTimeline = parseDriftTimeline(content.driftErrorTimeline, policy);
+    const driftTimeline = policy.publicOutputs.driftErrorTimeline
+      ? parseDriftTimeline(content.driftErrorTimeline, policy)
+      : [];
     const h1Scatter = parseH1Scatter(content.h1ScatterData, policy);
     const h1Results = parseH1Results(content.h1Results, policy);
     const h1Sensitivity = parseH1Sensitivity(content.h1Sensitivity, policy);

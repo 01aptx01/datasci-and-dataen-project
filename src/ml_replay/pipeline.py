@@ -111,21 +111,6 @@ EVALUATION_COLUMNS = [
     "prediction_run_id",
     "evaluation_run_id",
 ]
-DRIFT_ERROR_COLUMNS = [
-    "experiment_id",
-    "prediction_id",
-    "prediction_date",
-    "evaluation_date",
-    "ticker",
-    "absolute_error",
-    "adwin_delta",
-    "adwin_width",
-    "adwin_estimation",
-    "drift_detected",
-    "prediction_run_id",
-    "evaluation_run_id",
-]
-DRIFT_ALERT_COLUMNS = DRIFT_ERROR_COLUMNS.copy()
 UPDATE_COLUMNS = [
     "experiment_id",
     "update_date",
@@ -193,8 +178,6 @@ class ReplayResult:
     artifact_dir: Path
     predictions: pd.DataFrame
     evaluations: pd.DataFrame
-    drift_errors: pd.DataFrame
-    drift_alerts: pd.DataFrame
     updated_labels: pd.DataFrame
     forecast_failures: pd.DataFrame
     coverage: pd.DataFrame
@@ -202,7 +185,6 @@ class ReplayResult:
     experiment_manifest: dict[str, Any]
     final_b3_state_sha256_by_ticker: dict[str, str]
     final_b2_state_sha256_by_ticker: dict[str, str]
-    final_adwin_state_sha256_by_ticker: dict[str, str]
     completed: bool
     policy_forecasts: pd.DataFrame | None = None
     policy_evaluations: pd.DataFrame | None = None
@@ -217,9 +199,7 @@ class ReplayResult:
 class _RuntimeState:
     b3_models: dict[str, Any]
     scalers: dict[str, Any]
-    adwin_detectors: dict[str, ADWIN]
     updated_label_keys: set[tuple[date, str]]
-    processed_error_ids: set[str]
     evaluated_prediction_ids: set[str]
     pending_predictions: list[dict[str, Any]]
     last_b3_target_end_by_ticker: dict[str, date]
@@ -570,14 +550,11 @@ def _new_runtime_state(
     initial_tickers: Mapping[str, Any],
     initial_last_train_end: Mapping[str, date],
     seed_keys: set[tuple[date, str]],
-    adwin_delta: float,
 ) -> _RuntimeState:
     return _RuntimeState(
         b3_models={ticker: deepcopy(initial_tickers[ticker]["b3"]) for ticker in SUPPORTED_TICKERS},
         scalers={ticker: deepcopy(initial_tickers[ticker]["scaler"]) for ticker in SUPPORTED_TICKERS},
-        adwin_detectors={ticker: ADWIN(delta=adwin_delta) for ticker in SUPPORTED_TICKERS},
         updated_label_keys=set(seed_keys),
-        processed_error_ids=set(),
         evaluated_prediction_ids=set(),
         pending_predictions=[],
         last_b3_target_end_by_ticker=dict(initial_last_train_end),
@@ -598,10 +575,6 @@ def _serialize_runtime_state(
         ticker: model_state_sha256(runtime.b3_models[ticker], runtime.scalers[ticker])
         for ticker in SUPPORTED_TICKERS
     }
-    adwin_hashes = {
-        ticker: _adwin_state_sha256(runtime.adwin_detectors[ticker])
-        for ticker in SUPPORTED_TICKERS
-    }
     is_policy = bool(replay_config is not None and replay_config.is_champion_challenger)
     checkpoint_version = POLICY_CHECKPOINT_VERSION if is_policy else BASELINE_CHECKPOINT_VERSION
     state: dict[str, Any] = {
@@ -612,11 +585,9 @@ def _serialize_runtime_state(
         "last_committed_session": last_committed_session.isoformat(),
         "b3_models": runtime.b3_models,
         "scalers": runtime.scalers,
-        "adwin_detectors": runtime.adwin_detectors,
         "updated_label_keys": sorted(
             [(anchor.isoformat(), ticker) for anchor, ticker in runtime.updated_label_keys]
         ),
-        "processed_error_ids": sorted(runtime.processed_error_ids),
         "evaluated_prediction_ids": sorted(runtime.evaluated_prediction_ids),
         "pending_predictions": runtime.pending_predictions,
         "last_b3_target_end_by_ticker": {
@@ -624,7 +595,6 @@ def _serialize_runtime_state(
         },
         "initial_b2_state_sha256_by_ticker": dict(initial_hash_by_ticker),
         "b3_state_sha256_by_ticker": b3_hashes,
-        "adwin_state_sha256_by_ticker": adwin_hashes,
     }
     if is_policy:
         assert replay_config is not None and replay_config.champion_challenger is not None
@@ -665,9 +635,7 @@ def _restore_runtime_state(
     runtime = _RuntimeState(
         b3_models=dict(saved["b3_models"]),
         scalers=dict(saved["scalers"]),
-        adwin_detectors=dict(saved["adwin_detectors"]),
         updated_label_keys={(_as_date(anchor, "updated label anchor"), str(ticker)) for anchor, ticker in saved["updated_label_keys"]},
-        processed_error_ids=set(saved["processed_error_ids"]),
         evaluated_prediction_ids=set(saved["evaluated_prediction_ids"]),
         pending_predictions=list(saved["pending_predictions"]),
         last_b3_target_end_by_ticker={
@@ -681,9 +649,6 @@ def _restore_runtime_state(
         actual_model_hash = model_state_sha256(runtime.b3_models[ticker], runtime.scalers[ticker])
         if actual_model_hash != saved["b3_state_sha256_by_ticker"].get(ticker):
             raise ReplayError(f"{ticker} B3 checkpoint model/scaler hash is invalid")
-        actual_adwin_hash = _adwin_state_sha256(runtime.adwin_detectors[ticker])
-        if actual_adwin_hash != saved["adwin_state_sha256_by_ticker"].get(ticker):
-            raise ReplayError(f"{ticker} ADWIN checkpoint hash is invalid")
     return runtime
 
 
@@ -717,9 +682,7 @@ def _state_summary(state: Mapping[str, Any]) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "last_committed_session": state["last_committed_session"],
         "b3_state_sha256_by_ticker": state["b3_state_sha256_by_ticker"],
-        "adwin_state_sha256_by_ticker": state["adwin_state_sha256_by_ticker"],
         "updated_label_count": len(state["updated_label_keys"]),
-        "processed_error_count": len(state["processed_error_ids"]),
         "evaluated_prediction_count": len(state["evaluated_prediction_ids"]),
         "pending_prediction_count": len(state["pending_predictions"]),
     }
@@ -1009,8 +972,6 @@ def _build_outputs(
             committed_dirs, "predictions.csv", PREDICTION_COLUMNS
         ),
         "evaluation.csv": _read_daily_tables(committed_dirs, "evaluations.csv", EVALUATION_COLUMNS),
-        "drift_errors.csv": _read_daily_tables(committed_dirs, "drift_errors.csv", DRIFT_ERROR_COLUMNS),
-        "drift_alerts.csv": _read_daily_tables(committed_dirs, "drift_alerts.csv", DRIFT_ALERT_COLUMNS),
         "updates.csv": _read_daily_tables(committed_dirs, "updates.csv", UPDATE_COLUMNS),
         "forecast_failures.csv": _read_daily_tables(committed_dirs, "forecast_failures.csv", FAILURE_COLUMNS),
         "coverage.csv": _read_daily_tables(committed_dirs, "coverage.csv", DAILY_COVERAGE_COLUMNS),
@@ -1027,8 +988,6 @@ def _build_outputs(
                 frame,
                 ("prediction_date", "target_start_date", "target_end_date", "evaluation_date", "label_available_replay_date"),
             )
-        elif name in ("drift_errors.csv", "drift_alerts.csv"):
-            outputs[name] = _date_columns(frame, ("prediction_date", "evaluation_date"))
         elif name == "updates.csv":
             outputs[name] = _date_columns(frame, ("update_date", "anchor_date", "target_end_date"))
         elif name in ("forecast_failures.csv", "coverage.csv"):
@@ -1070,7 +1029,6 @@ def _result_from_outputs(
     if not predictions.empty:
         predictions = predictions.reindex(columns=PREDICTION_COLUMNS)
     b3_hashes = dict(final_state.get("b3_state_sha256_by_ticker", {})) if final_state else {}
-    adwin_hashes = dict(final_state.get("adwin_state_sha256_by_ticker", {})) if final_state else {}
     policy_champ_hashes: dict[str, str] | None = None
     if include_policy and final_state and "policy_state" in final_state:
         policy_champ_hashes = dict(
@@ -1082,8 +1040,6 @@ def _result_from_outputs(
         artifact_dir=experiment_dir,
         predictions=predictions,
         evaluations=outputs["evaluation.csv"],
-        drift_errors=outputs["drift_errors.csv"],
-        drift_alerts=outputs["drift_alerts.csv"],
         updated_labels=outputs["updates.csv"],
         forecast_failures=outputs["forecast_failures.csv"],
         coverage=outputs["coverage.csv"],
@@ -1091,7 +1047,6 @@ def _result_from_outputs(
         experiment_manifest=manifest,
         final_b3_state_sha256_by_ticker=b3_hashes,
         final_b2_state_sha256_by_ticker=dict(final_b2_hashes),
-        final_adwin_state_sha256_by_ticker=adwin_hashes,
         completed=completed,
         policy_forecasts=outputs.get("policy_forecasts.csv") if include_policy else None,
         policy_evaluations=outputs.get("policy_evaluations.csv") if include_policy else None,
@@ -1295,7 +1250,6 @@ def run_final_replay(
         initial_tickers,
         initial_train_ends,
         seed_keys,
-        replay_config.adwin_delta,
     )
     if is_policy:
         assert replay_config.champion_challenger is not None
@@ -1370,8 +1324,6 @@ def run_final_replay(
             session_failures: list[dict[str, Any]] = []
             session_coverage: list[dict[str, Any]] = []
             session_evaluations: list[dict[str, Any]] = []
-            session_drift_errors: list[dict[str, Any]] = []
-            session_drift_alerts: list[dict[str, Any]] = []
             session_updates: list[dict[str, Any]] = []
             session_policy_forecasts: list[dict[str, Any]] = []
             session_policy_evaluations: list[dict[str, Any]] = []
@@ -1662,31 +1614,7 @@ def run_final_replay(
                 session_evaluations.append(evaluation)
                 runtime.evaluated_prediction_ids.add(prediction_id)
 
-                if forecast["model_name"] == MODEL_NAMES["B3"]:
-                    if prediction_id in runtime.processed_error_ids:
-                        raise ReplayError(f"ADWIN error was already processed: {prediction_id}")
-                    detector = runtime.adwin_detectors[str(forecast["ticker"])]
-                    detector.update(absolute_error)
-                    drift_row = {
-                        "experiment_id": experiment_id,
-                        "prediction_id": prediction_id,
-                        "prediction_date": anchor,
-                        "evaluation_date": session_date,
-                        "ticker": forecast["ticker"],
-                        "absolute_error": absolute_error,
-                        "adwin_delta": replay_config.adwin_delta,
-                        "adwin_width": int(detector.width),
-                        "adwin_estimation": float(detector.estimation),
-                        "drift_detected": bool(detector.drift_detected),
-                        "prediction_run_id": forecast["run_id"],
-                        "evaluation_run_id": run_id,
-                    }
-                    session_drift_errors.append(drift_row)
-                    if drift_row["drift_detected"]:
-                        session_drift_alerts.append(dict(drift_row))
-                    runtime.processed_error_ids.add(prediction_id)
             runtime.pending_predictions = remaining_pending
-            _invoke_failure_hook(failure_injector, "after_adwin", session_date)
 
             if is_policy:
                 assert runtime.policy is not None
@@ -1808,8 +1736,6 @@ def run_final_replay(
             table_frames = {
                 "predictions.csv": (prediction_frame, PREDICTION_COLUMNS),
                 "evaluations.csv": (_records_frame(session_evaluations, EVALUATION_COLUMNS), EVALUATION_COLUMNS),
-                "drift_errors.csv": (_records_frame(session_drift_errors, DRIFT_ERROR_COLUMNS), DRIFT_ERROR_COLUMNS),
-                "drift_alerts.csv": (_records_frame(session_drift_alerts, DRIFT_ALERT_COLUMNS), DRIFT_ALERT_COLUMNS),
                 "updates.csv": (_records_frame(session_updates, UPDATE_COLUMNS), UPDATE_COLUMNS),
                 "forecast_failures.csv": (_records_frame(session_failures, FAILURE_COLUMNS), FAILURE_COLUMNS),
                 "coverage.csv": (_records_frame(session_coverage, DAILY_COVERAGE_COLUMNS), DAILY_COVERAGE_COLUMNS),
@@ -1849,7 +1775,6 @@ def run_final_replay(
                 "versions": versions,
                 "prediction_count": len(session_predictions),
                 "evaluation_count": len(session_evaluations),
-                "drift_error_count": len(session_drift_errors),
                 "update_count": len(session_updates),
                 "forecast_failure_count": len(session_failures),
                 "coverage_row_count": len(session_coverage),
@@ -1923,8 +1848,6 @@ def run_final_replay(
                     committed_dirs, "predictions.csv", PREDICTION_COLUMNS
                 ),
                 "evaluation.csv": _read_daily_tables(committed_dirs, "evaluations.csv", EVALUATION_COLUMNS),
-                "drift_errors.csv": _read_daily_tables(committed_dirs, "drift_errors.csv", DRIFT_ERROR_COLUMNS),
-                "drift_alerts.csv": _read_daily_tables(committed_dirs, "drift_alerts.csv", DRIFT_ALERT_COLUMNS),
                 "updates.csv": _read_daily_tables(committed_dirs, "updates.csv", UPDATE_COLUMNS),
                 "forecast_failures.csv": _read_daily_tables(committed_dirs, "forecast_failures.csv", FAILURE_COLUMNS),
                 "coverage.csv": _read_daily_tables(committed_dirs, "coverage.csv", DAILY_COVERAGE_COLUMNS),
@@ -1939,12 +1862,6 @@ def run_final_replay(
             outputs["evaluation.csv"] = _date_columns(
                 outputs["evaluation.csv"],
                 ("prediction_date", "target_start_date", "target_end_date", "evaluation_date", "label_available_replay_date"),
-            )
-            outputs["drift_errors.csv"] = _date_columns(
-                outputs["drift_errors.csv"], ("prediction_date", "evaluation_date")
-            )
-            outputs["drift_alerts.csv"] = _date_columns(
-                outputs["drift_alerts.csv"], ("prediction_date", "evaluation_date")
             )
             outputs["updates.csv"] = _date_columns(
                 outputs["updates.csv"], ("update_date", "anchor_date", "target_end_date")

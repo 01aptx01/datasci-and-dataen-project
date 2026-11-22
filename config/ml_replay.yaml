@@ -1,4 +1,4 @@
-replay_config_version: "1.0.0"
+replay_config_version: "1.1.0"
 market: XNYS
 prediction_mode: HISTORICAL_REPLAY
 forecast_horizon_trading_days: 5
@@ -12,20 +12,15 @@ processing_order:
   - predict
   - save_forecast
   - evaluate
-  - adwin_monitor
   - update_b3
   - checkpoint_commit
-adwin:
-  detector: ADWIN
-  delta: 0.002
-  policy: monitor_only
 checkpoint:
   cadence: every_xnys_session
   atomic_commit: true
   resume_policy: latest_valid_committed_checkpoint_only
 
 champion_challenger_policy:
-  replay_config_version: "2.0.0"
+  replay_config_version: "2.1.0"
   policy_version: "1.0.0"
   policy_name: drift_triggered_champion_challenger
   activation_split: test
@@ -40,7 +35,6 @@ champion_challenger_policy:
     - predict
     - save_forecast
     - evaluate
-    - adwin_monitor
     - policy_adwin_and_decision
     - update_b3
     - checkpoint_commit

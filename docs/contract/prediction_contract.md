@@ -153,7 +153,7 @@ $$
 2. Forecast วัน `t` **ไม่ต้องรอ Label ของวัน `t`**; Label นี้ต้องรอผลตอบแทนของ `t+1` ถึง `t+5`
 3. Training/Scaler/Selection สำหรับ Online Model ต้อง Fit จากข้อมูล Train ที่รู้ผลจริงแล้วเท่านั้น ตาม `feature_contract.md`; ห้าม Fit ด้วย Validation/Test ก่อนการทำนาย
 4. แบ่งชุด Train/Validation/Test แบบ Chronological และใช้ Purge ขอบช่วงตาม `feature_contract.md` (`target_end_date >= next_split_start_date` ของตัวอย่างชุดก่อนหน้าไม่เข้า Train)
-5. ใน Historical Replay ที่วันจำลอง `s` ใช้ลำดับ **Predict → Save Forecast → Evaluate Mature Labels → ADWIN (Monitor-only) → Update B3 → Checkpoint**; อัปเดต **B3 เท่านั้น** ด้วยตัวอย่างที่ครบ 5 วันและผ่าน Data Cut-off หลังบันทึก Forecast ของวัน `s`; B2 คง Frozen, ห้าม Update ตัวอย่างเดิมซ้ำ และ ADWIN ทำหน้าที่แจ้งเตือนโดยไม่ควบคุมการ Update/Reset/Retune อัตโนมัติ
+5. ใน Historical Replay ที่วันจำลอง `s` ใช้ลำดับ **Predict → Save Forecast → Evaluate Mature Labels → Update B3 → Checkpoint**; อัปเดต **B3 เท่านั้น** ด้วยตัวอย่างที่ครบ 5 วันและผ่าน Data Cut-off หลังบันทึก Forecast ของวัน `s`; B2 คง Frozen, ห้าม Update ตัวอย่างเดิมซ้ำ
 6. `last_training_target_end_date` ต้องเป็นวัน Target จริงที่ใหม่ที่สุดซึ่งเคยใช้สร้าง Baseline/Model State ณ คำทำนายนั้น; B1 เป็น `NULL`; B0/B2/B3 ต้องมีค่าและต้องไม่เกินข้อมูลที่รู้ผล ณ Cut-off
 7. `prediction_created_at_utc` เป็นเวลาที่คำนวณจริง และ **ไม่ใช่** หลักฐานว่าสามารถเข้าถึง Yahoo Finance Snapshot เดียวกัน ณ วันในอดีต; รายงาน Historical Replay ต้องระบุข้อจำกัดเรื่องการปรับราคาย้อนหลังอย่างตรงไปตรงมา
 

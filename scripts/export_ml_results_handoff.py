@@ -66,6 +66,16 @@ REQUIRED_OUTPUT_FILES = (
     "rolling_mae20.csv",
     "yearly_metrics.csv",
 )
+CURRENT_OUTPUT_FILES = tuple(name for name in REQUIRED_OUTPUT_FILES if name != "drift_error_timeline.csv")
+
+
+def _required_output_files(manifest: dict[str, Any]) -> tuple[str, ...]:
+    version = manifest.get("schema_version")
+    if version == "1.1.0":
+        return CURRENT_OUTPUT_FILES
+    if version in ("1.0.0", None):
+        return REQUIRED_OUTPUT_FILES
+    raise ArtifactVerificationError(f"unsupported Stage 06 schema version: {version}")
 
 _EVALUATION_CODE_FILES = (
     "__init__.py",
@@ -360,10 +370,17 @@ def verify_source_artifacts(
     output_hashes = manifest.get("outputs_sha256")
     if not isinstance(output_hashes, dict):
         raise ArtifactVerificationError("Stage 06 output hashes are missing")
-    missing = set(REQUIRED_OUTPUT_FILES) - set(output_hashes)
-    if missing:
+    required_outputs = _required_output_files(manifest)
+    if manifest.get("schema_version") == "1.1.0" and "drift_error_timeline.csv" in output_hashes:
+        raise ArtifactVerificationError("current Stage 06 must not publish the legacy B3 ADWIN timeline")
+    if manifest.get("schema_version") == "1.1.0" and (source_path / "drift_error_timeline.csv").exists():
+        raise ArtifactVerificationError("current Stage 06 must not contain a legacy B3 ADWIN timeline file")
+    missing = set(required_outputs) - set(output_hashes)
+    extra = set(output_hashes) - set(required_outputs)
+    if missing or extra:
         raise ArtifactVerificationError(
-            "Stage 06 required outputs are missing from manifest: " + ", ".join(sorted(missing))
+            "Stage 06 output set does not match the contract; missing: "
+            + ", ".join(sorted(missing)) + "; unexpected: " + ", ".join(sorted(extra))
         )
     _verify_hashes(source_path, output_hashes, "Stage 06")
 
@@ -377,6 +394,10 @@ def verify_source_artifacts(
         "final_outputs_sha256"
     ):
         raise ArtifactVerificationError("Stage 05 output hashes differ between the linked manifests")
+    if replay_manifest.get("replay_config", {}).get("replay_config_version") == "1.1.0" and any(
+        (replay_path / "outputs" / name).exists() for name in ("drift_errors.csv", "drift_alerts.csv")
+    ):
+        raise ArtifactVerificationError("current Stage 05 must not contain legacy B3 ADWIN output files")
     _verify_hashes(replay_path / "outputs", replay_hashes, "Stage 05 replay")
 
     root = Path(repo_root).resolve() if repo_root is not None else None
@@ -428,7 +449,8 @@ def export_results_bundle(
     redacted_files: list[str] = []
     repo_path = Path(repo_root).resolve() if repo_root is not None else None
 
-    names = (*REQUIRED_OUTPUT_FILES, "execution_manifest.json")
+    required_outputs = _required_output_files(manifest)
+    names = (*required_outputs, "execution_manifest.json")
     for name in names:
         origin = source_path / name
         source_hashes[name] = _sha256(origin)
@@ -459,9 +481,9 @@ def export_results_bundle(
     )
     export_hashes[replay_manifest_target.name] = _sha256(replay_manifest_target)
 
-    row_counts = _row_counts(approved_dir, REQUIRED_OUTPUT_FILES)
+    row_counts = _row_counts(approved_dir, required_outputs)
     identity = {
-        "handoff_schema_version": "1.1.0",
+        "handoff_schema_version": "1.2.0" if manifest.get("schema_version") == "1.1.0" else "1.1.0",
         "source_verification_status": "SOURCE VERIFIED",
         "evaluation_id": manifest["evaluation_id"],
         "final_replay_experiment_id": manifest["final_replay_experiment_id"],

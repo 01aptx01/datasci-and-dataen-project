@@ -60,6 +60,8 @@ REPLAY_OUTPUTS = (
     "updates.csv",
 )
 
+CURRENT_REPLAY_OUTPUTS = tuple(name for name in REPLAY_OUTPUTS if name not in {"drift_errors.csv", "drift_alerts.csv"})
+
 FINAL_EVALUATION_OUTPUTS = frozenset(
     {
         "evaluation.csv",
@@ -91,6 +93,8 @@ FINAL_EVALUATION_OUTPUTS = frozenset(
         "evaluation_summary.md",
     }
 )
+
+CURRENT_EVALUATION_OUTPUTS = FINAL_EVALUATION_OUTPUTS - {"drift_error_timeline.csv"}
 
 
 @dataclass(frozen=True)
@@ -250,22 +254,34 @@ def _verify_replay_artifacts(replay_dir: Path, config: EvaluationConfig) -> tupl
         raise EvaluationError("Final Replay source quality gate did not pass")
     if manifest.get("b2_frozen_state_verified") is not True:
         raise EvaluationError("Final Replay does not prove that B2 remained frozen")
+    legacy_monitor = replay_config.get("replay_config_version") == "1.0.0"
+    expected_order = ["predict", "save_forecast", "evaluate"]
+    if legacy_monitor:
+        expected_order.append("adwin_monitor")
+    expected_order.extend(["update_b3", "checkpoint_commit"])
+    if replay_config.get("replay_config_version") not in {"1.0.0", "1.1.0"}:
+        raise EvaluationError("unsupported Final Replay config version")
     if (
         replay_config.get("update_model") != "B3"
         or replay_config.get("update_policy") != "mature_labels_only"
         or replay_config.get("duplicate_updates_allowed") is not False
-        or replay_config.get("adwin", {}).get("policy") != "monitor_only"
-        or replay_config.get("processing_order")
-        != ["predict", "save_forecast", "evaluate", "adwin_monitor", "update_b3", "checkpoint_commit"]
+        or (legacy_monitor and replay_config.get("adwin", {}).get("policy") != "monitor_only")
+        or (not legacy_monitor and "adwin" in replay_config)
+        or replay_config.get("processing_order") != expected_order
     ):
         raise EvaluationError("Final Replay update, ADWIN, duplicate-update, or processing-order contract is invalid")
     expected_hashes = manifest.get("final_outputs_sha256")
-    if not isinstance(expected_hashes, dict) or set(REPLAY_OUTPUTS) - set(expected_hashes):
-        raise EvaluationError("Final Replay manifest does not hash every required output")
+    replay_outputs = REPLAY_OUTPUTS if legacy_monitor else CURRENT_REPLAY_OUTPUTS
+    if isinstance(expected_hashes, dict) and not legacy_monitor and {"drift_errors.csv", "drift_alerts.csv"} & set(expected_hashes):
+        raise EvaluationError("current Final Replay must not include legacy B3 ADWIN outputs")
+    if not isinstance(expected_hashes, dict) or set(expected_hashes) != set(replay_outputs):
+        raise EvaluationError("Final Replay manifest output set does not match its replay contract")
     output_dir = replay_dir / "outputs"
+    if not legacy_monitor and any((output_dir / name).exists() for name in ("drift_errors.csv", "drift_alerts.csv")):
+        raise EvaluationError("current Final Replay must not include legacy B3 ADWIN output files")
     hashes: dict[str, str] = {}
     outputs: dict[str, pd.DataFrame] = {}
-    for filename in REPLAY_OUTPUTS:
+    for filename in replay_outputs:
         path = output_dir / filename
         digest = _file_sha256(path)
         if digest != expected_hashes[filename]:
@@ -330,6 +346,11 @@ def _verify_training_artifacts(training_dir: Path, replay_manifest: Mapping[str,
     )
     if has_b4_suite:
         names.append("b4_validation_evaluations.csv")
+    champion_files = {"initial_champion_selection.json", "initial_champion_validation_scores.csv"}
+    present_champion_files = champion_files & set(expected)
+    if present_champion_files and present_champion_files != champion_files:
+        raise EvaluationError("Stage 04 initial champion lineage is incomplete")
+    names.extend(sorted(present_champion_files))
     hashes: dict[str, str] = {}
     for name in names:
         digest = _file_sha256(training_dir / name)
@@ -1496,7 +1517,11 @@ def _load_existing_result(artifact_dir: Path, evaluation_id: str, identity_sha25
     if manifest.get("evaluation_id") != evaluation_id or manifest.get("input_identity_sha256") != identity_sha256:
         raise EvaluationError("Final Evaluation output directory exists with a different input identity")
     output_hashes = manifest.get("outputs_sha256")
-    if not isinstance(output_hashes, dict) or set(output_hashes) != FINAL_EVALUATION_OUTPUTS:
+    schema_version = manifest.get("schema_version")
+    if schema_version not in {"1.0.0", "1.1.0"}:
+        raise EvaluationError(f"unsupported Final Evaluation schema version: {schema_version}")
+    expected_outputs = CURRENT_EVALUATION_OUTPUTS if schema_version == "1.1.0" else FINAL_EVALUATION_OUTPUTS
+    if not isinstance(output_hashes, dict) or set(output_hashes) != expected_outputs:
         raise EvaluationError("existing Final Evaluation manifest does not list every required output")
     for filename, expected_digest in output_hashes.items():
         if _file_sha256(artifact_dir / filename) != expected_digest:
@@ -1736,12 +1761,11 @@ def run_final_evaluation(
             minimum_evaluable=effective_config.rolling_minimum_evaluable,
             model_names=effective_config.model_names,
         )
-        drift_timeline = _build_drift_error_timeline(
-            audit,
-            replay_outputs["drift_errors.csv"],
-            replay_outputs["drift_alerts.csv"],
-            effective_config,
-        )
+        legacy_monitor = replay_manifest["replay_config"]["replay_config_version"] == "1.0.0"
+        if legacy_monitor:
+            drift_timeline = _build_drift_error_timeline(
+                audit, replay_outputs["drift_errors.csv"], replay_outputs["drift_alerts.csv"], effective_config
+            )
         portfolio = _build_portfolio_risk_table(
             audit,
             correlations,
@@ -1780,11 +1804,12 @@ def run_final_evaluation(
             "monthly_metrics.csv": monthly,
             "yearly_metrics.csv": yearly,
             "rolling_mae20.csv": rolling,
-            "drift_error_timeline.csv": drift_timeline,
             "portfolio_risk.csv": portfolio,
             "hypothesis_results.csv": hypothesis_results,
             "bootstrap_diagnostics.csv": bootstrap_diagnostics,
         }
+        if legacy_monitor:
+            outputs["drift_error_timeline.csv"] = drift_timeline
         for filename, frame in outputs.items():
             _write_csv(temporary_dir / filename, frame)
 
@@ -1831,10 +1856,11 @@ def run_final_evaluation(
             for path in sorted(temporary_dir.iterdir(), key=lambda item: item.name)
             if path.is_file()
         }
-        if set(output_hashes) != FINAL_EVALUATION_OUTPUTS:
+        expected_outputs = FINAL_EVALUATION_OUTPUTS if legacy_monitor else CURRENT_EVALUATION_OUTPUTS
+        if set(output_hashes) != expected_outputs:
             raise EvaluationError("Final Evaluation did not create the complete required evidence set")
         manifest = {
-            "schema_version": "1.0.0",
+            "schema_version": "1.0.0" if legacy_monitor else "1.1.0",
             "stage": "06_final_evaluation_testing_portfolio",
             "status": "COMPLETED",
             "evaluation_id": evaluation_id,

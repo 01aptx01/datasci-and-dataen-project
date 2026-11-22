@@ -8,7 +8,7 @@
 
 ## 1. Boundary Against Approved B0–B4 & H1–H3 Contracts
 
-1. **No alteration of B0–B4 or H1–H3:** `config/models.yaml`, `prediction_contract.md` (5 logical tables, 16-column `asset_volatility_predictions`), and `config/hypothesis_tests.yaml` (H1–H3) remain unchanged.
+1. **No alteration of B0–B4 or H1–H3:** B0–B4 definitions, the 16-column prediction schema, and H1–H3 hypotheses remain unchanged; the replay contract removes the retired B3 monitor.
 2. **Retrospective / Exploratory Framing:** This policy was specified after observing Stage 06 Test outcomes. Policy evaluation is reported separately from H1–H3 and must not be presented as a confirmatory test until evaluated on an unseen holdout period.
 3. **Simulated Historical Replay Limitation:** As in `prediction_contract.md` and `target_contract.md`, `point_in_time_source_availability_verified` remains `false`. Historical price/feature availability is simulated using `target_end_date <= replay_date` and pipeline validation evidence.
 4. **Static Dashboard Scope:** The web UI displays verified static historical replay snapshots and does not perform live inference, retraining, or live operational scheduling.
@@ -43,7 +43,7 @@
 
 ---
 
-## 3. Daily Replay Policy Protocol (Stage 05 Policy Mode, `replay_config_version: "2.0.0"`)
+## 3. Daily Replay Policy Protocol (Stage 05 Policy Mode, `replay_config_version: "2.1.0"`)
 
 Activated at `activation_start_date = 2025-10-01` (Test start). During Validation (`2024-10-01..2025-09-30`), B0–B4 and `shadow_b3` execute the standard predict-before-update loop with no policy switching.
 
@@ -62,8 +62,7 @@ For each XNYS session `s`:
    - Evaluate pending policy forecasts whose `target_end_date <= s` in deterministic `(prediction_date, prediction_id)` order.
    - Only forecasts issued under the **currently active `champion_version_id`** enter the active detector stream and active paired comparison window. Matured forecasts from a **superseded champion version** are still recorded in `policy_evaluations.csv` for accuracy audit, but are **skipped** from the new version's ADWIN stream and paired comparison window with explicit reason `matured_under_newer_champion_version`.
    - Paired comparison records require BOTH valid served forecast and valid shadow B3 forecast for the same `(prediction_date, ticker)` and active `champion_version_id`.
-3. **`adwin_monitor` (benchmark B3 monitor-only, unchanged).**
-4. **`policy_adwin_and_decision`:**
+3. **`policy_adwin_and_decision`:**
    - Feed each current-champion mature served `absolute_error` for ticker `T` in deterministic `(prediction_date, prediction_id)` order to `policy_adwin[T]` (`ADWIN(delta=0.002)`).
    - Record `adwin_estimation_before`, `adwin_estimation`, `adwin_width`, `drift_detected`, and `drift_direction` (`error_increase`, `error_decrease`, `shift_neutral`, or `no_signal`).
    - **Multiple alerts in one session:** The **first alert** for ticker `T` in session `s` initiates the single decision evaluation for `(s, T)`; remaining mature errors of the active champion in session `s` continue feeding that same pre-decision ADWIN stream in deterministic order (never crossing into a newly promoted detector).
@@ -79,10 +78,10 @@ For each XNYS session `s`:
          - Reset `policy_adwin[ticker]` to a fresh `ADWIN(delta=0.002)` and start a new paired window for the new champion version.
        - Else → `decision_outcome = "retained"` (champion unchanged, ADWIN stream preserved).
      - Set `cooldown_remaining[T] = cooldown_sessions (20)` after any evaluated decision (`promoted`, `retained`, `insufficient_pairs`, `invalid`). Decrement cooldown by 1 at end of each subsequent XNYS session.
-5. **`update_b3`:**
+4. **`update_b3`:**
    - Update benchmark `B3` and `shadow_b3` (memory-isolated copy, never aliasing `champion_snapshot`) with the deterministic batch of newly mature eligible labels (`target_end_date <= s`, no duplicates).
-6. **`checkpoint_commit`:**
-   - Atomically commit session tables and versioned `checkpoint.joblib` (`checkpoint_version = "2.0.0"`), including `champion_snapshots`, `shadow_b3`, `policy_adwin`, `policy_pending_forecasts`, `policy_paired_history`, `policy_cooldown_remaining`, ledgers, and `policy_config_fingerprint`.
+5. **`checkpoint_commit`:**
+   - Atomically commit session tables and versioned `checkpoint.joblib` (`checkpoint_version = "2.2.0"`), including `champion_snapshots`, `shadow_b3`, `policy_adwin`, `policy_pending_forecasts`, `policy_paired_history`, `policy_cooldown_remaining`, ledgers, and `policy_config_fingerprint`.
 
 ---
 
@@ -96,7 +95,7 @@ For each XNYS session `s`:
 
 ## 5. Policy Evaluation Contract (Stage 06 Extension, `policy_evaluation_version: "1.2.0"`)
 
-- **Isolation from H1–H3 & `1.1.0`:** Stage 06 `1.1.0` (`run_final_evaluation`) and `config/hypothesis_tests.yaml` remain unmodified. Policy evaluation runs via `run_policy_evaluation` into `policy_experiments/<evaluation_id>/`.
+- **Isolation from H1–H3:** The baseline evaluation preserves H1–H3 while its new output schema omits the retired B3 monitor timeline. Policy evaluation runs via `run_policy_evaluation` into `policy_experiments/<evaluation_id>/`.
 - **Matched Mature Test Panel:** All strategies (`CHAMPION_CHALLENGER_POLICY`, `FIXED_INITIAL_CHAMPION`, `SHADOW_B3`, and `B0`–`B4`) are compared per ETF (`SPY`, `IEF`, `GLD`) and equal-weight `MACRO` strictly on the intersection of mature, finite, nonnegative Test keys (`target_realized_vol_5d` consistency enforced within `1e-12`).
 - **Edge & Operational Reporting:** Zero alerts, zero promotions, insufficient matched samples (`status = "INSUFFICIENT_SAMPLE"`), invalid forecasts, pending horizon rows, and calendar-day latencies (`label maturity`, `trigger anchor -> decision`, `decision -> effective`) are reported explicitly without division-by-zero or silent omission.
 - **Event Reconciliation Gate:** Every decision event must reconcile 1:1 with a triggered ADWIN stream row, and every promoted decision must reconcile 1:1 with a `PROMOTED_SNAPSHOT_ACTIVE_NEXT_SESSION` timeline row satisfying `effective_from_date > decision_date`.
