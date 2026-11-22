@@ -1261,6 +1261,112 @@ def update_shadow_b3_batch(
     )
 
 
+def _policy_ledger_sha256(policy_state: PolicyRuntimeState) -> str:
+    champion_meta = {
+        ticker: {
+            "champion_version_id": str(policy_state.active_champion[ticker]["champion_version_id"]),
+            "version_seq": int(policy_state.active_champion[ticker]["version_seq"]),
+            "model_id": str(policy_state.active_champion[ticker]["model_id"]),
+            "state_sha256": str(policy_state.active_champion[ticker]["state_sha256"]),
+            "effective_from_date": _as_date(
+                policy_state.active_champion[ticker]["effective_from_date"],
+                "champion effective_from_date",
+            ).isoformat(),
+            "rollback_target_version_id": policy_state.active_champion[ticker].get(
+                "rollback_target_version_id"
+            ),
+            "rollback_target_model_id": policy_state.active_champion[ticker].get(
+                "rollback_target_model_id"
+            ),
+            "rollback_target_state_sha256": policy_state.active_champion[ticker].get(
+                "rollback_target_state_sha256"
+            ),
+        }
+        for ticker in SUPPORTED_TICKERS
+    }
+    payload = {
+        "champion_meta": champion_meta,
+        "pending_forecasts": sorted(
+            policy_state.pending_forecasts,
+            key=lambda item: str(item.get("policy_prediction_id", "")),
+        ),
+        "evaluated_prediction_ids": sorted(policy_state.evaluated_prediction_ids),
+        "processed_error_ids": sorted(policy_state.processed_error_ids),
+        "emitted_event_ids": sorted(policy_state.emitted_event_ids),
+        "paired_history": {
+            ticker: list(policy_state.paired_history[ticker]) for ticker in SUPPORTED_TICKERS
+        },
+        "cooldown_remaining": {
+            ticker: int(policy_state.cooldown_remaining[ticker]) for ticker in SUPPORTED_TICKERS
+        },
+        "version_seq_by_ticker": {
+            ticker: int(policy_state.version_seq_by_ticker[ticker]) for ticker in SUPPORTED_TICKERS
+        },
+        "initial_timeline_recorded": bool(policy_state.initial_timeline_recorded),
+    }
+    return sha256_bytes(canonical_json(payload).encode("utf-8"))
+
+
+def build_final_policy_summary(
+    final_state: Mapping[str, Any] | None,
+    outputs: Mapping[str, pd.DataFrame],
+) -> dict[str, Any]:
+    """Validate deduplication invariants and summarize per-ETF final policy & rollback state."""
+    forecasts = outputs.get("policy_forecasts.csv", pd.DataFrame(columns=POLICY_FORECAST_COLUMNS))
+    stream = outputs.get("policy_detector_stream.csv", pd.DataFrame(columns=POLICY_DETECTOR_COLUMNS))
+    decisions = outputs.get("policy_decision_events.csv", pd.DataFrame(columns=POLICY_DECISION_COLUMNS))
+    timeline = outputs.get("policy_champion_timeline.csv", pd.DataFrame(columns=POLICY_TIMELINE_COLUMNS))
+
+    if not forecasts.empty and forecasts["policy_prediction_id"].duplicated().any():
+        raise ReplayError("duplicate policy_prediction_id detected in policy_forecasts.csv")
+    if not decisions.empty and decisions["event_id"].duplicated().any():
+        raise ReplayError("duplicate event_id detected in policy_decision_events.csv")
+    if not timeline.empty and timeline["timeline_event_id"].duplicated().any():
+        raise ReplayError("duplicate timeline_event_id detected in policy_champion_timeline.csv")
+
+    ps = final_state.get("policy_state", {}) if final_state else {}
+    active_by_ticker = ps.get("active_champion", {})
+    tickers_summary: dict[str, Any] = {}
+    for ticker in SUPPORTED_TICKERS:
+        t_stream = stream.loc[stream["ticker"] == ticker] if not stream.empty else stream
+        t_dec = decisions.loc[decisions["ticker"] == ticker] if not decisions.empty else decisions
+        t_active = active_by_ticker.get(ticker, {})
+        outcome_counts = (
+            t_dec["decision_outcome"].value_counts().to_dict() if not t_dec.empty else {}
+        )
+        tickers_summary[ticker] = {
+            "active_champion_version_id": t_active.get("champion_version_id"),
+            "active_model_id": t_active.get("model_id"),
+            "active_state_sha256": t_active.get("state_sha256"),
+            "effective_from_date": (
+                t_active["effective_from_date"].isoformat()
+                if isinstance(t_active.get("effective_from_date"), date)
+                else t_active.get("effective_from_date")
+            ),
+            "rollback_target_version_id": t_active.get("rollback_target_version_id"),
+            "rollback_target_model_id": t_active.get("rollback_target_model_id"),
+            "rollback_target_state_sha256": t_active.get("rollback_target_state_sha256"),
+            "shadow_b3_state_sha256": ps.get("shadow_b3_state_sha256_by_ticker", {}).get(ticker),
+            "policy_adwin_state_sha256": ps.get("policy_adwin_state_sha256_by_ticker", {}).get(ticker),
+            "detector_observation_count": int(len(t_stream)),
+            "alert_count": int(t_stream["drift_detected"].astype(bool).sum()) if not t_stream.empty else 0,
+            "decision_count": int(len(t_dec)),
+            "promotion_count": int((t_dec["decision_outcome"] == "promoted").sum()) if not t_dec.empty else 0,
+            "outcome_counts": {str(k): int(v) for k, v in outcome_counts.items()},
+        }
+    return {
+        "policy_version": ps.get("policy_version"),
+        "policy_config_fingerprint": ps.get("policy_config_fingerprint"),
+        "policy_ledger_sha256": ps.get("policy_ledger_sha256"),
+        "total_policy_forecasts": int(len(forecasts)),
+        "total_policy_decisions": int(len(decisions)),
+        "total_policy_promotions": (
+            int((decisions["decision_outcome"] == "promoted").sum()) if not decisions.empty else 0
+        ),
+        "tickers": tickers_summary,
+    }
+
+
 def serialize_policy_state(
     policy_state: PolicyRuntimeState,
     *,
@@ -1285,6 +1391,7 @@ def serialize_policy_state(
     return {
         "policy_version": policy_cfg.policy_version,
         "policy_config_fingerprint": policy_cfg.fingerprint(),
+        "policy_ledger_sha256": _policy_ledger_sha256(policy_state),
         "shadow_b3_models": policy_state.shadow_b3_models,
         "shadow_scalers": policy_state.shadow_scalers,
         "shadow_last_target_end_by_ticker": {
@@ -1350,6 +1457,8 @@ def restore_policy_state(
         },
         initial_timeline_recorded=bool(saved_policy["initial_timeline_recorded"]),
     )
+    if saved_policy.get("policy_ledger_sha256") != _policy_ledger_sha256(state):
+        raise ReplayError("policy checkpoint ledger checksum is invalid")
     for ticker in SUPPORTED_TICKERS:
         actual_shadow = model_state_sha256(
             state.shadow_b3_models[ticker],

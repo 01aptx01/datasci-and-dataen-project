@@ -35,6 +35,7 @@ from src.ml_replay.policy import (
     POLICY_TIMELINE_COLUMNS,
     PolicyRuntimeState,
     assert_policy_isolation,
+    build_final_policy_summary,
     load_initial_champion_artifact,
     new_policy_runtime_state,
     restore_policy_state,
@@ -729,6 +730,7 @@ def _state_summary(state: Mapping[str, Any]) -> dict[str, Any]:
                 "checkpoint_version": state["checkpoint_version"],
                 "policy_version": ps["policy_version"],
                 "policy_config_fingerprint": ps["policy_config_fingerprint"],
+                "policy_ledger_sha256": ps.get("policy_ledger_sha256"),
                 "policy_active_champion_state_sha256_by_ticker": ps[
                     "active_champion_state_sha256_by_ticker"
                 ],
@@ -1911,6 +1913,10 @@ def run_final_replay(
                 filename: sha256_file(experiment_dir / "outputs" / filename)
                 for filename in outputs
             }
+            if is_policy:
+                experiment_manifest["final_policy_summary"] = build_final_policy_summary(
+                    latest_state, outputs
+                )
         else:
             outputs = {
                 "asset_volatility_predictions.csv": _read_daily_tables(

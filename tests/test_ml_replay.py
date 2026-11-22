@@ -1382,3 +1382,301 @@ def test_policy_multiple_labels_same_day_feed_order_and_single_decision(tmp_path
     assert spy_stream[1]["triggered_decision"] is False
     assert len(decisions) == 1
     assert decisions[0]["decision_outcome"] == "promoted"
+
+
+def _assert_policy_results_equal(left: object, right: object) -> None:
+    assert left.experiment_id == right.experiment_id
+    assert left.committed_sessions == right.committed_sessions
+    assert left.final_b3_state_sha256_by_ticker == right.final_b3_state_sha256_by_ticker
+    assert left.final_b2_state_sha256_by_ticker == right.final_b2_state_sha256_by_ticker
+    assert left.final_adwin_state_sha256_by_ticker == right.final_adwin_state_sha256_by_ticker
+    assert (
+        left.final_policy_champion_state_sha256_by_ticker
+        == right.final_policy_champion_state_sha256_by_ticker
+    )
+    comparisons = (
+        (left.predictions, right.predictions, ("run_id", "prediction_created_at_utc")),
+        (left.evaluations, right.evaluations, ("prediction_run_id", "evaluation_run_id")),
+        (left.drift_errors, right.drift_errors, ("prediction_run_id", "evaluation_run_id")),
+        (left.updated_labels, right.updated_labels, ("run_id",)),
+        (left.policy_forecasts, right.policy_forecasts, ("run_id", "prediction_created_at_utc")),
+        (left.policy_evaluations, right.policy_evaluations, ("prediction_run_id", "evaluation_run_id")),
+        (left.policy_detector_stream, right.policy_detector_stream, ("prediction_run_id", "evaluation_run_id")),
+        (left.policy_decision_events, right.policy_decision_events, ("run_id",)),
+        (left.policy_champion_timeline, right.policy_champion_timeline, ("run_id",)),
+        (left.policy_failures, right.policy_failures, ("run_id",)),
+    )
+    for l_df, r_df, drop_cols in comparisons:
+        assert_frame_equal(
+            _without_execution_metadata(l_df, drop_cols),
+            _without_execution_metadata(r_df, drop_cols),
+            check_dtype=False,
+            check_exact=True,
+        )
+    assert not left.policy_forecasts["policy_prediction_id"].duplicated().any()
+    assert not left.policy_decision_events["event_id"].duplicated().any()
+    assert not left.policy_champion_timeline["timeline_event_id"].duplicated().any()
+    assert not left.updated_labels.duplicated(["ticker", "anchor_date"]).any()
+
+
+def test_policy_checkpoint_stop_resume_and_failure_injection_across_promotion_day(
+    tmp_path: Path,
+) -> None:
+    from src.ml_replay import ReplayConfig, run_final_replay
+
+    replay_end = date(2026, 1, 20)
+    prepared, labels, _ = _build_policy_test_dataset("main_outcomes", test_end_date=replay_end)
+    stage04_dir = _quick_stage04_policy_artifact(prepared, labels, tmp_path / "stage04-ckpt")
+    policy_cfg = ReplayConfig.from_yaml(policy_mode="champion_challenger")
+
+    uninterrupted = run_final_replay(
+        prepared,
+        labels,
+        initial_model_artifact_dir=stage04_dir,
+        output_root=tmp_path / "uninterrupted",
+        config=policy_cfg,
+        replay_end_date=replay_end,
+    )
+    assert uninterrupted.completed
+    gld_promos = uninterrupted.policy_decision_events.loc[
+        (uninterrupted.policy_decision_events["ticker"] == "GLD")
+        & (uninterrupted.policy_decision_events["decision_outcome"] == "promoted")
+    ]
+    assert len(gld_promos) == 1
+    promo_date = gld_promos.iloc[0]["decision_date"]
+    pre_promo_date = uninterrupted.committed_sessions[
+        uninterrupted.committed_sessions.index(promo_date) - 1
+    ]
+
+    # Verify rollback target & policy summary are recorded in experiment manifest.
+    summary = uninterrupted.experiment_manifest.get("final_policy_summary", {})
+    gld_summary = summary["tickers"]["GLD"]
+    assert gld_summary["active_model_id"] == "B3"
+    assert gld_summary["rollback_target_version_id"] == gld_promos.iloc[0]["champion_version_id_before"]
+    assert gld_summary["rollback_target_state_sha256"] == gld_promos.iloc[0]["champion_state_sha256_before"]
+    assert len(summary["policy_ledger_sha256"]) == 64
+
+    # 1. Stop right BEFORE promotion day, then resume to end -> exact match!
+    partial_root = tmp_path / "partial-pre-promo"
+    partial = run_final_replay(
+        prepared,
+        labels,
+        initial_model_artifact_dir=stage04_dir,
+        output_root=partial_root,
+        config=policy_cfg,
+        replay_end_date=replay_end,
+        stop_after_session=pre_promo_date,
+    )
+    assert not partial.completed
+    assert partial.committed_sessions[-1] == pre_promo_date
+
+    # Save a reusable snapshot of the committed pre-promotion state to fan out all 9 failure injections fast.
+    stop_resume_root = tmp_path / "stop-resume-pre"
+    shutil.copytree(partial_root, stop_resume_root)
+    resumed_pre = run_final_replay(
+        prepared,
+        labels,
+        initial_model_artifact_dir=stage04_dir,
+        output_root=stop_resume_root,
+        config=policy_cfg,
+        replay_end_date=replay_end,
+        resume=True,
+    )
+    assert resumed_pre.completed
+    _assert_policy_results_equal(resumed_pre, uninterrupted)
+
+    # 2. Stop right ON promotion day, then resume to end -> exact match!
+    stop_on_root = tmp_path / "stop-resume-on"
+    shutil.copytree(partial_root, stop_on_root)
+    partial_on = run_final_replay(
+        prepared,
+        labels,
+        initial_model_artifact_dir=stage04_dir,
+        output_root=stop_on_root,
+        config=policy_cfg,
+        replay_end_date=replay_end,
+        resume=True,
+        stop_after_session=promo_date,
+    )
+    assert not partial_on.completed
+    assert partial_on.committed_sessions[-1] == promo_date
+    resumed_on = run_final_replay(
+        prepared,
+        labels,
+        initial_model_artifact_dir=stage04_dir,
+        output_root=stop_on_root,
+        config=policy_cfg,
+        replay_end_date=replay_end,
+        resume=True,
+    )
+    assert resumed_on.completed
+    _assert_policy_results_equal(resumed_on, uninterrupted)
+
+    # 3. Failure injection across ALL 9 hooks ON promotion day itself -> exact match, zero duplicate events/updates!
+    failure_points = (
+        "after_predict",
+        "after_forecast_staged",
+        "after_adwin",
+        "after_policy_decision",
+        "after_b3_update",
+        "before_checkpoint_serialization",
+        "after_checkpoint_serialization",
+        "before_commit_marker",
+        "after_commit_marker_before_publish",
+    )
+    for point in failure_points:
+        inject_root = tmp_path / f"inject-{point}"
+        shutil.copytree(partial_root, inject_root)
+
+        def fail_on_promo(current_point: str, current_date: date, target: str = point) -> None:
+            if current_point == target and current_date == promo_date:
+                raise RuntimeError(f"injected policy interruption at {target}")
+
+        with pytest.raises(RuntimeError, match=f"injected policy interruption at {point}"):
+            run_final_replay(
+                prepared,
+                labels,
+                initial_model_artifact_dir=stage04_dir,
+                output_root=inject_root,
+                config=policy_cfg,
+                replay_end_date=replay_end,
+                resume=True,
+                failure_injector=fail_on_promo,
+            )
+
+        recovered = run_final_replay(
+            prepared,
+            labels,
+            initial_model_artifact_dir=stage04_dir,
+            output_root=inject_root,
+            config=policy_cfg,
+            replay_end_date=replay_end,
+            resume=True,
+        )
+        assert recovered.completed
+        _assert_policy_results_equal(recovered, uninterrupted)
+
+
+def test_policy_checkpoint_rejects_incompatible_version_and_tampered_state(tmp_path: Path) -> None:
+    from src.ml_replay import ReplayConfig, ReplayError, pipeline as replay_pipeline, run_final_replay
+
+    replay_end = date(2025, 10, 8)
+    prepared, labels, _ = _build_policy_test_dataset("no_drift", test_end_date=replay_end)
+    stage04_dir = _quick_stage04_policy_artifact(prepared, labels, tmp_path / "stage04-incompat")
+
+    baseline_cfg = ReplayConfig.from_yaml(policy_mode="baseline")
+    policy_cfg = ReplayConfig.from_yaml(policy_mode="champion_challenger")
+
+    res_base = run_final_replay(
+        prepared,
+        labels,
+        initial_model_artifact_dir=stage04_dir,
+        output_root=tmp_path / "base-ckpt",
+        config=baseline_cfg,
+        replay_end_date=replay_end,
+    )
+    res_policy = run_final_replay(
+        prepared,
+        labels,
+        initial_model_artifact_dir=stage04_dir,
+        output_root=tmp_path / "policy-ckpt",
+        config=policy_cfg,
+        replay_end_date=replay_end,
+    )
+
+    base_ck = joblib.load(
+        res_base.artifact_dir / "checkpoints" / "committed" / replay_end.isoformat() / "checkpoint.joblib"
+    )
+    policy_ck = joblib.load(
+        res_policy.artifact_dir / "checkpoints" / "committed" / replay_end.isoformat() / "checkpoint.joblib"
+    )
+    assert base_ck["checkpoint_version"] == "1.0.0"
+    assert policy_ck["checkpoint_version"] == "2.0.0"
+
+    # Cross-version incompatibility must be rejected explicitly.
+    with pytest.raises(ReplayError, match="unsupported or incompatible Stage 05 checkpoint version"):
+        replay_pipeline._restore_runtime_state(
+            base_ck,
+            experiment_id=res_policy.experiment_id,
+            compatibility_fingerprint=base_ck["compatibility_fingerprint"],
+            replay_config=policy_cfg,
+        )
+    with pytest.raises(ReplayError, match="unsupported or incompatible Stage 05 checkpoint version"):
+        replay_pipeline._restore_runtime_state(
+            policy_ck,
+            experiment_id=res_base.experiment_id,
+            compatibility_fingerprint=policy_ck["compatibility_fingerprint"],
+            replay_config=baseline_cfg,
+        )
+
+    # Tampered policy_config_fingerprint rejected.
+    bad_fp = deepcopy(policy_ck)
+    bad_fp["policy_state"]["policy_config_fingerprint"] = "0" * 64
+    with pytest.raises(ReplayError, match="policy_config_fingerprint"):
+        replay_pipeline._restore_runtime_state(
+            bad_fp,
+            experiment_id=res_policy.experiment_id,
+            compatibility_fingerprint=policy_ck["compatibility_fingerprint"],
+            replay_config=policy_cfg,
+        )
+
+    # Tampered ledger (cooldown_remaining / rollback target / paired_history) rejected.
+    bad_ledger = deepcopy(policy_ck)
+    bad_ledger["policy_state"]["cooldown_remaining"]["SPY"] = 99
+    with pytest.raises(ReplayError, match="policy checkpoint ledger checksum is invalid"):
+        replay_pipeline._restore_runtime_state(
+            bad_ledger,
+            experiment_id=res_policy.experiment_id,
+            compatibility_fingerprint=policy_ck["compatibility_fingerprint"],
+            replay_config=policy_cfg,
+        )
+
+    # Tampered shadow B3 weights rejected.
+    bad_shadow = deepcopy(policy_ck)
+    bad_shadow["policy_state"]["shadow_b3_models"]["SPY"].coef_[0] += 1.0
+    with pytest.raises(ReplayError, match="shadow B3 checkpoint hash is invalid"):
+        replay_pipeline._restore_runtime_state(
+            bad_shadow,
+            experiment_id=res_policy.experiment_id,
+            compatibility_fingerprint=policy_ck["compatibility_fingerprint"],
+            replay_config=policy_cfg,
+        )
+
+    # Tampered policy ADWIN state rejected.
+    bad_adwin = deepcopy(policy_ck)
+    bad_adwin["policy_state"]["policy_adwin"]["SPY"].update(99.0)
+    with pytest.raises(ReplayError, match="policy ADWIN checkpoint hash is invalid"):
+        replay_pipeline._restore_runtime_state(
+            bad_adwin,
+            experiment_id=res_policy.experiment_id,
+            compatibility_fingerprint=policy_ck["compatibility_fingerprint"],
+            replay_config=policy_cfg,
+        )
+
+    # Tampered active champion state rejected (even if ledger hash were recomputed, model hash catches it).
+    bad_champ = deepcopy(policy_ck)
+    bad_champ["policy_state"]["active_champion"]["SPY"]["b0_train_mean"] += 0.5
+    with pytest.raises(ReplayError, match="active champion checkpoint hash is invalid"):
+        replay_pipeline._restore_runtime_state(
+            bad_champ,
+            experiment_id=res_policy.experiment_id,
+            compatibility_fingerprint=policy_ck["compatibility_fingerprint"],
+            replay_config=policy_cfg,
+        )
+
+    # Corrupted committed policy checkpoint on disk rejected during resume.
+    disk_ck_path = (
+        res_policy.artifact_dir / "checkpoints" / "committed" / replay_end.isoformat() / "checkpoint.joblib"
+    )
+    with disk_ck_path.open("ab") as stream:
+        stream.write(b"tampered")
+    with pytest.raises(ReplayError, match="session artifact checksum is invalid"):
+        run_final_replay(
+            prepared,
+            labels,
+            initial_model_artifact_dir=stage04_dir,
+            output_root=tmp_path / "policy-ckpt",
+            config=policy_cfg,
+            replay_end_date=replay_end,
+            resume=True,
+        )
