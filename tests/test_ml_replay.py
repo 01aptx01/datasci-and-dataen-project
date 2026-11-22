@@ -1078,9 +1078,10 @@ def test_policy_replay_covers_insufficient_cooldown_retained_promotion_and_b3_to
     assert cd_stream[0]["drift_detected"] is True
     assert cd_stream[0]["cooldown_active"] is True
 
-    # IEF: >= 30 pairs but shadow B3 cannot beat B1 by >=5% -> retained.
+    # IEF has enough valid pairs, but invalid shadow forecasts make the window incomplete.
     ief_decisions = decisions.loc[decisions["ticker"] == "IEF"]
-    assert "retained" in set(ief_decisions["decision_outcome"])
+    assert "invalid" in set(ief_decisions["decision_outcome"])
+    assert ief_decisions["decision_reason"].str.startswith("incomplete_comparison_window_missing_").any()
     assert not ief_decisions["switched"].any()
 
     # GLD: first promotion (initial champion -> B3 snapshot v002) and later second promotion (B3 v002 -> B3 v003).
@@ -1204,6 +1205,48 @@ def test_policy_replay_handles_zero_mae_invalid_and_negative_forecasts_without_c
         }
         for j in range(35)
     ]
+    # A missing mature forecast must prevent promotion even when enough valid pairs exist.
+    coverage_state = deepcopy(p_state)
+    coverage_state.comparison_failures.append({
+        "prediction_date": date(2025, 10, 2),
+        "target_end_date": date(2025, 10, 9),
+        "ticker": "SPY",
+        "champion_version_id": champ["champion_version_id"],
+        "reason": "invalid_forecast",
+    })
+    trigger = {
+        "policy_prediction_id": "coverage-trigger", "prediction_date": date(2025, 10, 12),
+        "drift_direction": "error_increase", "adwin_estimation_before": 0.1,
+        "adwin_estimation": 0.2, "adwin_width": 40,
+    }
+    decision, timeline = policy_mod._resolve_trigger_decision(
+        coverage_state, ticker="SPY", session_date=date(2025, 10, 20),
+        trigger_row=trigger, cooldown_before=0, policy_cfg=policy_cfg.champion_challenger,
+        experiment_id="coverage", run_id="coverage", calendar_index={}, calendar_sessions=[],
+    )
+    assert decision["decision_outcome"] == "invalid"
+    assert decision["decision_reason"] == "incomplete_comparison_window_missing_1_anchors_valid_35"
+    assert not decision["switched"] and timeline is None
+    saved_coverage = policy_mod.serialize_policy_state(
+        coverage_state, policy_cfg=policy_cfg.champion_challenger,
+        adwin_hash_fn=replay_pipeline._adwin_state_sha256,
+    )
+    restored_coverage = policy_mod.restore_policy_state(
+        saved_coverage, policy_cfg=policy_cfg.champion_challenger,
+        adwin_hash_fn=replay_pipeline._adwin_state_sha256,
+    )
+    assert restored_coverage.comparison_failures == coverage_state.comparison_failures
+    retained_state = deepcopy(p_state)
+    for pair in retained_state.paired_history["SPY"]:
+        pair["champion_abs_error"] = 0.1
+        pair["shadow_b3_abs_error"] = 0.1
+    retained, _ = policy_mod._resolve_trigger_decision(
+        retained_state, ticker="SPY", session_date=date(2025, 10, 20),
+        trigger_row=trigger, cooldown_before=0, policy_cfg=policy_cfg.champion_challenger,
+        experiment_id="retained", run_id="retained", calendar_index={}, calendar_sessions=[],
+    )
+    assert retained["decision_outcome"] == "retained"
+    assert not retained["switched"]
     p_state.pending_forecasts = [
         {
             "policy_prediction_id": "zero-mae-trigger-served",
@@ -1591,7 +1634,7 @@ def test_policy_checkpoint_rejects_incompatible_version_and_tampered_state(tmp_p
         res_policy.artifact_dir / "checkpoints" / "committed" / replay_end.isoformat() / "checkpoint.joblib"
     )
     assert base_ck["checkpoint_version"] == "1.0.0"
-    assert policy_ck["checkpoint_version"] == "2.0.0"
+    assert policy_ck["checkpoint_version"] == "2.1.0"
 
     # Cross-version incompatibility must be rejected explicitly.
     with pytest.raises(ReplayError, match="unsupported or incompatible Stage 05 checkpoint version"):

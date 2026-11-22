@@ -1022,6 +1022,16 @@ def test_select_initial_champion_rejects_delayed_or_incomplete_cutover_labels() 
     base_prepared, base_labels = _synthetic_prepared_with_cutover()
     initial_models, baselines = _quick_initial_pair_and_baselines(base_prepared, config)
 
+    missing_end_prepared, _ = _synthetic_prepared_with_cutover()
+    missing_end_index = missing_end_prepared.audit.index[
+        (missing_end_prepared.audit["ticker"] == "SPY")
+        & (missing_end_prepared.audit["split"] == "validation")
+        & (missing_end_prepared.audit["target_end_date"] < config.initial_champion.cutover_date)
+    ][0]
+    missing_end_prepared.audit.loc[missing_end_index, "target_end_date"] = None
+    with pytest.raises(TrainingError, match="target_end_date is missing"):
+        select_initial_champion(missing_end_prepared, base_labels, initial_models, baselines, config=config)
+
     # Case 1: all Validation rows immature at cutover -> zero cutover anchors -> explicit error.
     delayed_prepared, delayed_labels = _synthetic_prepared_with_cutover(
         include_mature_before_cutover=False,

@@ -100,3 +100,7 @@ For each XNYS session `s`:
 - **Matched Mature Test Panel:** All strategies (`CHAMPION_CHALLENGER_POLICY`, `FIXED_INITIAL_CHAMPION`, `SHADOW_B3`, and `B0`–`B4`) are compared per ETF (`SPY`, `IEF`, `GLD`) and equal-weight `MACRO` strictly on the intersection of mature, finite, nonnegative Test keys (`target_realized_vol_5d` consistency enforced within `1e-12`).
 - **Edge & Operational Reporting:** Zero alerts, zero promotions, insufficient matched samples (`status = "INSUFFICIENT_SAMPLE"`), invalid forecasts, pending horizon rows, and calendar-day latencies (`label maturity`, `trigger anchor -> decision`, `decision -> effective`) are reported explicitly without division-by-zero or silent omission.
 - **Event Reconciliation Gate:** Every decision event must reconcile 1:1 with a triggered ADWIN stream row, and every promoted decision must reconcile 1:1 with a `PROMOTED_SNAPSHOT_ACTIVE_NEXT_SESSION` timeline row satisfying `effective_from_date > decision_date`.
+
+### Comparison completeness
+
+When the minimum pair count is met, a decision is invalid if a matured forecast or label failure belongs to the active champion version within the comparison window; otherwise it is insufficient_pairs. The decision reason records missing anchor and valid pair counts. Pending failures do not affect decisions before their target end date. A promotion resets the comparison history and its failure ledger. Policy checkpoint version 2.1.0 includes the checksummed failure ledger; older policy checkpoints cannot be resumed under this version.

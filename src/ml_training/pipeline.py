@@ -1016,8 +1016,10 @@ def _select_ticker_initial_champion(
     eligible = val_audit.loc[_boolean_values(val_audit["prediction_eligible"])].sort_values(
         "date", kind="stable"
     )
+    if eligible["target_end_date"].isna().any():
+        raise TrainingError(f"{ticker} Validation target_end_date is missing; maturity at cutover cannot be verified")
     validation_total_anchors = int(len(eligible))
-    immature_mask = eligible["target_end_date"].isna() | (eligible["target_end_date"] >= ic_cfg.cutover_date)
+    immature_mask = eligible["target_end_date"] >= ic_cfg.cutover_date
     immature_rows = eligible.loc[immature_mask]
     expected_rows = eligible.loc[~immature_mask].reset_index(drop=True)
     immature_at_cutover_count = int(len(immature_rows))

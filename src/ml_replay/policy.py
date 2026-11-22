@@ -26,7 +26,7 @@ from src.ml_training.pipeline import model_state_sha256, scaler_state_sha256
 
 
 BASELINE_CHECKPOINT_VERSION = "1.0.0"
-POLICY_CHECKPOINT_VERSION = "2.0.0"
+POLICY_CHECKPOINT_VERSION = "2.1.0"
 POLICY_MODEL_NAMES = {
     "B0": "CONSTANT_BASELINE",
     "B1": "ROLLING_20D_BASELINE",
@@ -213,6 +213,7 @@ class PolicyRuntimeState:
     processed_error_ids: set[str]
     emitted_event_ids: set[str]
     paired_history: dict[str, list[dict[str, Any]]]
+    comparison_failures: list[dict[str, Any]]
     cooldown_remaining: dict[str, int]
     version_seq_by_ticker: dict[str, int]
     initial_timeline_recorded: bool = False
@@ -470,6 +471,7 @@ def new_policy_runtime_state(
         processed_error_ids=set(),
         emitted_event_ids=set(),
         paired_history={ticker: [] for ticker in SUPPORTED_TICKERS},
+        comparison_failures=[],
         cooldown_remaining={ticker: 0 for ticker in SUPPORTED_TICKERS},
         version_seq_by_ticker={ticker: 1 for ticker in SUPPORTED_TICKERS},
         initial_timeline_recorded=False,
@@ -735,6 +737,14 @@ def run_policy_predict_session(
             }
             session_forecasts.append(forecast_row)
 
+    for failure in session_failures:
+        policy_state.comparison_failures.append({
+            "prediction_date": session_date,
+            "target_end_date": target_end,
+            "ticker": failure["ticker"],
+            "champion_version_id": failure["champion_version_id"],
+            "reason": failure["failure_type"],
+        })
     existing_pending_ids = {row["policy_prediction_id"] for row in policy_state.pending_forecasts}
     if any(row["policy_prediction_id"] in existing_pending_ids for row in session_forecasts):
         raise ReplayError(f"duplicate policy predictions reached session {session_date}")
@@ -852,6 +862,13 @@ def run_policy_evaluate_and_decide(
                     "run_id": run_id,
                 }
             )
+            policy_state.comparison_failures.append({
+                "prediction_date": anchor,
+                "target_end_date": _as_date(forecast["target_end_date"], "policy target_end_date"),
+                "ticker": ticker,
+                "champion_version_id": str(forecast["champion_version_id"]),
+                "reason": "evaluation_label_unavailable",
+            })
             policy_state.evaluated_prediction_ids.add(pred_id)
             continue
 
@@ -1059,6 +1076,19 @@ def _resolve_trigger_decision(
         if item["champion_version_id"] == ver_before
     ][-policy_cfg.comparison_window_pairs :]
     pair_count = len(window_records)
+    window_start = (
+        window_records[0]["prediction_date"]
+        if pair_count >= policy_cfg.comparison_window_pairs
+        else policy_state.active_champion[ticker]["effective_from_date"]
+    )
+    missing_anchors = {
+        _as_date(item["prediction_date"], "comparison failure prediction_date")
+        for item in policy_state.comparison_failures
+        if item["ticker"] == ticker
+        and item["champion_version_id"] == ver_before
+        and _as_date(item["target_end_date"], "comparison failure target_end_date") <= session_date
+        and _as_date(item["prediction_date"], "comparison failure prediction_date") >= _as_date(window_start, "comparison window start")
+    }
     champion_mae: float | None = None
     shadow_mae: float | None = None
     rel_improvement: float | None = None
@@ -1084,7 +1114,11 @@ def _resolve_trigger_decision(
         cooldown_after = cooldown_before - 1
     elif pair_count < policy_cfg.minimum_pairs:
         outcome = "insufficient_pairs"
-        reason = f"valid_pairs_{pair_count}_below_minimum_{policy_cfg.minimum_pairs}"
+        reason = f"valid_pairs_{pair_count}_below_minimum_{policy_cfg.minimum_pairs}_missing_{len(missing_anchors)}"
+        cooldown_after = policy_cfg.cooldown_sessions
+    elif missing_anchors:
+        outcome = "invalid"
+        reason = f"incomplete_comparison_window_missing_{len(missing_anchors)}_anchors_valid_{pair_count}"
         cooldown_after = policy_cfg.cooldown_sessions
     elif (
         champion_mae is None
@@ -1149,6 +1183,7 @@ def _resolve_trigger_decision(
                 policy_state.policy_adwin[ticker] = ADWIN(delta=policy_cfg.adwin_delta)
                 detector_reset = True
             policy_state.paired_history[ticker] = []
+            policy_state.comparison_failures = [item for item in policy_state.comparison_failures if item["ticker"] != ticker]
             cooldown_after = policy_cfg.cooldown_sessions
 
             timeline_id = _stable_id(
@@ -1296,6 +1331,7 @@ def _policy_ledger_sha256(policy_state: PolicyRuntimeState) -> str:
         "paired_history": {
             ticker: list(policy_state.paired_history[ticker]) for ticker in SUPPORTED_TICKERS
         },
+        "comparison_failures": list(policy_state.comparison_failures),
         "cooldown_remaining": {
             ticker: int(policy_state.cooldown_remaining[ticker]) for ticker in SUPPORTED_TICKERS
         },
@@ -1408,6 +1444,7 @@ def serialize_policy_state(
         "processed_error_ids": sorted(policy_state.processed_error_ids),
         "emitted_event_ids": sorted(policy_state.emitted_event_ids),
         "paired_history": policy_state.paired_history,
+        "comparison_failures": policy_state.comparison_failures,
         "cooldown_remaining": dict(policy_state.cooldown_remaining),
         "version_seq_by_ticker": dict(policy_state.version_seq_by_ticker),
         "initial_timeline_recorded": bool(policy_state.initial_timeline_recorded),
@@ -1426,6 +1463,8 @@ def restore_policy_state(
         raise ReplayError("checkpoint policy_version is incompatible with current policy")
     if saved_policy.get("policy_config_fingerprint") != policy_cfg.fingerprint():
         raise ReplayError("checkpoint policy_config_fingerprint does not match current policy config")
+    if "comparison_failures" not in saved_policy:
+        raise ReplayError("policy checkpoint lacks the comparison completeness ledger")
 
     state = PolicyRuntimeState(
         shadow_b3_models=dict(saved_policy["shadow_b3_models"]),
@@ -1447,6 +1486,7 @@ def restore_policy_state(
             ticker: list(rows)
             for ticker, rows in saved_policy["paired_history"].items()
         },
+        comparison_failures=list(saved_policy["comparison_failures"]),
         cooldown_remaining={
             ticker: int(val)
             for ticker, val in saved_policy["cooldown_remaining"].items()
