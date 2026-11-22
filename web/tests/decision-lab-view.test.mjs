@@ -87,8 +87,31 @@ test("Risk Drivers displays the stored correlation evidence", () => {
 
 test("Scenario Lab pairs numeric weight fields with adjustable sliders", () => {
   const html = render({ ...createDefaultFinancialScenarioState(), activeTab: "scenarios" });
-  assert.match(html, /type="number"[^>]*data-field="scenario-weight"/);
-  assert.match(html, /type="range"[^>]*data-field="scenario-weight-slider"/);
+  assert.equal([...html.matchAll(/data-field="scenario-weight"/g)].length, 4);
+  assert.equal([...html.matchAll(/data-field="scenario-weight-slider"/g)].length, 4);
+});
+
+test("Scenario Lab lets each scenario choose its remainder asset", () => {
+  const decision = {
+    ...createDefaultFinancialScenarioState(),
+    remainderAssetA: "SPY",
+    remainderAssetB: "IEF",
+    activeTab: "scenarios",
+  };
+  const html = render(decision);
+  assert.match(html, /data-field="scenario-remainder" data-scenario="A"/);
+  assert.match(html, /data-field="scenario-remainder" data-scenario="B"/);
+  assert.match(html, /<option value="SPY" selected>SPY<\/option>/);
+  assert.match(html, /<option value="IEF" selected>IEF<\/option>/);
+  assert.equal([...html.matchAll(/class="scenario-weight-remainder"/g)].length, 2);
+});
+
+test("Scenario Lab renders two editable weights and one calculated remainder per scenario", () => {
+  const html = render({ ...createDefaultFinancialScenarioState(), remainderAssetA: "IEF", activeTab: "scenarios" });
+  assert.match(html, /data-scenario-remainder-value="A"[^>]*>30%/);
+  assert.match(html, /100% − SPY − GLD/);
+  assert.match(html, /data-scenario-remainder-value="B"[^>]*>20%/);
+  assert.match(html, /100% − SPY − IEF/);
 });
 
 test("Scenario Lab keeps editors, selected-day comparison, timeline, and budget together", () => {
