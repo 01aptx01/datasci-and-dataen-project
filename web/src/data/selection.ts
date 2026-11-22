@@ -42,7 +42,7 @@ export type SelectionValidationResult =
 const models: ModelName[] = ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"];
 const tickers: Ticker[] = ["SPY", "IEF", "GLD"];
 const selectionKeys = ["evaluationId", "replayId", "split", "date", "model", "ticker", "asOf", "rangeStart", "rangeEnd", "rangePreset", "view"];
-const allowedAuxiliaryKeys = ["mode", "scope", "dateStart", "dateEnd", "scenarioA", "scenarioB", "activeScenario", "riskBudget", "portfolioTab"];
+const allowedAuxiliaryKeys = ["mode", "scope", "dateStart", "dateEnd", "scenarioA", "scenarioB", "scenarioRemainderA", "scenarioRemainderB", "activeScenario", "riskBudget", "portfolioTab"];
 
 export function parseHashRoute(hash: string): ParsedHashRoute {
   const value = hash.startsWith("#") ? hash.slice(1) : hash;

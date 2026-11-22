@@ -4,10 +4,14 @@ import type { ModelName, PortfolioRiskRow } from "./schemas.js";
 
 export type FinancialDecisionTab = "risk" | "drivers" | "scenarios";
 export type ActiveScenario = "A" | "B";
+export type ScenarioAsset = "SPY" | "IEF" | "GLD";
+export type ScenarioRemainderAsset = ScenarioAsset;
 
 export interface FinancialScenarioState {
   scenarioA: PortfolioWeights;
   scenarioB: PortfolioWeights;
+  remainderAssetA: ScenarioRemainderAsset;
+  remainderAssetB: ScenarioRemainderAsset;
   activeScenario: ActiveScenario;
   budgetAnnualizedDecimal: number | null;
   activeTab: FinancialDecisionTab;
@@ -25,18 +29,47 @@ export interface PortfolioRiskTimelinePoint {
   row: PortfolioRiskRow;
 }
 
-const scenarioKeys = ["scenarioA", "scenarioB", "activeScenario", "riskBudget", "portfolioTab"] as const;
+const scenarioKeys = ["scenarioA", "scenarioB", "scenarioRemainderA", "scenarioRemainderB", "activeScenario", "riskBudget", "portfolioTab"] as const;
 const weightTolerance = 1e-8;
 const defaultWeights: PortfolioWeights = [0.5, 0.3, 0.2];
+const scenarioAssets: ScenarioAsset[] = ["SPY", "IEF", "GLD"];
+const remainderAssets: ScenarioRemainderAsset[] = ["SPY", "IEF", "GLD"];
 
 export function createDefaultFinancialScenarioState(): FinancialScenarioState {
   return {
     scenarioA: [...defaultWeights],
     scenarioB: [...defaultWeights],
+    remainderAssetA: "GLD",
+    remainderAssetB: "GLD",
     activeScenario: "A",
     budgetAnnualizedDecimal: null,
     activeTab: "risk",
   };
+}
+
+export function updateScenarioRemainderWeight(
+  weights: PortfolioWeights,
+  remainderAsset: ScenarioRemainderAsset,
+  editedAsset: ScenarioAsset,
+  weightDecimal: number,
+): PortfolioWeights {
+  const remainderIndex = scenarioAssets.indexOf(remainderAsset);
+  const editedIndex = scenarioAssets.indexOf(editedAsset);
+  if (editedIndex === remainderIndex) throw new Error("Cannot edit the selected remainder asset");
+  const updated = [...weights] as PortfolioWeights;
+  updated[editedIndex] = weightDecimal;
+  updated[remainderIndex] = 1 - updated.reduce((sum, weight, index) => index === remainderIndex ? sum : sum + weight, 0);
+  return updated;
+}
+
+export function setScenarioRemainderAsset(
+  state: FinancialScenarioState,
+  scenario: ActiveScenario,
+  asset: ScenarioRemainderAsset,
+): FinancialScenarioState {
+  return scenario === "A"
+    ? { ...state, remainderAssetA: asset }
+    : { ...state, remainderAssetB: asset };
 }
 
 export function validateScenarioWeights(value: unknown): ScenarioWeightsValidation {
@@ -176,6 +209,10 @@ export function parseFinancialDecisionParams(params: URLSearchParams): Financial
   if (scenarioA.status === "invalid") return scenarioA;
   const scenarioB = parseWeightParam(params.get("scenarioB"), "scenarioB");
   if (scenarioB.status === "invalid") return scenarioB;
+  const remainderAssetA = params.get("scenarioRemainderA") ?? "GLD";
+  const remainderAssetB = params.get("scenarioRemainderB") ?? "GLD";
+  if (!remainderAssets.includes(remainderAssetA as ScenarioRemainderAsset)) return { status: "invalid", message: "scenarioRemainderA ไม่รองรับ" };
+  if (!remainderAssets.includes(remainderAssetB as ScenarioRemainderAsset)) return { status: "invalid", message: "scenarioRemainderB ไม่รองรับ" };
   const activeScenario = params.get("activeScenario");
   if (activeScenario !== "A" && activeScenario !== "B") return { status: "invalid", message: "activeScenario ต้องเป็น A หรือ B" };
   const activeTab = params.get("portfolioTab");
@@ -194,6 +231,8 @@ export function parseFinancialDecisionParams(params: URLSearchParams): Financial
     state: {
       scenarioA: scenarioA.weights,
       scenarioB: scenarioB.weights,
+      remainderAssetA: remainderAssetA as ScenarioRemainderAsset,
+      remainderAssetB: remainderAssetB as ScenarioRemainderAsset,
       activeScenario,
       budgetAnnualizedDecimal,
       activeTab,
@@ -205,6 +244,7 @@ export function serializeFinancialDecisionHash(selectionHash: string, state: Fin
   const scenarioA = validateScenarioWeights(state.scenarioA);
   const scenarioB = validateScenarioWeights(state.scenarioB);
   if (scenarioA.status === "invalid" || scenarioB.status === "invalid") throw new Error("Cannot serialize invalid scenario weights");
+  if (!remainderAssets.includes(state.remainderAssetA) || !remainderAssets.includes(state.remainderAssetB)) throw new Error("Cannot serialize invalid scenario remainder asset");
   if (state.activeScenario !== "A" && state.activeScenario !== "B") throw new Error("Cannot serialize invalid active scenario");
   if (!["risk", "drivers", "scenarios"].includes(state.activeTab)) throw new Error("Cannot serialize invalid portfolio tab");
   if (state.budgetAnnualizedDecimal !== null && (!Number.isFinite(state.budgetAnnualizedDecimal) || state.budgetAnnualizedDecimal < 0)) throw new Error("Cannot serialize invalid risk budget");
@@ -214,6 +254,8 @@ export function serializeFinancialDecisionHash(selectionHash: string, state: Fin
   for (const key of scenarioKeys) params.delete(key);
   params.set("scenarioA", scenarioA.weights.join(","));
   params.set("scenarioB", scenarioB.weights.join(","));
+  params.set("scenarioRemainderA", state.remainderAssetA);
+  params.set("scenarioRemainderB", state.remainderAssetB);
   params.set("activeScenario", state.activeScenario);
   params.set("portfolioTab", state.activeTab);
   if (state.budgetAnnualizedDecimal !== null) params.set("riskBudget", String(state.budgetAnnualizedDecimal));
