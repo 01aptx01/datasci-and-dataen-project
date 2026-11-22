@@ -7,65 +7,79 @@ export const POLICY_VERSION = "1.0.0";
 
 export const POLICY_EXPECTED_HEADERS = {
   policyForecasts: [
-    "policy_prediction_id", "experiment_id", "policy_version", "prediction_date", "split", "ticker",
-    "role", "model_id", "model_name", "champion_version_id", "model_state_sha256",
-    "target_start_date", "target_end_date", "predicted_vol_annualized", "is_promoted_snapshot",
+    "experiment_id", "policy_version", "policy_prediction_id", "prediction_date", "split", "ticker",
+    "role", "champion_version_id", "model_id", "model_name", "is_frozen_snapshot", "model_version",
+    "state_sha256", "prediction_mode", "forecast_horizon_trading_days", "target_start_date",
+    "target_end_date", "predicted_vol_annualized", "feature_set_version", "feature_run_id",
+    "input_snapshot_id", "last_training_target_end_date", "champion_effective_from_date",
+    "run_id", "prediction_created_at_utc",
   ],
   policyEvaluations: [
-    "policy_prediction_id", "experiment_id", "policy_version", "prediction_date", "evaluation_date", "split", "ticker",
-    "role", "model_id", "model_name", "champion_version_id", "model_state_sha256",
-    "target_start_date", "target_end_date", "predicted_vol_annualized", "target_realized_vol_5d",
-    "absolute_error", "squared_error",
+    "experiment_id", "policy_version", "policy_prediction_id", "prediction_date", "split", "ticker",
+    "role", "champion_version_id", "active_champion_version_id_at_eval", "model_id", "model_name",
+    "is_frozen_snapshot", "model_version", "state_sha256", "target_start_date", "target_end_date",
+    "predicted_vol_annualized", "target_realized_vol_5d", "target_version", "absolute_error",
+    "squared_error", "evaluation_date", "label_available_replay_date",
+    "stale_champion_skipped_from_policy", "policy_skip_reason", "prediction_run_id", "evaluation_run_id",
   ],
   policyDetectorStream: [
-    "policy_prediction_id", "experiment_id", "policy_version", "ticker", "prediction_date", "evaluation_date",
-    "feed_order_in_session", "champion_version_id", "champion_model_id", "champion_state_sha256",
-    "absolute_error", "adwin_delta", "adwin_width", "adwin_estimation", "drift_detected",
-    "drift_direction", "triggered_decision", "cooldown_remaining_before", "decision_event_id",
+    "experiment_id", "policy_version", "policy_prediction_id", "prediction_date", "evaluation_date",
+    "ticker", "champion_version_id", "champion_model_id", "champion_state_sha256",
+    "feed_order_in_session", "absolute_error", "adwin_delta", "adwin_width",
+    "adwin_estimation_before", "adwin_estimation", "drift_detected", "drift_direction",
+    "triggered_decision", "cooldown_active", "cooldown_remaining_before",
+    "prediction_run_id", "evaluation_run_id",
   ],
   policyDecisionEvents: [
-    "event_id", "experiment_id", "policy_version", "ticker", "decision_date", "effective_from_date",
-    "trigger_prediction_id", "trigger_prediction_date", "trigger_absolute_error", "drift_direction",
+    "experiment_id", "policy_version", "event_id", "decision_date", "ticker",
+    "trigger_prediction_id", "trigger_prediction_date", "drift_direction",
+    "adwin_estimation_before", "adwin_estimation_after", "adwin_width",
     "champion_version_id_before", "champion_model_id_before", "champion_state_sha256_before",
-    "challenger_model_id", "challenger_state_sha256", "window_size", "minimum_pairs", "valid_pair_count",
-    "champion_window_mae", "challenger_window_mae", "delta_mae_champion_minus_challenger",
-    "relative_improvement", "min_relative_improvement", "cooldown_active", "cooldown_remaining_before",
-    "decision_outcome", "decision_reason", "switched", "champion_version_id_after", "champion_model_id_after",
-    "champion_state_sha256_after", "rollback_target_version_id", "rollback_target_model_id",
-    "rollback_target_state_sha256",
+    "shadow_model_id", "shadow_state_sha256_pre_update", "comparison_window_pairs",
+    "minimum_pairs", "min_relative_improvement", "valid_pair_count",
+    "champion_window_mae", "shadow_b3_window_mae", "relative_improvement",
+    "decision_outcome", "decision_reason", "switched",
+    "champion_version_id_after", "champion_model_id_after", "champion_state_sha256_after",
+    "effective_from_date", "rollback_target_version_id", "rollback_target_model_id",
+    "rollback_target_state_sha256", "cooldown_active", "cooldown_remaining_before",
+    "cooldown_remaining_after", "detector_reset_after_decision", "run_id",
   ],
   policyChampionTimeline: [
-    "timeline_event_id", "experiment_id", "policy_version", "ticker", "event_type", "decision_event_id",
-    "decision_date", "effective_from_date", "from_champion_version_id", "from_model_id", "from_state_sha256",
+    "experiment_id", "policy_version", "timeline_event_id", "event_type", "recorded_date",
+    "decision_date", "effective_from_date", "ticker", "version_seq",
+    "from_champion_version_id", "from_model_id", "from_state_sha256",
     "to_champion_version_id", "to_model_id", "to_state_sha256",
-    "rollback_target_version_id", "rollback_target_model_id", "rollback_target_state_sha256", "reason",
+    "rollback_target_version_id", "rollback_target_model_id", "rollback_target_state_sha256",
+    "decision_event_id", "reason", "run_id",
   ],
   policyFailures: [
-    "failure_id", "experiment_id", "policy_version", "session_date", "ticker", "role", "model_id",
-    "champion_version_id", "stage", "reason", "raw_value",
+    "experiment_id", "policy_version", "prediction_date", "split", "ticker", "role",
+    "champion_version_id", "model_id", "model_name", "failure_type", "reason", "raw_value", "run_id",
   ],
   policyModelMetrics: [
-    "split", "ticker", "system_id", "model_name", "paired_n", "expected_eligible_anchor_count",
-    "paired_coverage", "mae", "rmse", "comparison_panel", "evaluation_scope",
+    "split", "ticker", "strategy", "initial_champion_model_id", "paired_n", "evaluable_n",
+    "mae", "rmse", "mse", "status", "evaluation_scope",
   ],
   policyComparisons: [
-    "comparison_id", "policy_system", "comparator_system", "comparator_model", "split", "ticker",
-    "paired_n", "expected_eligible_anchor_count", "paired_coverage", "policy_mae", "comparator_mae",
-    "delta_mae_comparator_minus_policy", "relative_improvement_pct", "policy_rmse", "comparator_rmse",
-    "direction_definition", "pairing_policy", "evaluation_scope", "status",
+    "comparison_id", "split", "ticker", "policy_strategy", "comparator_strategy", "paired_n",
+    "policy_mae", "comparator_mae", "delta_mae_comparator_minus_policy", "relative_mae_improvement",
+    "policy_rmse", "comparator_rmse", "delta_rmse_comparator_minus_policy",
+    "status", "evaluation_scope", "confirmatory_hypothesis", "test_reuse_limitation",
   ],
   policyOperationsSummary: [
-    "ticker", "initial_champion_model_id", "final_champion_model_id", "final_champion_version_id",
-    "detector_observations", "alert_count", "decision_count", "promotion_count", "retained_count",
-    "insufficient_pairs_count", "invalid_decision_count", "cooldown_suppressed_count",
-    "b3_to_b3_promotion_count", "served_invalid_forecast_count", "shadow_invalid_forecast_count",
-    "median_eval_to_alert_latency_sessions", "median_decision_to_effective_latency_sessions",
+    "split", "ticker", "initial_champion_model_id", "final_champion_model_id", "final_champion_version_id",
+    "matched_common_panel_n", "detector_observation_count", "alert_count", "decision_event_count",
+    "promotion_count", "retained_count", "insufficient_pairs_count", "invalid_decision_count",
+    "cooldown_suppressed_count", "stale_champion_skipped_eval_count",
+    "served_invalid_forecast_count", "shadow_invalid_forecast_count", "pending_served_forecast_count",
+    "mean_label_maturity_lag_calendar_days", "mean_trigger_anchor_to_decision_calendar_days",
+    "mean_decision_to_effective_calendar_days", "first_alert_date", "first_promotion_date",
+    "zero_alerts_observed", "zero_promotions_observed",
   ],
   policyCoverageSummary: [
-    "ticker", "expected_eligible_prediction_anchors", "served_forecast_count", "shadow_forecast_count",
-    "served_invalid_count", "shadow_invalid_count", "served_mature_evaluable_count",
-    "shadow_mature_evaluable_count", "served_pending_count", "matched_all_systems_n",
-    "served_forecast_coverage", "served_evaluation_coverage",
+    "split", "ticker", "role", "expected_anchors_observed", "published_forecasts", "invalid_forecasts",
+    "mature_evaluated", "pending_labels", "evaluation_failures", "matched_common_panel_n",
+    "publish_rate", "mature_evaluation_rate",
   ],
 } as const;
 
@@ -137,11 +151,12 @@ export interface PolicyForecastRow {
   modelId: PolicyModelId;
   modelName: string;
   championVersionId: string;
-  modelStateSha256: string;
+  stateSha256: string;
+  isFrozenSnapshot: boolean;
   targetStartDate: string;
   targetEndDate: string;
   predictedVolAnnualized: number;
-  isPromotedSnapshot: boolean;
+  championEffectiveFromDate: string;
 }
 
 export interface PolicyEvaluationRow {
@@ -156,13 +171,16 @@ export interface PolicyEvaluationRow {
   modelId: PolicyModelId;
   modelName: string;
   championVersionId: string;
-  modelStateSha256: string;
+  activeChampionVersionIdAtEval: string;
+  stateSha256: string;
   targetStartDate: string;
   targetEndDate: string;
   predictedVolAnnualized: number;
   targetRealizedVol5d: number;
   absoluteError: number;
   squaredError: number;
+  staleChampionSkipped: boolean;
+  policySkipReason: string;
 }
 
 export interface PolicyDetectorRow {
@@ -179,12 +197,13 @@ export interface PolicyDetectorRow {
   absoluteError: number;
   adwinDelta: number;
   adwinWidth: number;
+  adwinEstimationBefore: number;
   adwinEstimation: number;
   driftDetected: boolean;
   driftDirection: PolicyDriftDirection;
   triggeredDecision: boolean;
+  cooldownActive: boolean;
   cooldownRemainingBefore: number;
-  decisionEventId: string;
 }
 
 export interface PolicyDecisionEventRow {
@@ -196,23 +215,22 @@ export interface PolicyDecisionEventRow {
   effectiveFromDate: string | null;
   triggerPredictionId: string;
   triggerPredictionDate: string;
-  triggerAbsoluteError: number;
   driftDirection: PolicyDriftDirection;
+  adwinEstimationBefore: number;
+  adwinEstimationAfter: number;
+  adwinWidth: number;
   championVersionIdBefore: string;
   championModelIdBefore: PolicyModelId;
   championStateSha256Before: string;
-  challengerModelId: string;
-  challengerStateSha256: string;
-  windowSize: number;
+  shadowModelId: string;
+  shadowStateSha256PreUpdate: string;
+  comparisonWindowPairs: number;
   minimumPairs: number;
+  minRelativeImprovement: number;
   validPairCount: number;
   championWindowMae: number | null;
-  challengerWindowMae: number | null;
-  deltaMaeChampionMinusChallenger: number | null;
+  shadowB3WindowMae: number | null;
   relativeImprovement: number | null;
-  minRelativeImprovement: number;
-  cooldownActive: boolean;
-  cooldownRemainingBefore: number;
   decisionOutcome: PolicyDecisionOutcome;
   decisionReason: string;
   switched: boolean;
@@ -222,6 +240,10 @@ export interface PolicyDecisionEventRow {
   rollbackTargetVersionId: string;
   rollbackTargetModelId: string;
   rollbackTargetStateSha256: string;
+  cooldownActive: boolean;
+  cooldownRemainingBefore: number;
+  cooldownRemainingAfter: number;
+  detectorResetAfterDecision: boolean;
 }
 
 export interface PolicyTimelineRow {
@@ -230,9 +252,11 @@ export interface PolicyTimelineRow {
   policyVersion: string;
   ticker: Ticker;
   eventType: PolicyTimelineEventType;
+  recordedDate: string;
   decisionEventId: string;
-  decisionDate: string;
+  decisionDate: string | null;
   effectiveFromDate: string;
+  versionSeq: number;
   fromChampionVersionId: string;
   fromModelId: string;
   fromStateSha256: string;
@@ -246,15 +270,16 @@ export interface PolicyTimelineRow {
 }
 
 export interface PolicyFailureRow {
-  failureId: string;
   experimentId: string;
   policyVersion: string;
-  sessionDate: string;
+  predictionDate: string;
+  split: string;
   ticker: Ticker;
   role: PolicyRole;
-  modelId: PolicyModelId;
   championVersionId: string;
-  stage: string;
+  modelId: PolicyModelId;
+  modelName: string;
+  failureType: string;
   reason: string;
   rawValue: string;
 }
@@ -262,72 +287,78 @@ export interface PolicyFailureRow {
 export interface PolicyModelMetricRow {
   split: string;
   ticker: Ticker | "MACRO";
-  systemId: string;
-  modelName: string;
+  strategy: string;
+  initialChampionModelId: string;
   pairedN: number;
-  expectedEligibleAnchorCount: number;
-  pairedCoverage: number | null;
+  evaluableN: number;
   mae: number | null;
   rmse: number | null;
-  comparisonPanel: string;
+  mse: number | null;
+  status: string;
   evaluationScope: string;
 }
 
 export interface PolicyComparisonRow {
   comparisonId: string;
-  policySystem: string;
-  comparatorSystem: string;
-  comparatorModel: string;
   split: string;
   ticker: Ticker | "MACRO";
+  policyStrategy: string;
+  comparatorStrategy: string;
   pairedN: number;
-  expectedEligibleAnchorCount: number;
-  pairedCoverage: number | null;
   policyMae: number | null;
   comparatorMae: number | null;
   deltaMaeComparatorMinusPolicy: number | null;
-  relativeImprovementPct: number | null;
+  relativeMaeImprovement: number | null;
   policyRmse: number | null;
   comparatorRmse: number | null;
-  directionDefinition: string;
-  pairingPolicy: string;
-  evaluationScope: string;
+  deltaRmseComparatorMinusPolicy: number | null;
   status: string;
+  evaluationScope: string;
+  confirmatoryHypothesis: boolean;
+  testReuseLimitation: string;
 }
 
 export interface PolicyOperationsRow {
+  split: string;
   ticker: Ticker | "MACRO";
   initialChampionModelId: string;
   finalChampionModelId: string;
   finalChampionVersionId: string;
-  detectorObservations: number;
+  matchedCommonPanelN: number;
+  detectorObservationCount: number;
   alertCount: number;
-  decisionCount: number;
+  decisionEventCount: number;
   promotionCount: number;
   retainedCount: number;
   insufficientPairsCount: number;
   invalidDecisionCount: number;
   cooldownSuppressedCount: number;
-  b3ToB3PromotionCount: number;
+  staleChampionSkippedEvalCount: number;
   servedInvalidForecastCount: number;
   shadowInvalidForecastCount: number;
-  medianEvalToAlertLatencySessions: number | null;
-  medianDecisionToEffectiveLatencySessions: number | null;
+  pendingServedForecastCount: number;
+  meanLabelMaturityLagCalendarDays: number | null;
+  meanTriggerAnchorToDecisionCalendarDays: number | null;
+  meanDecisionToEffectiveCalendarDays: number | null;
+  firstAlertDate: string;
+  firstPromotionDate: string;
+  zeroAlertsObserved: boolean;
+  zeroPromotionsObserved: boolean;
 }
 
 export interface PolicyCoverageRow {
+  split: string;
   ticker: Ticker;
-  expectedEligiblePredictionAnchors: number;
-  servedForecastCount: number;
-  shadowForecastCount: number;
-  servedInvalidCount: number;
-  shadowInvalidCount: number;
-  servedMatureEvaluableCount: number;
-  shadowMatureEvaluableCount: number;
-  servedPendingCount: number;
-  matchedAllSystemsN: number;
-  servedForecastCoverage: number | null;
-  servedEvaluationCoverage: number | null;
+  role: PolicyRole;
+  expectedAnchorsObserved: number;
+  publishedForecasts: number;
+  invalidForecasts: number;
+  matureEvaluated: number;
+  pendingLabels: number;
+  evaluationFailures: number;
+  matchedCommonPanelN: number;
+  publishRate: number | null;
+  matureEvaluationRate: number | null;
 }
 
 export interface PolicySnapshotReady {
@@ -371,7 +402,8 @@ export interface PolicyDaySelection {
   tickerEvents: PolicyDecisionEventRow[];
   tickerTimeline: PolicyTimelineRow[];
   tickerOperations: PolicyOperationsRow | null;
-  tickerCoverage: PolicyCoverageRow | null;
+  servedCoverage: PolicyCoverageRow | null;
+  shadowCoverage: PolicyCoverageRow | null;
   tickerMetrics: PolicyModelMetricRow[];
   tickerComparisons: PolicyComparisonRow[];
   macroMetrics: PolicyModelMetricRow[];
@@ -655,11 +687,12 @@ function parseAndReconcilePolicyTables(
       modelId: parseModelId(row.model_id!, `policyForecasts[${idx}].model_id`),
       modelName: row.model_name!,
       championVersionId: row.champion_version_id!,
-      modelStateSha256: row.model_state_sha256!,
+      stateSha256: row.state_sha256!,
+      isFrozenSnapshot: parseBool(row.is_frozen_snapshot!, `policyForecasts[${idx}].is_frozen_snapshot`),
       targetStartDate,
       targetEndDate,
       predictedVolAnnualized: predicted,
-      isPromotedSnapshot: parseBool(row.is_promoted_snapshot!, `policyForecasts[${idx}].is_promoted_snapshot`),
+      championEffectiveFromDate: row.champion_effective_from_date!,
     };
     forecastsById.set(id, parsed);
     return parsed;
@@ -696,13 +729,16 @@ function parseAndReconcilePolicyTables(
       modelId: parseModelId(row.model_id!, `policyEvaluations[${idx}].model_id`),
       modelName: row.model_name!,
       championVersionId: row.champion_version_id!,
-      modelStateSha256: row.model_state_sha256!,
+      activeChampionVersionIdAtEval: row.active_champion_version_id_at_eval!,
+      stateSha256: row.state_sha256!,
       targetStartDate,
       targetEndDate,
       predictedVolAnnualized: parseFinite(row.predicted_vol_annualized!, `policyEvaluations[${idx}].predicted_vol_annualized`),
       targetRealizedVol5d: target,
       absoluteError: parseFinite(row.absolute_error!, `policyEvaluations[${idx}].absolute_error`),
       squaredError: parseFinite(row.squared_error!, `policyEvaluations[${idx}].squared_error`),
+      staleChampionSkipped: parseBool(row.stale_champion_skipped_from_policy!, `policyEvaluations[${idx}].stale_champion_skipped_from_policy`),
+      policySkipReason: row.policy_skip_reason!,
     };
     evalsById.set(id, parsed);
     return parsed;
@@ -750,12 +786,13 @@ function parseAndReconcilePolicyTables(
       absoluteError: absError,
       adwinDelta,
       adwinWidth,
+      adwinEstimationBefore: parseFinite(row.adwin_estimation_before!, `policyDetectorStream[${idx}].adwin_estimation_before`),
       adwinEstimation: parseFinite(row.adwin_estimation!, `policyDetectorStream[${idx}].adwin_estimation`),
       driftDetected,
       driftDirection: parseDirection(row.drift_direction!, `policyDetectorStream[${idx}].drift_direction`),
       triggeredDecision,
+      cooldownActive: parseBool(row.cooldown_active!, `policyDetectorStream[${idx}].cooldown_active`),
       cooldownRemainingBefore: parseIntString(row.cooldown_remaining_before!, `policyDetectorStream[${idx}].cooldown_remaining_before`),
-      decisionEventId: row.decision_event_id!.trim(),
     };
     if (driftDetected) alertCount += 1;
     if (triggeredDecision) triggeredByKey.set(`${id}|${ticker}|${evaluationDate}`, parsed);
@@ -823,23 +860,22 @@ function parseAndReconcilePolicyTables(
       effectiveFromDate,
       triggerPredictionId,
       triggerPredictionDate: parseDate(row.trigger_prediction_date!, `policyDecisionEvents[${idx}].trigger_prediction_date`),
-      triggerAbsoluteError: parseFinite(row.trigger_absolute_error!, `policyDecisionEvents[${idx}].trigger_absolute_error`),
       driftDirection: parseDirection(row.drift_direction!, `policyDecisionEvents[${idx}].drift_direction`),
+      adwinEstimationBefore: parseFinite(row.adwin_estimation_before!, `policyDecisionEvents[${idx}].adwin_estimation_before`),
+      adwinEstimationAfter: parseFinite(row.adwin_estimation_after!, `policyDecisionEvents[${idx}].adwin_estimation_after`),
+      adwinWidth: parseIntString(row.adwin_width!, `policyDecisionEvents[${idx}].adwin_width`),
       championVersionIdBefore: row.champion_version_id_before!,
       championModelIdBefore: modelBefore,
       championStateSha256Before: row.champion_state_sha256_before!,
-      challengerModelId: row.challenger_model_id!,
-      challengerStateSha256: row.challenger_state_sha256!,
-      windowSize: parseIntString(row.window_size!, `policyDecisionEvents[${idx}].window_size`),
+      shadowModelId: row.shadow_model_id!,
+      shadowStateSha256PreUpdate: row.shadow_state_sha256_pre_update!,
+      comparisonWindowPairs: parseIntString(row.comparison_window_pairs!, `policyDecisionEvents[${idx}].comparison_window_pairs`),
       minimumPairs,
+      minRelativeImprovement: minRel,
       validPairCount,
       championWindowMae: parseNullableFinite(row.champion_window_mae!, `policyDecisionEvents[${idx}].champion_window_mae`),
-      challengerWindowMae: parseNullableFinite(row.challenger_window_mae!, `policyDecisionEvents[${idx}].challenger_window_mae`),
-      deltaMaeChampionMinusChallenger: parseNullableFinite(row.delta_mae_champion_minus_challenger!, `policyDecisionEvents[${idx}].delta_mae_champion_minus_challenger`),
+      shadowB3WindowMae: parseNullableFinite(row.shadow_b3_window_mae!, `policyDecisionEvents[${idx}].shadow_b3_window_mae`),
       relativeImprovement: relImp,
-      minRelativeImprovement: minRel,
-      cooldownActive,
-      cooldownRemainingBefore: cooldownBefore,
       decisionOutcome: outcome,
       decisionReason: row.decision_reason!,
       switched,
@@ -849,6 +885,10 @@ function parseAndReconcilePolicyTables(
       rollbackTargetVersionId: row.rollback_target_version_id!,
       rollbackTargetModelId: row.rollback_target_model_id!,
       rollbackTargetStateSha256: row.rollback_target_state_sha256!,
+      cooldownActive,
+      cooldownRemainingBefore: cooldownBefore,
+      cooldownRemainingAfter: parseIntString(row.cooldown_remaining_after!, `policyDecisionEvents[${idx}].cooldown_remaining_after`),
+      detectorResetAfterDecision: parseBool(row.detector_reset_after_decision!, `policyDecisionEvents[${idx}].detector_reset_after_decision`),
     };
     decisionsById.set(eventId, parsed);
     if (outcome === "promoted") promotedById.set(eventId, parsed);
@@ -869,7 +909,9 @@ function parseAndReconcilePolicyTables(
     const ticker = parseTicker(row.ticker!, `policyChampionTimeline[${idx}].ticker`);
     const eventType = row.event_type as PolicyTimelineEventType;
     const toModelId = parseModelId(row.to_model_id!, `policyChampionTimeline[${idx}].to_model_id`);
-    const decisionDate = parseDate(row.decision_date!, `policyChampionTimeline[${idx}].decision_date`);
+    const recordedDate = parseDate(row.recorded_date!, `policyChampionTimeline[${idx}].recorded_date`);
+    const decisionRaw = row.decision_date!.trim();
+    const decisionDate = decisionRaw ? parseDate(decisionRaw, `policyChampionTimeline[${idx}].decision_date`) : null;
     const effectiveFromDate = parseDate(row.effective_from_date!, `policyChampionTimeline[${idx}].effective_from_date`);
     if (eventType === "INITIAL_CHAMPION_CUTOVER") {
       if (initTickers.has(ticker) || toModelId !== manifest.initialChampion[ticker]) {
@@ -881,7 +923,7 @@ function parseAndReconcilePolicyTables(
       if (!dec || timelinePromoIds.has(row.decision_event_id!)) {
         throw new PolicySnapshotLoadError(`Timeline promotion ${id} lacks a unique matching promoted decision`, "integrity");
       }
-      if (effectiveFromDate <= decisionDate || effectiveFromDate !== dec.effectiveFromDate || row.to_champion_version_id !== dec.championVersionIdAfter || toModelId !== "B3") {
+      if (!decisionDate || effectiveFromDate <= decisionDate || effectiveFromDate !== dec.effectiveFromDate || row.to_champion_version_id !== dec.championVersionIdAfter || toModelId !== "B3") {
         throw new PolicySnapshotLoadError(`Timeline promotion ${id} disagrees with decision ${dec.eventId}`, "integrity");
       }
       timelinePromoIds.add(dec.eventId);
@@ -894,9 +936,11 @@ function parseAndReconcilePolicyTables(
       policyVersion: row.policy_version!,
       ticker,
       eventType,
+      recordedDate,
       decisionEventId: row.decision_event_id!,
       decisionDate,
       effectiveFromDate,
+      versionSeq: parseIntString(row.version_seq!, `policyChampionTimeline[${idx}].version_seq`),
       fromChampionVersionId: row.from_champion_version_id!,
       fromModelId: row.from_model_id!,
       fromStateSha256: row.from_state_sha256!,
@@ -925,15 +969,16 @@ function parseAndReconcilePolicyTables(
   }
 
   const failures: PolicyFailureRow[] = failureRaw.map((row, idx) => ({
-    failureId: requireString(row.failure_id, `policyFailures[${idx}].failure_id`),
     experimentId: row.experiment_id!,
     policyVersion: row.policy_version!,
-    sessionDate: parseDate(row.session_date!, `policyFailures[${idx}].session_date`),
+    predictionDate: parseDate(row.prediction_date!, `policyFailures[${idx}].prediction_date`),
+    split: row.split!,
     ticker: parseTicker(row.ticker!, `policyFailures[${idx}].ticker`),
     role: parseRole(row.role!, `policyFailures[${idx}].role`),
-    modelId: parseModelId(row.model_id!, `policyFailures[${idx}].model_id`),
     championVersionId: row.champion_version_id!,
-    stage: row.stage!,
+    modelId: parseModelId(row.model_id!, `policyFailures[${idx}].model_id`),
+    modelName: row.model_name!,
+    failureType: row.failure_type!,
     reason: row.reason!,
     rawValue: row.raw_value!,
   }));
@@ -941,72 +986,78 @@ function parseAndReconcilePolicyTables(
   const modelMetrics: PolicyModelMetricRow[] = metricRaw.map((row, idx) => ({
     split: row.split!,
     ticker: parseTickerOrMacro(row.ticker!, `policyModelMetrics[${idx}].ticker`),
-    systemId: row.system_id!,
-    modelName: row.model_name!,
+    strategy: row.strategy!,
+    initialChampionModelId: row.initial_champion_model_id!,
     pairedN: parseIntString(row.paired_n!, `policyModelMetrics[${idx}].paired_n`),
-    expectedEligibleAnchorCount: parseIntString(row.expected_eligible_anchor_count!, `policyModelMetrics[${idx}].expected_eligible_anchor_count`),
-    pairedCoverage: parseNullableFinite(row.paired_coverage!, `policyModelMetrics[${idx}].paired_coverage`),
+    evaluableN: parseIntString(row.evaluable_n!, `policyModelMetrics[${idx}].evaluable_n`),
     mae: parseNullableFinite(row.mae!, `policyModelMetrics[${idx}].mae`),
     rmse: parseNullableFinite(row.rmse!, `policyModelMetrics[${idx}].rmse`),
-    comparisonPanel: row.comparison_panel!,
+    mse: parseNullableFinite(row.mse!, `policyModelMetrics[${idx}].mse`),
+    status: row.status!,
     evaluationScope: row.evaluation_scope!,
   }));
 
   const comparisons: PolicyComparisonRow[] = comparisonRaw.map((row, idx) => ({
     comparisonId: row.comparison_id!,
-    policySystem: row.policy_system!,
-    comparatorSystem: row.comparator_system!,
-    comparatorModel: row.comparator_model!,
     split: row.split!,
     ticker: parseTickerOrMacro(row.ticker!, `policyComparisons[${idx}].ticker`),
+    policyStrategy: row.policy_strategy!,
+    comparatorStrategy: row.comparator_strategy!,
     pairedN: parseIntString(row.paired_n!, `policyComparisons[${idx}].paired_n`),
-    expectedEligibleAnchorCount: parseIntString(row.expected_eligible_anchor_count!, `policyComparisons[${idx}].expected_eligible_anchor_count`),
-    pairedCoverage: parseNullableFinite(row.paired_coverage!, `policyComparisons[${idx}].paired_coverage`),
     policyMae: parseNullableFinite(row.policy_mae!, `policyComparisons[${idx}].policy_mae`),
     comparatorMae: parseNullableFinite(row.comparator_mae!, `policyComparisons[${idx}].comparator_mae`),
     deltaMaeComparatorMinusPolicy: parseNullableFinite(row.delta_mae_comparator_minus_policy!, `policyComparisons[${idx}].delta_mae_comparator_minus_policy`),
-    relativeImprovementPct: parseNullableFinite(row.relative_improvement_pct!, `policyComparisons[${idx}].relative_improvement_pct`),
+    relativeMaeImprovement: parseNullableFinite(row.relative_mae_improvement!, `policyComparisons[${idx}].relative_mae_improvement`),
     policyRmse: parseNullableFinite(row.policy_rmse!, `policyComparisons[${idx}].policy_rmse`),
     comparatorRmse: parseNullableFinite(row.comparator_rmse!, `policyComparisons[${idx}].comparator_rmse`),
-    directionDefinition: row.direction_definition!,
-    pairingPolicy: row.pairing_policy!,
-    evaluationScope: row.evaluation_scope!,
+    deltaRmseComparatorMinusPolicy: parseNullableFinite(row.delta_rmse_comparator_minus_policy!, `policyComparisons[${idx}].delta_rmse_comparator_minus_policy`),
     status: row.status!,
+    evaluationScope: row.evaluation_scope!,
+    confirmatoryHypothesis: parseBool(row.confirmatory_hypothesis!, `policyComparisons[${idx}].confirmatory_hypothesis`),
+    testReuseLimitation: row.test_reuse_limitation!,
   }));
 
   const operationsSummary: PolicyOperationsRow[] = opsRaw.map((row, idx) => ({
+    split: row.split!,
     ticker: parseTickerOrMacro(row.ticker!, `policyOperationsSummary[${idx}].ticker`),
     initialChampionModelId: row.initial_champion_model_id!,
     finalChampionModelId: row.final_champion_model_id!,
     finalChampionVersionId: row.final_champion_version_id!,
-    detectorObservations: parseIntString(row.detector_observations!, `policyOperationsSummary[${idx}].detector_observations`),
+    matchedCommonPanelN: parseIntString(row.matched_common_panel_n!, `policyOperationsSummary[${idx}].matched_common_panel_n`),
+    detectorObservationCount: parseIntString(row.detector_observation_count!, `policyOperationsSummary[${idx}].detector_observation_count`),
     alertCount: parseIntString(row.alert_count!, `policyOperationsSummary[${idx}].alert_count`),
-    decisionCount: parseIntString(row.decision_count!, `policyOperationsSummary[${idx}].decision_count`),
+    decisionEventCount: parseIntString(row.decision_event_count!, `policyOperationsSummary[${idx}].decision_event_count`),
     promotionCount: parseIntString(row.promotion_count!, `policyOperationsSummary[${idx}].promotion_count`),
     retainedCount: parseIntString(row.retained_count!, `policyOperationsSummary[${idx}].retained_count`),
     insufficientPairsCount: parseIntString(row.insufficient_pairs_count!, `policyOperationsSummary[${idx}].insufficient_pairs_count`),
     invalidDecisionCount: parseIntString(row.invalid_decision_count!, `policyOperationsSummary[${idx}].invalid_decision_count`),
     cooldownSuppressedCount: parseIntString(row.cooldown_suppressed_count!, `policyOperationsSummary[${idx}].cooldown_suppressed_count`),
-    b3ToB3PromotionCount: parseIntString(row.b3_to_b3_promotion_count!, `policyOperationsSummary[${idx}].b3_to_b3_promotion_count`),
+    staleChampionSkippedEvalCount: parseIntString(row.stale_champion_skipped_eval_count!, `policyOperationsSummary[${idx}].stale_champion_skipped_eval_count`),
     servedInvalidForecastCount: parseIntString(row.served_invalid_forecast_count!, `policyOperationsSummary[${idx}].served_invalid_forecast_count`),
     shadowInvalidForecastCount: parseIntString(row.shadow_invalid_forecast_count!, `policyOperationsSummary[${idx}].shadow_invalid_forecast_count`),
-    medianEvalToAlertLatencySessions: parseNullableFinite(row.median_eval_to_alert_latency_sessions!, `policyOperationsSummary[${idx}].median_eval_to_alert_latency_sessions`),
-    medianDecisionToEffectiveLatencySessions: parseNullableFinite(row.median_decision_to_effective_latency_sessions!, `policyOperationsSummary[${idx}].median_decision_to_effective_latency_sessions`),
+    pendingServedForecastCount: parseIntString(row.pending_served_forecast_count!, `policyOperationsSummary[${idx}].pending_served_forecast_count`),
+    meanLabelMaturityLagCalendarDays: parseNullableFinite(row.mean_label_maturity_lag_calendar_days!, `policyOperationsSummary[${idx}].mean_label_maturity_lag_calendar_days`),
+    meanTriggerAnchorToDecisionCalendarDays: parseNullableFinite(row.mean_trigger_anchor_to_decision_calendar_days!, `policyOperationsSummary[${idx}].mean_trigger_anchor_to_decision_calendar_days`),
+    meanDecisionToEffectiveCalendarDays: parseNullableFinite(row.mean_decision_to_effective_calendar_days!, `policyOperationsSummary[${idx}].mean_decision_to_effective_calendar_days`),
+    firstAlertDate: row.first_alert_date!.trim(),
+    firstPromotionDate: row.first_promotion_date!.trim(),
+    zeroAlertsObserved: parseBool(row.zero_alerts_observed!, `policyOperationsSummary[${idx}].zero_alerts_observed`),
+    zeroPromotionsObserved: parseBool(row.zero_promotions_observed!, `policyOperationsSummary[${idx}].zero_promotions_observed`),
   }));
 
   const coverageSummary: PolicyCoverageRow[] = covRaw.map((row, idx) => ({
+    split: row.split!,
     ticker: parseTicker(row.ticker!, `policyCoverageSummary[${idx}].ticker`),
-    expectedEligiblePredictionAnchors: parseIntString(row.expected_eligible_prediction_anchors!, `policyCoverageSummary[${idx}].expected_eligible_prediction_anchors`),
-    servedForecastCount: parseIntString(row.served_forecast_count!, `policyCoverageSummary[${idx}].served_forecast_count`),
-    shadowForecastCount: parseIntString(row.shadow_forecast_count!, `policyCoverageSummary[${idx}].shadow_forecast_count`),
-    servedInvalidCount: parseIntString(row.served_invalid_count!, `policyCoverageSummary[${idx}].served_invalid_count`),
-    shadowInvalidCount: parseIntString(row.shadow_invalid_count!, `policyCoverageSummary[${idx}].shadow_invalid_count`),
-    servedMatureEvaluableCount: parseIntString(row.served_mature_evaluable_count!, `policyCoverageSummary[${idx}].served_mature_evaluable_count`),
-    shadowMatureEvaluableCount: parseIntString(row.shadow_mature_evaluable_count!, `policyCoverageSummary[${idx}].shadow_mature_evaluable_count`),
-    servedPendingCount: parseIntString(row.served_pending_count!, `policyCoverageSummary[${idx}].served_pending_count`),
-    matchedAllSystemsN: parseIntString(row.matched_all_systems_n!, `policyCoverageSummary[${idx}].matched_all_systems_n`),
-    servedForecastCoverage: parseNullableFinite(row.served_forecast_coverage!, `policyCoverageSummary[${idx}].served_forecast_coverage`),
-    servedEvaluationCoverage: parseNullableFinite(row.served_evaluation_coverage!, `policyCoverageSummary[${idx}].served_evaluation_coverage`),
+    role: parseRole(row.role!, `policyCoverageSummary[${idx}].role`),
+    expectedAnchorsObserved: parseIntString(row.expected_anchors_observed!, `policyCoverageSummary[${idx}].expected_anchors_observed`),
+    publishedForecasts: parseIntString(row.published_forecasts!, `policyCoverageSummary[${idx}].published_forecasts`),
+    invalidForecasts: parseIntString(row.invalid_forecasts!, `policyCoverageSummary[${idx}].invalid_forecasts`),
+    matureEvaluated: parseIntString(row.mature_evaluated!, `policyCoverageSummary[${idx}].mature_evaluated`),
+    pendingLabels: parseIntString(row.pending_labels!, `policyCoverageSummary[${idx}].pending_labels`),
+    evaluationFailures: parseIntString(row.evaluation_failures!, `policyCoverageSummary[${idx}].evaluation_failures`),
+    matchedCommonPanelN: parseIntString(row.matched_common_panel_n!, `policyCoverageSummary[${idx}].matched_common_panel_n`),
+    publishRate: parseNullableFinite(row.publish_rate!, `policyCoverageSummary[${idx}].publish_rate`),
+    matureEvaluationRate: parseNullableFinite(row.mature_evaluation_rate!, `policyCoverageSummary[${idx}].mature_evaluation_rate`),
   }));
 
   return {
@@ -1117,7 +1168,7 @@ export function selectPolicyDayState(
 ): PolicyDaySelection {
   const dateSet = new Set<string>();
   for (const row of snapshot.forecasts) if (row.ticker === ticker) dateSet.add(row.predictionDate);
-  for (const row of snapshot.failures) if (row.ticker === ticker) dateSet.add(row.sessionDate);
+  for (const row of snapshot.failures) if (row.ticker === ticker) dateSet.add(row.predictionDate);
   for (const row of snapshot.detectorStream) if (row.ticker === ticker) dateSet.add(row.evaluationDate);
   for (const row of snapshot.decisionEvents) if (row.ticker === ticker) dateSet.add(row.decisionDate);
   const availableDates = [...dateSet].sort();
@@ -1127,7 +1178,7 @@ export function selectPolicyDayState(
 
   const tickerTimeline = snapshot.championTimeline
     .filter((row) => row.ticker === ticker)
-    .sort((left, right) => left.effectiveFromDate.localeCompare(right.effectiveFromDate) || left.timelineEventId.localeCompare(right.timelineEventId));
+    .sort((left, right) => left.effectiveFromDate.localeCompare(right.effectiveFromDate) || left.versionSeq - right.versionSeq);
   const activeCandidates = tickerTimeline.filter((row) => row.effectiveFromDate <= date);
   const activeTimelineEntry = activeCandidates[activeCandidates.length - 1] ?? tickerTimeline[0] ?? null;
 
@@ -1147,8 +1198,8 @@ export function selectPolicyDayState(
   const shadowEvaluation = shadowForecast
     ? snapshot.evaluations.find((row) => row.policyPredictionId === shadowForecast.policyPredictionId) ?? null
     : null;
-  const servedFailure = snapshot.failures.find((row) => row.ticker === ticker && row.sessionDate === date && row.role === "SERVED_CHAMPION") ?? null;
-  const shadowFailure = snapshot.failures.find((row) => row.ticker === ticker && row.sessionDate === date && row.role === "SHADOW_B3") ?? null;
+  const servedFailure = snapshot.failures.find((row) => row.ticker === ticker && row.predictionDate === date && row.role === "SERVED_CHAMPION") ?? null;
+  const shadowFailure = snapshot.failures.find((row) => row.ticker === ticker && row.predictionDate === date && row.role === "SHADOW_B3") ?? null;
   const servedPendingLabel = servedForecast !== null && servedEvaluation === null && servedFailure === null;
   const detectorRowsOnDate = snapshot.detectorStream
     .filter((row) => row.ticker === ticker && row.evaluationDate === date)
@@ -1173,7 +1224,8 @@ export function selectPolicyDayState(
     tickerEvents,
     tickerTimeline,
     tickerOperations: snapshot.operationsSummary.find((row) => row.ticker === ticker) ?? null,
-    tickerCoverage: snapshot.coverageSummary.find((row) => row.ticker === ticker) ?? null,
+    servedCoverage: snapshot.coverageSummary.find((row) => row.ticker === ticker && row.role === "SERVED_CHAMPION") ?? null,
+    shadowCoverage: snapshot.coverageSummary.find((row) => row.ticker === ticker && row.role === "SHADOW_B3") ?? null,
     tickerMetrics: snapshot.modelMetrics.filter((row) => row.ticker === ticker),
     tickerComparisons: snapshot.comparisons.filter((row) => row.ticker === ticker),
     macroMetrics: snapshot.modelMetrics.filter((row) => row.ticker === "MACRO"),

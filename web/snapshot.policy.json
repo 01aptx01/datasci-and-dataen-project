@@ -386,5 +386,14 @@
     "highVolatilityMetrics": "high_volatility_metrics.csv",
     "b4Comparisons": "b4_comparisons.csv",
     "referenceB0B3Metrics": "reference_b0_b3_metrics.csv"
+  },
+  "policySidecar": {
+    "schemaVersion": "1.2.0",
+    "policyVersion": "1.0.0",
+    "policyEvaluationId": "f6dd8cb131d7d7bebaefa0ca70f47e068956e5c2f4f99e448b1511711ddde844",
+    "policyReplayExperimentId": "5003376f7637a3b04f63719dd499f67946aa3b0f30bafd27772e1d20d4ec9779",
+    "zipDir": "docs/ml-results/downloads/policy",
+    "zipName": "ml-results-policy-f6dd8cb1.zip",
+    "zipSha256": "86747b0378e0478b1fb819e5e755c39e4fecfc3b43d12793a43f55c74fdbc5ec"
   }
 }

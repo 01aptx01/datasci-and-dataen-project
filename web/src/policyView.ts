@@ -9,7 +9,7 @@ const esc = (value: unknown): string => String(value).replace(/[&<>"']/g, (char)
 const pct = (value: number | null): string => value === null || !Number.isFinite(value) ? "—" : `${(value * 100).toFixed(2)} pp`;
 const pctRatio = (value: number | null): string => value === null || !Number.isFinite(value) ? "—" : `${(value * 100).toFixed(2)}%`;
 const signedPp = (value: number | null): string => value === null || !Number.isFinite(value) ? "—" : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)} pp`;
-const signedPct = (value: number | null): string => value === null || !Number.isFinite(value) ? "—" : `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+const signedRelPct = (value: number | null): string => value === null || !Number.isFinite(value) ? "—" : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`;
 const shortHash = (value: string): string => value ? value.slice(0, 12) : "—";
 
 const MODEL_LABELS: Record<string, string> = {
@@ -136,7 +136,7 @@ export function renderPolicyMonitoringPanel(
 
   const detectorSummary = day.detectorRowsOnDate.length
     ? day.detectorRowsOnDate.map((row) =>
-      `<tr><td>${esc(row.predictionDate)}</td><td>${esc(row.evaluationDate)}</td><td>${esc(row.championVersionId)} (${esc(row.championModelId)})</td><td>${pct(row.absoluteError)}</td><td>${row.adwinWidth}</td><td>${row.adwinEstimation.toFixed(4)}</td><td>${row.driftDetected ? `<span class="st-fd-status st-fd-signal">ALERT · ${esc(row.driftDirection)}</span>` : `<span class="st-fd-status st-fd-no-signal">No signal</span>`}</td><td>${row.triggeredDecision ? `<code>${esc(row.decisionEventId)}</code>` : "—"}</td></tr>`
+      `<tr><td>${esc(row.predictionDate)}</td><td>${esc(row.evaluationDate)}</td><td><code>${esc(row.championVersionId)}</code> (${esc(row.championModelId)})</td><td>${pct(row.absoluteError)}</td><td>${row.adwinWidth}</td><td>${row.adwinEstimation.toFixed(4)}</td><td>${row.driftDetected ? `<span class="st-fd-status st-fd-signal">ALERT · ${esc(row.driftDirection)}</span>` : `<span class="st-fd-status st-fd-no-signal">No signal</span>`}</td><td>${row.triggeredDecision ? "Triggered" : "—"}</td></tr>`
     ).join("")
     : "";
 
@@ -147,21 +147,21 @@ export function renderPolicyMonitoringPanel(
       + `<td>${ev.effectiveFromDate ? `<strong>${esc(ev.effectiveFromDate)}</strong>` : "—"}</td>`
       + `<td>${outcomeBadge(ev.decisionOutcome)}</td>`
       + `<td><code>${esc(ev.decisionReason)}</code>${ev.cooldownActive ? `<br><small>cooldown left: ${ev.cooldownRemainingBefore}</small>` : ""}</td>`
-      + `<td>${pct(ev.championWindowMae)} vs ${pct(ev.challengerWindowMae)}</td>`
-      + `<td>${ev.validPairCount} / ${ev.windowSize} <small>(min ${ev.minimumPairs})</small></td>`
-      + `<td>${ev.relativeImprovement !== null ? signedPct(ev.relativeImprovement * 100) : "—"} <small>(เกณฑ์ ≥ ${(ev.minRelativeImprovement * 100).toFixed(1)}%)</small></td>`
+      + `<td>${pct(ev.championWindowMae)} vs ${pct(ev.shadowB3WindowMae)}</td>`
+      + `<td>${ev.validPairCount} / ${ev.comparisonWindowPairs} <small>(min ${ev.minimumPairs})</small></td>`
+      + `<td>${signedRelPct(ev.relativeImprovement)} <small>(เกณฑ์ ≥ ${(ev.minRelativeImprovement * 100).toFixed(1)}%)</small></td>`
       + `<td><code>${esc(ev.championVersionIdBefore)}</code> (${esc(ev.championModelIdBefore)}) → <code>${esc(ev.championVersionIdAfter)}</code> (${esc(ev.championModelIdAfter)})</td>`
       + `<td>${ev.rollbackTargetVersionId ? `<code>${esc(ev.rollbackTargetVersionId)}</code> (${esc(shortHash(ev.rollbackTargetStateSha256))})` : "—"}</td>`
       + `</tr>`
     ).join("")}</tbody></table></div>`
-    : `<div class="st-fd-empty"><strong>ไม่พบ ADWIN Alert หรือการสลับรุ่นใน snapshot นี้ (${esc(day.ticker)})</strong><p>ตรวจพบ 0 alerts จากทั้งหมด ${(day.tickerOperations?.detectorObservations ?? 0).toLocaleString()} mature served observations · คง initial champion <code>${esc(day.initialChampion)}</code> ตลอดช่วง Test โดยไม่มีการสร้างเหตุการณ์สมมติ</p></div>`;
+    : `<div class="st-fd-empty"><strong>ไม่พบ ADWIN Alert หรือการสลับรุ่นใน snapshot นี้ (${esc(day.ticker)})</strong><p>ตรวจพบ 0 alerts จากทั้งหมด ${(day.tickerOperations?.detectorObservationCount ?? 0).toLocaleString()} mature served observations · คง initial champion <code>${esc(day.initialChampion)}</code> ตลอดช่วง Test โดยไม่มีการสร้างเหตุการณ์สมมติ</p></div>`;
 
   const timelineRows = day.tickerTimeline.map((row) =>
     `<tr${row.effectiveFromDate === day.date || row.decisionDate === day.date ? ' class="st-fd-selected-row"' : ""}>`
     + `<td><code>${esc(row.toChampionVersionId)}</code></td>`
     + `<td>${esc(row.eventType)}</td>`
     + `<td>${esc(modelCaption(row.toModelId))}</td>`
-    + `<td>${esc(row.decisionDate)}</td>`
+    + `<td>${esc(row.decisionDate ?? "—")}</td>`
     + `<td><strong>${esc(row.effectiveFromDate)}</strong></td>`
     + `<td><code>${esc(shortHash(row.toStateSha256))}</code></td>`
     + `<td>${row.rollbackTargetVersionId ? `<code>${esc(row.rollbackTargetVersionId)}</code>` : "—"}</td>`
@@ -170,16 +170,16 @@ export function renderPolicyMonitoringPanel(
   ).join("");
 
   const comparisonRows = [...day.tickerComparisons, ...day.macroComparisons].map((row) =>
-    `<tr><td><strong>${esc(row.ticker)}</strong></td><td><code>${esc(row.comparisonId)}</code></td><td>${esc(row.comparatorSystem)} (${esc(row.comparatorModel)})</td><td>${row.pairedN.toLocaleString()} / ${row.expectedEligibleAnchorCount.toLocaleString()} (${pctRatio(row.pairedCoverage)})</td><td>${pct(row.policyMae)}</td><td>${pct(row.comparatorMae)}</td><td>${signedPp(row.deltaMaeComparatorMinusPolicy)}</td><td>${signedPct(row.relativeImprovementPct)}</td><td>${esc(row.status)}</td></tr>`
+    `<tr><td><strong>${esc(row.ticker)}</strong></td><td><code>${esc(row.comparisonId)}</code></td><td>${esc(row.comparatorStrategy)}</td><td>${row.pairedN.toLocaleString()}</td><td>${pct(row.policyMae)}</td><td>${pct(row.comparatorMae)}</td><td>${signedPp(row.deltaMaeComparatorMinusPolicy)}</td><td>${signedRelPct(row.relativeMaeImprovement)}</td><td>${esc(row.status)}</td></tr>`
   ).join("");
 
   const ops = day.tickerOperations;
-  const cov = day.tickerCoverage;
+  const cov = day.servedCoverage;
 
   return `<div class="st-fd-tab-panel">`
     + `<div class="st-policy-banner"><div><strong>Simulated Historical Replay · Exploratory Policy v${esc(manifest.policyVersion)}</strong><p>แยกจากผลทดสอบสมมติฐาน H1–H3 เดิม (Confirmatory ไม่เปลี่ยนแปลง) · ไม่ใช่ Live Inference · Point-in-time source availability: ยังไม่ยืนยัน (<code>false</code>) · Shadow B3 อัปเดตต่อเนื่องแยกจาก Frozen Snapshot ที่เสิร์ฟจริง</p></div><span class="st-secondary-badge">Eval ${esc(shortHash(manifest.policyEvaluationId))}</span></div>`
     + `<div class="st-secondary-triple st-policy-signal-grid">`
-    + `<div class="st-lineage-status"><span>สัญญาณที่ 1 (แท็บนี้)</span><strong>Policy ADWIN (Served Mature Error)</strong><p>ตรวจ error ของแชมเปี้ยนที่เสิร์ฟจริงและตัดสินใจสลับรุ่นด้วย paired window 60 วัน (min 30, ≥5%, cooldown 10)</p></div>`
+    + `<div class="st-lineage-status"><span>สัญญาณที่ 1 (แท็บนี้)</span><strong>Policy ADWIN (Served Mature Error)</strong><p>ตรวจ error ของแชมเปี้ยนที่เสิร์ฟจริงและตัดสินใจสลับรุ่นด้วย paired window 60 วัน (min 30, ≥5%, cooldown 20)</p></div>`
     + `<div class="st-lineage-status"><span>สัญญาณที่ 2 (แท็บ B3 Error Drift)</span><strong>B3 Monitor ADWIN (Monitor-only เดิม)</strong><p>ติดตาม error stream ของ B3 Benchmark เดิมเท่านั้น ไม่สั่งสลับรุ่นหรือแก้ผล H1–H3</p></div>`
     + `<div class="st-lineage-status"><span>สัญญาณที่ 3 (แท็บ Feature Drift)</span><strong>Feature Drift (W1 / PSI)</strong><p>วัดการเปลี่ยนกระจายตัวของ Core 8 features เทียบ Train ไม่ใช่ตัวสั่ง promote โมเดล</p></div>`
     + `</div>`
@@ -188,14 +188,14 @@ export function renderPolicyMonitoringPanel(
     + pendingNotice
     + `<section class="st-card"><div class="st-fd-subheading"><div><h3>สถานะ Champion ณ วันที่ ${esc(day.date)} (${esc(day.ticker)})</h3><p>Initial Champion จาก Validation cutover: <strong>${esc(modelCaption(day.initialChampion))}</strong> · รุ่นที่เสิร์ฟจริง ณ วันนี้มีผลตั้งแต่ ${esc(activeEffective)}</p></div><span class="st-fd-status st-fd-no-signal">Active: ${esc(activeVersion)} · ${esc(activeModelId)}</span></div>`
     + `<div class="st-fd-selected-metrics"><div><span>Active Champion Version</span><strong>${esc(activeVersion)} · ${esc(activeModelId)}</strong><small>state ${esc(activeHash)}</small></div><div><span>Served Forecast / Actual</span><strong>${day.servedForecast ? pct(day.servedForecast.predictedVolAnnualized) : "—"} / ${day.servedEvaluation ? pct(day.servedEvaluation.targetRealizedVol5d) : "—"}</strong><small>${esc(servedStatusText)}</small></div><div><span>Shadow B3 Forecast / Actual</span><strong>${day.shadowForecast ? pct(day.shadowForecast.predictedVolAnnualized) : "—"} / ${day.shadowEvaluation ? pct(day.shadowEvaluation.targetRealizedVol5d) : "—"}</strong><small>${esc(shadowStatusText)}</small></div></div>`
-    + `<div class="st-fd-selected-metrics"><div><span>Alerts / Decisions / Switches (${esc(day.ticker)})</span><strong>${ops ? `${ops.alertCount} / ${ops.decisionCount} / ${ops.promotionCount}` : "—"}</strong><small>Retained ${ops?.retainedCount ?? 0} · Insuff ${ops?.insufficientPairsCount ?? 0} · Cooldown ${ops?.cooldownSuppressedCount ?? 0}</small></div><div><span>Served Coverage (Forecast / Eval)</span><strong>${cov ? `${pctRatio(cov.servedForecastCoverage)} / ${pctRatio(cov.servedEvaluationCoverage)}` : "—"}</strong><small>Pending ${cov?.servedPendingCount ?? 0} · Invalid ${cov?.servedInvalidCount ?? 0}</small></div><div><span>Matched Panel (All Systems)</span><strong>${cov ? cov.matchedAllSystemsN.toLocaleString() : "—"}</strong><small>Median alert→eff latency: ${ops?.medianDecisionToEffectiveLatencySessions ?? "—"} sessions</small></div></div>`
+    + `<div class="st-fd-selected-metrics"><div><span>Alerts / Decisions / Switches (${esc(day.ticker)})</span><strong>${ops ? `${ops.alertCount} / ${ops.decisionEventCount} / ${ops.promotionCount}` : "—"}</strong><small>Retained ${ops?.retainedCount ?? 0} · Insuff ${ops?.insufficientPairsCount ?? 0} · Cooldown ${ops?.cooldownSuppressedCount ?? 0}</small></div><div><span>Served Coverage (Publish / Eval)</span><strong>${cov ? `${pctRatio(cov.publishRate)} / ${pctRatio(cov.matureEvaluationRate)}` : "—"}</strong><small>Pending ${cov?.pendingLabels ?? 0} · Invalid ${cov?.invalidForecasts ?? 0}</small></div><div><span>Matched Common Panel (${esc(day.ticker)})</span><strong>${cov ? cov.matchedCommonPanelN.toLocaleString() : "—"}</strong><small>Mean maturity lag: ${ops?.meanLabelMaturityLagCalendarDays !== null && ops?.meanLabelMaturityLagCalendarDays !== undefined ? `${ops.meanLabelMaturityLagCalendarDays.toFixed(2)} d` : "—"}</small></div></div>`
     + (detectorSummary
-      ? `<details open><summary>ADWIN Served Error ที่ครบกำหนดในวันนี้ (${day.detectorRowsOnDate.length} แถว)</summary><div class="st-table-wrap"><table class="st-table"><thead><tr><th>Prediction Date</th><th>Eval Date</th><th>Champion</th><th>Abs Error</th><th>ADWIN Width</th><th>ADWIN Est.</th><th>Signal</th><th>Decision ID</th></tr></thead><tbody>${detectorSummary}</tbody></table></div></details>`
+      ? `<details open><summary>ADWIN Served Error ที่ครบกำหนดในวันนี้ (${day.detectorRowsOnDate.length} แถว)</summary><div class="st-table-wrap"><table class="st-table"><thead><tr><th>Prediction Date</th><th>Eval Date</th><th>Champion</th><th>Abs Error</th><th>ADWIN Width</th><th>ADWIN Est.</th><th>Signal</th><th>Decision</th></tr></thead><tbody>${detectorSummary}</tbody></table></div></details>`
       : `<p class="st-fd-method-note">ไม่มี served error ที่ครบกำหนดประเมินเข้าสู่ ADWIN ในวันที่ ${esc(day.date)} (อาจยังรอ target maturity 5 วันซื้อขาย หรือเป็นวันก่อน label แรกครบกำหนด)</p>`)
     + `</section>`
     + `<section class="st-card"><div class="st-fd-subheading"><div><h3>ประวัติ ADWIN Alert และการตัดสินใจ (${esc(day.ticker)})</h3><p>ทุกเหตุการณ์ตัดสินใจต้องอ้างอิงจาก ADWIN alert จริง 1:1 และแสดงเหตุผลของทุกสถานะ</p></div><span>${day.tickerEvents.length} เหตุการณ์</span></div>${eventsSection}</section>`
     + `<section class="st-card"><div class="st-fd-subheading"><div><h3>Model Version Timeline (${esc(day.ticker)})</h3><p>ลำดับรุ่นแชมเปี้ยนตั้งแต่ Validation cutover และการสลับเป็น Frozen B3 Snapshot ใน session ถัดไป</p></div><span>${day.tickerTimeline.length} รุ่น</span></div><div class="st-table-wrap"><table class="st-table"><thead><tr><th>Version</th><th>Event Type</th><th>Model</th><th>Decision Date</th><th>Effective Date</th><th>State Hash</th><th>Rollback Target</th><th>เหตุผล</th></tr></thead><tbody>${timelineRows}</tbody></table></div></section>`
-    + `<section class="st-card"><div class="st-fd-subheading"><div><h3>เปรียบเทียบผลลัพธ์บน Matched Mature Keys (${esc(day.ticker)} &amp; MACRO)</h3><p>DeltaMAE = Comparator − Policy · ค่าบวกแปลว่า Policy มี error ต่ำกว่า · เป็นผลเชิงสำรวจ (Exploratory) บน Test ชุดเดิม</p></div><span>Matched Panel</span></div><div class="st-table-wrap"><table class="st-table"><thead><tr><th>Scope</th><th>Comparison</th><th>คู่เทียบ</th><th>Paired N (Coverage)</th><th>Policy MAE</th><th>Comparator MAE</th><th>DeltaMAE</th><th>Rel. Impr.</th><th>Status</th></tr></thead><tbody>${comparisonRows}</tbody></table></div></section>`
+    + `<section class="st-card"><div class="st-fd-subheading"><div><h3>เปรียบเทียบผลลัพธ์บน Matched Mature Keys (${esc(day.ticker)} &amp; MACRO)</h3><p>DeltaMAE = Comparator − Policy · ค่าบวกแปลว่า Policy มี error ต่ำกว่า · เป็นผลเชิงสำรวจ (Exploratory) บน Test ชุดเดิม</p></div><span>Matched Panel</span></div><div class="st-table-wrap"><table class="st-table"><thead><tr><th>Scope</th><th>Comparison</th><th>คู่เทียบ</th><th>Paired N</th><th>Policy MAE</th><th>Comparator MAE</th><th>DeltaMAE</th><th>Rel. Impr.</th><th>Status</th></tr></thead><tbody>${comparisonRows}</tbody></table></div></section>`
     + `<p class="st-fd-method-note">Policy Config Fingerprint: <code>${esc(manifest.policyConfigFingerprint)}</code> · Replay Experiment ID: <code>${esc(manifest.policyReplayExperimentId)}</code> · Evaluation ID: <code>${esc(manifest.policyEvaluationId)}</code></p>`
     + `</div>`;
 }
