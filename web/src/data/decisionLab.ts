@@ -136,6 +136,13 @@ export function buildPortfolioRiskTimeline(
     });
 }
 
+export function portfolioRiskSourceDates(rows: PortfolioRiskRow[], modelName: ModelName): string[] {
+  return [...new Set(rows
+    .filter((row) => row.split === "test" && row.modelName === modelName)
+    .map((row) => row.predictionDate))]
+    .sort((left, right) => left.localeCompare(right));
+}
+
 export function splitRiskTimelineSegments(points: PortfolioRiskTimelinePoint[]): PortfolioRiskTimelinePoint[][] {
   const segments: PortfolioRiskTimelinePoint[][] = [];
   let current: PortfolioRiskTimelinePoint[] = [];

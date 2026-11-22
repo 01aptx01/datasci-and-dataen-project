@@ -32,7 +32,7 @@ const selection = {
   view: "as-of",
 };
 
-function render(decision) {
+function render(decision, overrides = {}) {
   return renderFinancialDecisionLab({
     rows: [selectedRow],
     selectedRow,
@@ -40,6 +40,8 @@ function render(decision) {
     decision,
     availableDates: [selection.predictionDate],
     availableModels: [selection.modelName],
+    sessionPlaying: false,
+    sessionSpeedMs: 900,
     modelMetrics: [],
     coverage: [],
     unit: "percent",
@@ -48,6 +50,7 @@ function render(decision) {
     evaluationId: selection.evaluationId,
     strictCutoff: "2025-01-02",
     pointInTimeSourceAvailabilityVerified: false,
+    ...overrides,
   });
 }
 
@@ -112,6 +115,53 @@ test("Scenario Lab renders two editable weights and one calculated remainder per
   assert.match(html, /100% − SPY − GLD/);
   assert.match(html, /data-scenario-remainder-value="B"[^>]*>20%/);
   assert.match(html, /100% − SPY − IEF/);
+});
+
+test("Scenario Lab keeps an invalid allocation visible without clamping its sliders", () => {
+  const decision = {
+    ...createDefaultFinancialScenarioState(),
+    scenarioA: [-0.1, 0.3, 0.8],
+    remainderAssetA: "SPY",
+    activeTab: "scenarios",
+  };
+  const html = render(decision);
+  assert.match(html, /data-scenario-remainder-value="A"[^>]*>-10%/);
+  assert.match(html, /id="scenario-A-IEF-slider"[^>]*max="30"[^>]*value="30"/);
+  assert.match(html, /id="scenario-A-GLD-slider"[^>]*max="80"[^>]*value="80"/);
+  assert.match(html, /น้ำหนักแต่ละสินทรัพย์ต้องอยู่ระหว่าง 0 ถึง 1/);
+});
+
+test("Portfolio date controls expose adjacent recorded dates and opt-in playback", () => {
+  const html = render(createDefaultFinancialScenarioState(), {
+    availableDates: ["2025-01-01", "2025-01-02", "2025-01-03"],
+    sessionPlaying: true,
+  });
+  assert.match(html, /data-action="portfolio-date-step" data-direction="previous"/);
+  assert.match(html, /data-field="portfolio-date"/);
+  assert.match(html, /data-action="portfolio-date-step" data-direction="next"/);
+  assert.match(html, /data-action="toggle-session-play"[^>]*aria-pressed="true"[^>]*>หยุดเล่น/);
+  assert.match(html, /data-field="session-speed"/);
+  assert.match(html, /2 \/ 3 วันที่บันทึก/);
+});
+
+test("Portfolio playback keeps an invalid recorded date visible without calculating risk", () => {
+  const unavailableRow = {
+    ...selectedRow,
+    status: "INCOMPLETE_INPUTS",
+    covariance: null,
+    portfolioVol: null,
+    missingInputs: ["IEF forecast"],
+  };
+  const html = render(createDefaultFinancialScenarioState(), {
+    rows: [unavailableRow],
+    selectedRow: unavailableRow,
+    availableDates: ["2025-01-01", selection.predictionDate, "2025-01-03"],
+  });
+  assert.match(html, /portfolio-date-status unavailable/);
+  assert.match(html, /Unavailable · source INCOMPLETE_INPUTS/);
+  assert.match(html, /Unavailable inputs: IEF forecast/);
+  assert.match(html, /class="decision-chart-empty"/);
+  assert.match(html, /<td>—<\/td><td>INCOMPLETE_INPUTS<\/td>/);
 });
 
 test("Scenario Lab keeps editors, selected-day comparison, timeline, and budget together", () => {

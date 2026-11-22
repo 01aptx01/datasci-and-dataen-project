@@ -160,6 +160,17 @@ test("daily risk series filters future dates and breaks at source gaps", () => {
   ]);
 });
 
+test("portfolio playback dates include every unique recorded Test row in chronological order", () => {
+  const portfolioRiskSourceDates = requireFunction("portfolioRiskSourceDates");
+  const rows = [
+    row("2025-01-03"),
+    row("2025-01-02", { status: "INCOMPLETE_INPUTS", missingInputs: ["IEF forecast"] }),
+    row("2025-01-03"),
+    row("2025-01-01", { modelName: "STATIC_SGD" }),
+  ];
+  assert.deepEqual(portfolioRiskSourceDates(rows, "ONLINE_SGD"), ["2025-01-02", "2025-01-03"]);
+});
+
 test("prior comparable risk names the previous valid source date and gap", () => {
   const buildPortfolioRiskTimeline = requireFunction("buildPortfolioRiskTimeline");
   const findPriorComparableRisk = requireFunction("findPriorComparableRisk");

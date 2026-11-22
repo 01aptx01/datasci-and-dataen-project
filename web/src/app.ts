@@ -1,7 +1,6 @@
 import { filterForecastRows, loadSnapshot, selectRecordedSessions, type ForecastFilter, type SnapshotState } from "./data/loadSnapshot.js";
 import { modelId, modelLabel, type CoverageRow, type DriftTimelineRow, type ForecastAuditRow, type H1ScatterRow, type ModelMetricRow, type ModelName, type PortfolioRiskRow, type RollingMae20Row, type Ticker } from "./data/schemas.js";
-import type { PortfolioWeights } from "./data/portfolio.js";
-import { createDefaultFinancialScenarioState, parseFinancialDecisionParams, serializeFinancialDecisionHash, validateScenarioWeights, type FinancialScenarioState } from "./data/decisionLab.js";
+import { createDefaultFinancialScenarioState, parseFinancialDecisionParams, portfolioRiskSourceDates, serializeFinancialDecisionHash, setScenarioRemainderAsset, updateScenarioRemainderWeight, validateScenarioWeights, type FinancialScenarioState, type ScenarioAsset, type ScenarioRemainderAsset } from "./data/decisionLab.js";
 import { buildExportMetadata, buildForecastCsv } from "./data/export.js";
 import { resolveAsOfLabelView, selectSameDateForecasts } from "./data/replay.js";
 import { calculateDescriptiveRangeMetrics } from "./data/rangeMetrics.js";
@@ -263,9 +262,61 @@ function selectionContextSummary(state: ViewState): string {
 function validateFinancialDecisionState(state: FinancialScenarioState): boolean {
   return validateScenarioWeights(state.scenarioA).status === "valid" &&
     validateScenarioWeights(state.scenarioB).status === "valid" &&
+    ["SPY", "IEF", "GLD"].includes(state.remainderAssetA) &&
+    ["SPY", "IEF", "GLD"].includes(state.remainderAssetB) &&
     (state.budgetAnnualizedDecimal === null || (Number.isFinite(state.budgetAnnualizedDecimal) && state.budgetAnnualizedDecimal >= 0)) &&
     ["risk", "drivers", "scenarios"].includes(state.activeTab) &&
     ["A", "B"].includes(state.activeScenario);
+}
+
+function applyScenarioWeightInput(root: HTMLElement, state: ViewState, target: HTMLInputElement): { scenario: "A" | "B"; valid: boolean } | null {
+  const scenario = target.dataset.scenario;
+  const index = Number(target.dataset.index);
+  if ((scenario !== "A" && scenario !== "B") || !Number.isInteger(index) || index < 0 || index >= tickerNames.length) return null;
+  const weightsKey = scenario === "A" ? "scenarioA" : "scenarioB";
+  const remainderKey = scenario === "A" ? "remainderAssetA" : "remainderAssetB";
+  const remainderAsset = state.financialDecision[remainderKey];
+  const asset = tickerNames[index] as ScenarioAsset;
+  if (asset === remainderAsset) return null;
+
+  const decimal = target.value.trim() ? Number(target.value) / 100 : Number.NaN;
+  const next = updateScenarioRemainderWeight(state.financialDecision[weightsKey], remainderAsset, asset, decimal);
+  state.financialDecision[weightsKey] = next;
+
+  const remainderIndex = tickerNames.indexOf(remainderAsset);
+  const remainderOutput = root.querySelector<HTMLOutputElement>(`[data-scenario-remainder-value="${scenario}"]`);
+  const remainderWeight = next[remainderIndex];
+  if (remainderOutput) remainderOutput.textContent = Number.isFinite(remainderWeight) ? `${Math.round(remainderWeight * 100)}%` : "—";
+
+  const pairedField = target.dataset.field === "scenario-weight" ? "scenario-weight-slider" : "scenario-weight";
+  const pairedControl = root.querySelector<HTMLInputElement>(`[data-field="${pairedField}"][data-scenario="${scenario}"][data-index="${index}"]`);
+  if (pairedControl) pairedControl.value = target.dataset.field === "scenario-weight-slider"
+    ? target.value
+    : Number.isFinite(decimal) ? String(decimal * 100) : "0";
+
+  const editableIndices = tickerNames.map((_, itemIndex) => itemIndex).filter((itemIndex) => itemIndex !== remainderIndex);
+  for (const editableIndex of editableIndices) {
+    const otherIndex = editableIndices.find((itemIndex) => itemIndex !== editableIndex);
+    const otherWeight = otherIndex === undefined ? Number.NaN : next[otherIndex];
+    const maxPercent = Number.isFinite(otherWeight) ? Math.max(0, Math.min(100, (1 - otherWeight) * 100)) : 0;
+    const currentWeight = next[editableIndex];
+    const sliderMax = Number.isFinite(currentWeight) && currentWeight >= 0 && currentWeight <= 1 ? Math.max(maxPercent, currentWeight * 100) : maxPercent;
+    const numberInput = root.querySelector<HTMLInputElement>(`[data-field="scenario-weight"][data-scenario="${scenario}"][data-index="${editableIndex}"]`);
+    const slider = root.querySelector<HTMLInputElement>(`[data-field="scenario-weight-slider"][data-scenario="${scenario}"][data-index="${editableIndex}"]`);
+    numberInput?.setAttribute("max", String(maxPercent));
+    slider?.setAttribute("max", String(sliderMax));
+    if (slider) slider.disabled = !Number.isFinite(currentWeight) || currentWeight < 0 || currentWeight > 1;
+  }
+
+  const validation = validateScenarioWeights(next);
+  const totalOutput = root.querySelector<HTMLElement>(`[data-scenario-total="${scenario}"]`);
+  if (totalOutput) {
+    const total = next.reduce((sum, weight) => sum + (Number.isFinite(weight) ? weight : 0), 0);
+    totalOutput.textContent = `รวม ${(total * 100).toFixed(2)}%${validation.status === "invalid" ? ` · ${validation.message}` : " · น้ำหนักครบ 100%"}`;
+    totalOutput.classList.toggle("weight-error", validation.status === "invalid");
+    totalOutput.setAttribute("role", validation.status === "invalid" ? "alert" : "status");
+  }
+  return { scenario, valid: validation.status === "valid" };
 }
 
 function publishFinancialDecision(root: HTMLElement, state: ViewState, focusFallback: HTMLElement | null = null): void {
@@ -375,6 +426,10 @@ function coverageRowsFor(snapshot: Extract<SnapshotState, { status: "ready" }>, 
 
 function selectedPortfolioRow(snapshot: Extract<SnapshotState, { status: "ready" }>, date: string, model: ModelName): PortfolioRiskRow | undefined {
   return snapshot.portfolioRisk.find((row) => row.split === "test" && row.predictionDate === date && row.modelName === model && row.status === "OK" && row.covariance !== null && row.portfolioVol !== null && row.missingInputs.length === 0);
+}
+
+function recordedPortfolioRow(snapshot: Extract<SnapshotState, { status: "ready" }>, date: string, model: ModelName): PortfolioRiskRow | undefined {
+  return snapshot.portfolioRisk.find((row) => row.split === "test" && row.predictionDate === date && row.modelName === model);
 }
 
 function findTourRecord(snapshot: Extract<SnapshotState, { status: "ready" }>): TourRecord | null {
@@ -659,39 +714,66 @@ function setSessionIndex(root: HTMLElement, state: ViewState, index: number, his
   publishSelection(root, state, { ...state.selection, predictionDate: row.predictionDate, asOfDate: row.predictionDate }, historyMode);
 }
 
+function portfolioDateSequence(state: ViewState): string[] {
+  if (state.snapshot.status !== "ready" || !state.selection || state.routePath !== "/portfolio") return [];
+  return portfolioRiskSourceDates(state.snapshot.portfolioRisk, state.selection.modelName);
+}
+
+function setPortfolioDateIndex(root: HTMLElement, state: ViewState, index: number, historyMode: "push" | "replace" = "push"): void {
+  if (state.snapshot.status !== "ready" || !state.selection || state.routePath !== "/portfolio") return;
+  const dates = portfolioDateSequence(state);
+  const selectedIndex = Math.max(0, Math.min(index, dates.length - 1));
+  const date = dates[selectedIndex];
+  if (!date) return;
+  stopSessionPlayback(state);
+  publishSelection(root, state, { ...state.selection, predictionDate: date, asOfDate: date }, historyMode);
+}
+
+function playbackDateSequence(state: ViewState): string[] {
+  if (state.snapshot.status !== "ready" || !state.selection) return [];
+  if (state.routePath === "/forecasts") return selectionSessions(state.snapshot, state.selection).map((row) => row.predictionDate);
+  if (state.routePath === "/portfolio") return portfolioDateSequence(state);
+  return [];
+}
+
 function toggleSessionPlayback(root: HTMLElement, state: ViewState): void {
   if (state.sessionPlaying) {
     stopSessionPlayback(state);
     render(root, state);
     return;
   }
-  if (state.snapshot.status !== "ready" || !state.selection || state.routePath !== "/forecasts") return;
-  const available = selectionSessions(state.snapshot, state.selection);
-  if (available.length < 2) return;
-  const currentIndex = available.findIndex((row) => row.predictionDate === state.selection?.predictionDate);
-  if (currentIndex >= available.length - 1) setSessionIndex(root, state, 0, "replace");
+  if (state.snapshot.status !== "ready" || !state.selection || !["/forecasts", "/portfolio"].includes(state.routePath)) return;
+  const availableDates = playbackDateSequence(state);
+  if (availableDates.length < 2) return;
+  const currentIndex = availableDates.indexOf(state.selection.predictionDate);
+  if (currentIndex < 0) return;
+  if (currentIndex >= availableDates.length - 1) {
+    const firstDate = availableDates[0];
+    if (!firstDate) return;
+    publishSelection(root, state, { ...state.selection, predictionDate: firstDate, asOfDate: firstDate }, "replace");
+  }
   state.sessionPlaying = true;
   state.sessionTimer = window.setInterval(() => {
-    if (!root.isConnected || document.hidden || state.routePath !== "/forecasts" || state.snapshot.status !== "ready" || !state.selection || state.selectionError) {
+    if (!root.isConnected || document.hidden || !["/forecasts", "/portfolio"].includes(state.routePath) || state.snapshot.status !== "ready" || !state.selection || state.selectionError) {
       stopSessionPlayback(state);
       render(root, state);
       return;
     }
-    const currentRows = selectionSessions(state.snapshot, state.selection);
-    const index = currentRows.findIndex((row) => row.predictionDate === state.selection?.predictionDate);
-    if (index < 0 || index >= currentRows.length - 1) {
+    const currentDates = playbackDateSequence(state);
+    const index = currentDates.indexOf(state.selection.predictionDate);
+    if (index < 0 || index >= currentDates.length - 1) {
       stopSessionPlayback(state);
       render(root, state);
       return;
     }
-    const next = currentRows[index + 1];
+    const next = currentDates[index + 1];
     if (!next) {
       stopSessionPlayback(state);
       render(root, state);
       return;
     }
-    if (index + 1 >= currentRows.length - 1) stopSessionPlayback(state);
-    publishSelection(root, state, { ...state.selection, predictionDate: next.predictionDate, asOfDate: next.predictionDate }, "replace");
+    if (index + 1 >= currentDates.length - 1) stopSessionPlayback(state);
+    publishSelection(root, state, { ...state.selection, predictionDate: next, asOfDate: next }, "replace");
   }, state.sessionSpeedMs);
   render(root, state);
 }
@@ -760,11 +842,10 @@ function portfolioPage(state: ViewState): string {
   if (snapshot.status !== "ready") return snapshot.status === "error" ? errorState(snapshot.message) : emptyState("Portfolio source ยังโหลดไม่ได้", "ต้องตรวจสอบ portfolio_risk.csv และ stored covariance ให้ครบก่อน");
   const selection = state.selection;
   if (!selection) return selectionUnavailable(state);
-  const row = selectedPortfolioRow(snapshot, selection.predictionDate, selection.modelName);
-  if (!row || row.covariance === null || row.portfolioVol === null || !row.correlationReady || row.missingInputs.length > 0) return selectionUnavailable({ ...state, selectionError: `ไม่มีแถว portfolio ที่ครบและตรวจแล้วสำหรับ ${selection.predictionDate} · ${modelId(selection.modelName)}` });
-  const validRows = snapshot.portfolioRisk.filter((item) => item.split === "test" && item.status === "OK" && item.covariance !== null && item.correlationReady && item.missingInputs.length === 0);
-  const availableDates = [...new Set(validRows.filter((item) => item.modelName === selection.modelName).map((item) => item.predictionDate))].sort((left, right) => right.localeCompare(left));
-  const availableModels = modelNames.filter((model) => selectedPortfolioRow(snapshot, selection.predictionDate, model) !== undefined);
+  const row = recordedPortfolioRow(snapshot, selection.predictionDate, selection.modelName);
+  if (!row) return selectionUnavailable({ ...state, selectionError: `ไม่มี recorded portfolio row สำหรับ ${selection.predictionDate} · ${modelId(selection.modelName)}` });
+  const availableDates = portfolioRiskSourceDates(snapshot.portfolioRisk, selection.modelName);
+  const availableModels = modelNames.filter((model) => recordedPortfolioRow(snapshot, selection.predictionDate, model) !== undefined);
   return `${selectionContextSummary(state)}${renderFinancialDecisionLab({
     rows: snapshot.portfolioRisk,
     selectedRow: row,
@@ -772,6 +853,8 @@ function portfolioPage(state: ViewState): string {
     decision: state.financialDecision,
     availableDates,
     availableModels,
+    sessionPlaying: state.sessionPlaying,
+    sessionSpeedMs: state.sessionSpeedMs,
     modelMetrics: snapshot.modelMetrics,
     coverage: snapshot.coverage,
     unit: state.unit,
@@ -1268,6 +1351,15 @@ export function startApp(root: HTMLElement): void {
         break;
       }
       case "toggle-session-play": toggleSessionPlayback(root, state); break;
+      case "portfolio-date-step": {
+        const selection = state.selection;
+        if (!selection) break;
+        const dates = portfolioDateSequence(state);
+        const currentIndex = dates.indexOf(selection.predictionDate);
+        const step = button.dataset.direction === "previous" ? -1 : 1;
+        setPortfolioDateIndex(root, state, currentIndex + step);
+        break;
+      }
       case "open-portfolio": {
         if (state.snapshot.status === "ready" && state.selection && selectedPortfolioRow(state.snapshot, state.selection.predictionDate, state.selection.modelName)) {
           navigateRoute(state, "/portfolio");
@@ -1356,6 +1448,14 @@ export function startApp(root: HTMLElement): void {
   root.addEventListener("change", (event) => {
     const target = event.target;
     if (target instanceof HTMLSelectElement) {
+      if (target.dataset.field === "scenario-remainder") {
+        const scenario = target.dataset.scenario;
+        if ((scenario === "A" || scenario === "B") && tickerNames.includes(target.value as Ticker)) {
+          state.financialDecision = setScenarioRemainderAsset(state.financialDecision, scenario, target.value as ScenarioRemainderAsset);
+          publishFinancialDecision(root, state);
+        }
+        return;
+      }
       if (target.dataset.field === "ticker" && tickerNames.includes(target.value as Ticker) && state.selection) {
         stopSessionPlayback(state);
         publishSelection(root, state, { ...state.selection, ticker: target.value as Ticker });
@@ -1375,7 +1475,15 @@ export function startApp(root: HTMLElement): void {
         publishSelection(root, state, { ...state.selection, asOfDate: target.value });
         return;
       }
-      if (target.dataset.field === "session-speed" && [450, 900, 1600].includes(Number(target.value))) state.sessionSpeedMs = Number(target.value);
+      if (target.dataset.field === "session-speed" && [450, 900, 1600].includes(Number(target.value))) {
+        const resumePlayback = state.sessionPlaying;
+        if (resumePlayback) stopSessionPlayback(state);
+        state.sessionSpeedMs = Number(target.value);
+        if (resumePlayback) {
+          toggleSessionPlayback(root, state);
+          return;
+        }
+      }
       if (target.dataset.field === "unit" && ["decimal", "percent"].includes(target.value)) state.unit = target.value as DisplayUnit;
       if (target.dataset.field === "metric" && ["mae", "rmse"].includes(target.value)) state.metric = target.value as MetricName;
       if (target.dataset.field === "range-metric" && ["mae", "rmse"].includes(target.value)) state.rangeMetric = target.value as MetricName;
@@ -1406,10 +1514,12 @@ export function startApp(root: HTMLElement): void {
       if (target.dataset.field === "forecast-status" && ["all", "mature", "pending", "invalid"].includes(target.value)) state.forecastStatus = target.value as ForecastFilter["status"];
       if (target.dataset.field === "forecast-models") state.forecastModels = Array.from(target.selectedOptions).map((option) => option.value).filter((model): model is ModelName => modelNames.includes(model as ModelName));
       if (target.dataset.field === "portfolio-date" && state.selection) {
+        stopSessionPlayback(state);
         publishSelection(root, state, { ...state.selection, predictionDate: target.value, asOfDate: target.value });
         return;
       }
       if (target.dataset.field === "portfolio-model" && modelNames.includes(target.value as ModelName) && state.selection) {
+        stopSessionPlayback(state);
         publishSelection(root, state, { ...state.selection, modelName: target.value as ModelName });
         return;
       }
@@ -1448,22 +1558,9 @@ export function startApp(root: HTMLElement): void {
       if (target.dataset.field === "drift-from") state.driftFrom = target.value;
       if (target.dataset.field === "drift-to") state.driftTo = target.value;
       if (target.dataset.field === "scenario-weight" || target.dataset.field === "scenario-weight-slider") {
-        const scenario = target.dataset.scenario;
-        const index = Number(target.dataset.index);
-        if ((scenario === "A" || scenario === "B") && Number.isInteger(index) && index >= 0 && index < 3) {
-          const key = scenario === "A" ? "scenarioA" : "scenarioB";
-          const next = [...state.financialDecision[key]] as PortfolioWeights;
-          next[index] = target.value.trim() ? Number(target.value) / 100 : Number.NaN;
-          state.financialDecision[key] = next;
-          const validation = validateScenarioWeights(next);
-          const output = root.querySelector<HTMLElement>(`[data-scenario-total="${scenario}"]`);
-          if (output) {
-            const total = next.reduce((sum, weight) => sum + (Number.isFinite(weight) ? weight : 0), 0);
-            output.textContent = `รวม ${(total * 100).toFixed(2)}%${validation.status === "invalid" ? ` · ${validation.message}` : " · น้ำหนักครบ 100%"}`;
-            output.classList.toggle("weight-error", validation.status === "invalid");
-            output.setAttribute("role", validation.status === "invalid" ? "alert" : "status");
-          }
-          if (validation.status === "valid") publishFinancialDecision(root, state, target);
+        const result = applyScenarioWeightInput(root, state, target);
+        if (result) {
+          if (result.valid) publishFinancialDecision(root, state, target);
           else render(root, state, target);
           return;
         }
@@ -1517,24 +1614,7 @@ export function startApp(root: HTMLElement): void {
       return;
     }
     if (target.dataset.field !== "scenario-weight" && target.dataset.field !== "scenario-weight-slider") return;
-    const scenario = target.dataset.scenario;
-    const index = Number(target.dataset.index);
-    if ((scenario !== "A" && scenario !== "B") || !Number.isInteger(index) || index < 0 || index > 2) return;
-    const key = scenario === "A" ? "scenarioA" : "scenarioB";
-    const next = [...state.financialDecision[key]] as PortfolioWeights;
-    next[index] = target.value.trim() ? Number(target.value) / 100 : Number.NaN;
-    state.financialDecision[key] = next;
-    const pairedField = target.dataset.field === "scenario-weight" ? "scenario-weight-slider" : "scenario-weight";
-    const pairedInput = root.querySelector<HTMLInputElement>(`[data-field="${pairedField}"][data-scenario="${scenario}"][data-index="${index}"]`);
-    if (pairedInput) pairedInput.value = target.dataset.field === "scenario-weight-slider" ? target.value : Number.isFinite(next[index]) ? String(next[index]! * 100) : "0";
-    const validation = validateScenarioWeights(next);
-    const output = root.querySelector<HTMLElement>(`[data-scenario-total="${scenario}"]`);
-    if (output) {
-      const total = next.reduce((sum, weight) => sum + (Number.isFinite(weight) ? weight : 0), 0);
-      output.textContent = `รวม ${(total * 100).toFixed(2)}%${validation.status === "invalid" ? ` · ${validation.message}` : " · น้ำหนักครบ 100%"}`;
-      output.classList.toggle("weight-error", validation.status === "invalid");
-      output.setAttribute("role", validation.status === "invalid" ? "alert" : "status");
-    }
+    applyScenarioWeightInput(root, state, target);
   });
   if (!window.location.hash) window.location.hash = "/overview";
   render(root, state);

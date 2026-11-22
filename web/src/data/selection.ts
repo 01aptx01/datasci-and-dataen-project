@@ -36,7 +36,7 @@ export type SelectionParseResult =
   | { status: "valid"; selection: ExperimentSelection };
 
 export type SelectionValidationResult =
-  | { status: "valid"; selection: ExperimentSelection; forecast: ForecastAuditRow }
+  | { status: "valid"; selection: ExperimentSelection; forecast?: ForecastAuditRow }
   | { status: "invalid"; message: string };
 
 const models: ModelName[] = ["CONSTANT_BASELINE", "ROLLING_20D_BASELINE", "STATIC_SGD", "ONLINE_SGD"];
@@ -157,31 +157,30 @@ export function validateExperimentSelection(
     row.split === selection.split && row.predictionDate === selection.predictionDate &&
     row.ticker === selection.ticker && row.modelName === selection.modelName,
   );
-  if (!forecast) {
+  const portfolio = requirePortfolioRow ? source.portfolioRisk.find((row) =>
+    row.split === selection.split && row.predictionDate === selection.predictionDate && row.modelName === selection.modelName,
+  ) : undefined;
+  if (requirePortfolioRow && !portfolio) {
+    return {
+      status: "invalid",
+      message: `ไม่มี recorded portfolio row สำหรับ ${selection.predictionDate} · ${selection.modelName}`,
+    };
+  }
+  if (!forecast && !portfolio) {
     return {
       status: "invalid",
       message: `ไม่มี recorded forecast สำหรับ ${selection.ticker} · ${selection.modelName} · ${selection.split} · ${selection.predictionDate}`,
     };
   }
-  if (selection.asOfDate && !source.forecasts.some((row) =>
-    row.split === selection.split && row.ticker === selection.ticker && row.predictionDate === selection.asOfDate,
-  )) {
-    return { status: "invalid", message: `ไม่มี XNYS session ${selection.asOfDate} ในชุด ${selection.ticker} ที่เลือก` };
-  }
-
-  if (requirePortfolioRow) {
-    const portfolio = source.portfolioRisk.find((row) =>
-      row.split === selection.split && row.predictionDate === selection.predictionDate && row.modelName === selection.modelName &&
-      row.status === "OK" && row.covariance !== null && row.portfolioVol !== null && row.missingInputs.length === 0,
-    );
-    if (!portfolio) {
-      return {
-        status: "invalid",
-        message: `ไม่มี portfolio row สถานะ OK สำหรับ ${selection.predictionDate} · ${selection.modelName}; เลือกวันหรือโมเดลที่มี covariance ครบ`,
-      };
+  if (selection.asOfDate) {
+    const hasAsOfSourceDate = requirePortfolioRow
+      ? source.portfolioRisk.some((row) => row.split === selection.split && row.modelName === selection.modelName && row.predictionDate === selection.asOfDate)
+      : source.forecasts.some((row) => row.split === selection.split && row.ticker === selection.ticker && row.predictionDate === selection.asOfDate);
+    if (!hasAsOfSourceDate) {
+      return { status: "invalid", message: `ไม่มี XNYS session ${selection.asOfDate} ใน source ที่เลือก` };
     }
   }
-  return { status: "valid", selection, forecast };
+  return { status: "valid", selection, ...(forecast ? { forecast } : {}) };
 }
 
 export function defaultExperimentSelection(source: SelectionSource): ExperimentSelection | null {

@@ -86,13 +86,34 @@ test("unavailable date, model, or split is explicit and never substituted", () =
   assert.equal(validateExperimentSelection({ ...selection, asOfDate: "2026-09-25" }, source).status, "invalid");
 });
 
-test("portfolio validation requires an exact complete Test row", () => {
-  assert.equal(validateExperimentSelection(selection, source, true).status, "valid");
+test("portfolio validation requires an exact recorded Test row", () => {
+  const portfolioSelection = { ...selection, asOfDate: "2026-09-23" };
+  assert.equal(validateExperimentSelection(portfolioSelection, source, true).status, "valid");
   const missingRow = validateExperimentSelection({ ...selection, predictionDate: "2026-09-24" }, source, true);
   assert.equal(missingRow.status, "invalid");
   assert.match(missingRow.message, /portfolio row/);
   const wrongModel = validateExperimentSelection({ ...selection, modelName: "STATIC_SGD" }, source, true);
   assert.equal(wrongModel.status, "invalid");
+});
+
+test("Portfolio accepts a recorded invalid risk row without requiring a context-ticker forecast", () => {
+  const invalidRowSource = {
+    ...source,
+    portfolioRisk: [...source.portfolioRisk, {
+      split: "test",
+      predictionDate: "2026-09-25",
+      modelName: "ONLINE_SGD",
+      status: "INCOMPLETE_INPUTS",
+      covariance: null,
+      portfolioVol: null,
+      missingInputs: ["IEF forecast"],
+    }],
+  };
+  const invalidRiskDate = { ...selection, predictionDate: "2026-09-25", asOfDate: "2026-09-25" };
+  const portfolioResult = validateExperimentSelection(invalidRiskDate, invalidRowSource, true);
+  assert.equal(portfolioResult.status, "valid");
+  assert.equal(portfolioResult.forecast, undefined);
+  assert.equal(validateExperimentSelection(invalidRiskDate, invalidRowSource).status, "invalid");
 });
 
 test("default selection comes from a recorded forecast with an exact ready portfolio row", () => {
