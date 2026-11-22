@@ -91,3 +91,12 @@ For each XNYS session `s`:
 - Target 5-day forward windows overlap across consecutive sessions; paired observations are temporally dependent. The `30` / `60` pair window and `5%` threshold are **heuristic engineering gates** locked prior to Test replay, not formal hypothesis tests.
 - Historical `shadow_b3` forecasts originate from a continuously updating shadow process (`partial_fit` after each mature label). Therefore, paired comparisons evaluate the **online shadow process** up to decision time, not a retrospective guarantee of the promoted frozen snapshot's future performance.
 - All numeric policy parameters (`candidate_order`, `delta`, `window_pairs`, `minimum_pairs`, `min_relative_improvement`, `cooldown_sessions`, `tie_tolerance`, `policy_version`) live in `config/ml_training.yaml` and `config/ml_replay.yaml` and are hashed into every manifest.
+
+---
+
+## 5. Policy Evaluation Contract (Stage 06 Extension, `policy_evaluation_version: "1.2.0"`)
+
+- **Isolation from H1–H3 & `1.1.0`:** Stage 06 `1.1.0` (`run_final_evaluation`) and `config/hypothesis_tests.yaml` remain unmodified. Policy evaluation runs via `run_policy_evaluation` into `policy_experiments/<evaluation_id>/`.
+- **Matched Mature Test Panel:** All strategies (`CHAMPION_CHALLENGER_POLICY`, `FIXED_INITIAL_CHAMPION`, `SHADOW_B3`, and `B0`–`B4`) are compared per ETF (`SPY`, `IEF`, `GLD`) and equal-weight `MACRO` strictly on the intersection of mature, finite, nonnegative Test keys (`target_realized_vol_5d` consistency enforced within `1e-12`).
+- **Edge & Operational Reporting:** Zero alerts, zero promotions, insufficient matched samples (`status = "INSUFFICIENT_SAMPLE"`), invalid forecasts, pending horizon rows, and calendar-day latencies (`label maturity`, `trigger anchor -> decision`, `decision -> effective`) are reported explicitly without division-by-zero or silent omission.
+- **Event Reconciliation Gate:** Every decision event must reconcile 1:1 with a triggered ADWIN stream row, and every promoted decision must reconcile 1:1 with a `PROMOTED_SNAPSHOT_ACTIVE_NEXT_SESSION` timeline row satisfying `effective_from_date > decision_date`.
