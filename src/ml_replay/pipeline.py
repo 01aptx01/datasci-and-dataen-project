@@ -24,6 +24,25 @@ from river.drift import ADWIN
 from src.features.pipeline import CORE_FEATURE_COLUMNS, SUPPORTED_TICKERS
 from src.ml_dataset.dataset import DatasetConfig, PreparedDataset
 from src.ml_replay.config import ReplayConfig, ReplayError
+from src.ml_replay.policy import (
+    BASELINE_CHECKPOINT_VERSION,
+    POLICY_CHECKPOINT_VERSION,
+    POLICY_DECISION_COLUMNS,
+    POLICY_DETECTOR_COLUMNS,
+    POLICY_EVALUATION_COLUMNS,
+    POLICY_FAILURE_COLUMNS,
+    POLICY_FORECAST_COLUMNS,
+    POLICY_TIMELINE_COLUMNS,
+    PolicyRuntimeState,
+    assert_policy_isolation,
+    load_initial_champion_artifact,
+    new_policy_runtime_state,
+    restore_policy_state,
+    run_policy_evaluate_and_decide,
+    run_policy_predict_session,
+    serialize_policy_state,
+    update_shadow_b3_batch,
+)
 from src.ml_replay.storage import (
     begin_session,
     canonical_json,
@@ -184,6 +203,13 @@ class ReplayResult:
     final_b2_state_sha256_by_ticker: dict[str, str]
     final_adwin_state_sha256_by_ticker: dict[str, str]
     completed: bool
+    policy_forecasts: pd.DataFrame | None = None
+    policy_evaluations: pd.DataFrame | None = None
+    policy_detector_stream: pd.DataFrame | None = None
+    policy_decision_events: pd.DataFrame | None = None
+    policy_champion_timeline: pd.DataFrame | None = None
+    policy_failures: pd.DataFrame | None = None
+    final_policy_champion_state_sha256_by_ticker: dict[str, str] | None = None
 
 
 @dataclass
@@ -197,6 +223,7 @@ class _RuntimeState:
     pending_predictions: list[dict[str, Any]]
     last_b3_target_end_by_ticker: dict[str, date]
     last_committed_session: date | None = None
+    policy: PolicyRuntimeState | None = None
 
 
 def _as_date(value: Any, name: str) -> date:
@@ -564,6 +591,7 @@ def _serialize_runtime_state(
     run_id: str,
     last_committed_session: date,
     initial_hash_by_ticker: Mapping[str, str],
+    replay_config: ReplayConfig | None = None,
 ) -> dict[str, Any]:
     b3_hashes = {
         ticker: model_state_sha256(runtime.b3_models[ticker], runtime.scalers[ticker])
@@ -573,8 +601,10 @@ def _serialize_runtime_state(
         ticker: _adwin_state_sha256(runtime.adwin_detectors[ticker])
         for ticker in SUPPORTED_TICKERS
     }
-    state = {
-        "checkpoint_version": "1.0.0",
+    is_policy = bool(replay_config is not None and replay_config.is_champion_challenger)
+    checkpoint_version = POLICY_CHECKPOINT_VERSION if is_policy else BASELINE_CHECKPOINT_VERSION
+    state: dict[str, Any] = {
+        "checkpoint_version": checkpoint_version,
         "experiment_id": experiment_id,
         "compatibility_fingerprint": compatibility_fingerprint,
         "run_id": run_id,
@@ -595,6 +625,15 @@ def _serialize_runtime_state(
         "b3_state_sha256_by_ticker": b3_hashes,
         "adwin_state_sha256_by_ticker": adwin_hashes,
     }
+    if is_policy:
+        assert replay_config is not None and replay_config.champion_challenger is not None
+        if runtime.policy is None:
+            raise ReplayError("Champion-Challenger replay requires runtime policy state")
+        state["policy_state"] = serialize_policy_state(
+            runtime.policy,
+            policy_cfg=replay_config.champion_challenger,
+            adwin_hash_fn=_adwin_state_sha256,
+        )
     return state
 
 
@@ -603,11 +642,25 @@ def _restore_runtime_state(
     *,
     experiment_id: str,
     compatibility_fingerprint: str,
+    replay_config: ReplayConfig | None = None,
 ) -> _RuntimeState:
-    if saved.get("checkpoint_version") != "1.0.0":
-        raise ReplayError("unsupported Stage 05 checkpoint version")
+    is_policy = bool(replay_config is not None and replay_config.is_champion_challenger)
+    expected_version = POLICY_CHECKPOINT_VERSION if is_policy else BASELINE_CHECKPOINT_VERSION
+    if saved.get("checkpoint_version") != expected_version:
+        raise ReplayError(
+            f"unsupported or incompatible Stage 05 checkpoint version: {saved.get('checkpoint_version')} "
+            f"(expected {expected_version})"
+        )
     if saved.get("compatibility_fingerprint") != compatibility_fingerprint:
         raise ReplayError("checkpoint config, data, code, model, or environment is incompatible")
+    restored_policy: PolicyRuntimeState | None = None
+    if is_policy:
+        assert replay_config is not None and replay_config.champion_challenger is not None
+        restored_policy = restore_policy_state(
+            saved.get("policy_state"),
+            policy_cfg=replay_config.champion_challenger,
+            adwin_hash_fn=_adwin_state_sha256,
+        )
     runtime = _RuntimeState(
         b3_models=dict(saved["b3_models"]),
         scalers=dict(saved["scalers"]),
@@ -621,6 +674,7 @@ def _restore_runtime_state(
             for ticker, value in saved["last_b3_target_end_by_ticker"].items()
         },
         last_committed_session=_as_date(saved["last_committed_session"], "last committed session"),
+        policy=restored_policy,
     )
     for ticker in SUPPORTED_TICKERS:
         actual_model_hash = model_state_sha256(runtime.b3_models[ticker], runtime.scalers[ticker])
@@ -659,7 +713,7 @@ def _adwin_state_sha256(detector: ADWIN) -> str:
 
 
 def _state_summary(state: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+    summary: dict[str, Any] = {
         "last_committed_session": state["last_committed_session"],
         "b3_state_sha256_by_ticker": state["b3_state_sha256_by_ticker"],
         "adwin_state_sha256_by_ticker": state["adwin_state_sha256_by_ticker"],
@@ -668,6 +722,23 @@ def _state_summary(state: Mapping[str, Any]) -> dict[str, Any]:
         "evaluated_prediction_count": len(state["evaluated_prediction_ids"]),
         "pending_prediction_count": len(state["pending_predictions"]),
     }
+    if "policy_state" in state:
+        ps = state["policy_state"]
+        summary.update(
+            {
+                "checkpoint_version": state["checkpoint_version"],
+                "policy_version": ps["policy_version"],
+                "policy_config_fingerprint": ps["policy_config_fingerprint"],
+                "policy_active_champion_state_sha256_by_ticker": ps[
+                    "active_champion_state_sha256_by_ticker"
+                ],
+                "policy_shadow_b3_state_sha256_by_ticker": ps["shadow_b3_state_sha256_by_ticker"],
+                "policy_adwin_state_sha256_by_ticker": ps["policy_adwin_state_sha256_by_ticker"],
+                "policy_emitted_event_count": len(ps["emitted_event_ids"]),
+                "policy_cooldown_remaining": ps["cooldown_remaining"],
+            }
+        )
+    return summary
 
 
 def _records_frame(rows: Iterable[Mapping[str, Any]], columns: list[str]) -> pd.DataFrame:
@@ -863,11 +934,73 @@ def _enrich_coverage(
     return result.reindex(columns=COVERAGE_COLUMNS)
 
 
+def _read_and_format_policy_outputs(committed_dirs: Iterable[Path]) -> dict[str, pd.DataFrame]:
+    policy_outputs = {
+        "policy_forecasts.csv": _read_daily_tables(
+            committed_dirs, "policy_forecasts.csv", POLICY_FORECAST_COLUMNS
+        ),
+        "policy_evaluations.csv": _read_daily_tables(
+            committed_dirs, "policy_evaluations.csv", POLICY_EVALUATION_COLUMNS
+        ),
+        "policy_detector_stream.csv": _read_daily_tables(
+            committed_dirs, "policy_detector_stream.csv", POLICY_DETECTOR_COLUMNS
+        ),
+        "policy_decision_events.csv": _read_daily_tables(
+            committed_dirs, "policy_decision_events.csv", POLICY_DECISION_COLUMNS
+        ),
+        "policy_champion_timeline.csv": _read_daily_tables(
+            committed_dirs, "policy_champion_timeline.csv", POLICY_TIMELINE_COLUMNS
+        ),
+        "policy_failures.csv": _read_daily_tables(
+            committed_dirs, "policy_failures.csv", POLICY_FAILURE_COLUMNS
+        ),
+    }
+    policy_outputs["policy_forecasts.csv"] = _utc_columns(
+        _date_columns(
+            policy_outputs["policy_forecasts.csv"],
+            (
+                "prediction_date",
+                "target_start_date",
+                "target_end_date",
+                "last_training_target_end_date",
+                "champion_effective_from_date",
+            ),
+        ),
+        ("prediction_created_at_utc",),
+    )
+    policy_outputs["policy_evaluations.csv"] = _date_columns(
+        policy_outputs["policy_evaluations.csv"],
+        (
+            "prediction_date",
+            "target_start_date",
+            "target_end_date",
+            "evaluation_date",
+            "label_available_replay_date",
+        ),
+    )
+    policy_outputs["policy_detector_stream.csv"] = _date_columns(
+        policy_outputs["policy_detector_stream.csv"], ("prediction_date", "evaluation_date")
+    )
+    policy_outputs["policy_decision_events.csv"] = _date_columns(
+        policy_outputs["policy_decision_events.csv"],
+        ("decision_date", "trigger_prediction_date", "effective_from_date"),
+    )
+    policy_outputs["policy_champion_timeline.csv"] = _date_columns(
+        policy_outputs["policy_champion_timeline.csv"],
+        ("recorded_date", "decision_date", "effective_from_date"),
+    )
+    policy_outputs["policy_failures.csv"] = _date_columns(
+        policy_outputs["policy_failures.csv"], ("prediction_date",)
+    )
+    return policy_outputs
+
+
 def _build_outputs(
     experiment_dir: Path,
     committed_dirs: list[Path],
     *,
     availability_cutoff: date,
+    include_policy: bool = False,
 ) -> dict[str, pd.DataFrame]:
     outputs = {
         "asset_volatility_predictions.csv": _read_daily_tables(
@@ -911,6 +1044,8 @@ def _build_outputs(
             ["prediction_date", "ticker", "model_name"], kind="stable"
         ).reset_index(drop=True)
         outputs["asset_volatility_predictions.csv"] = predictions
+    if include_policy:
+        outputs.update(_read_and_format_policy_outputs(committed_dirs))
     for filename, frame in outputs.items():
         _atomic_csv(experiment_dir / "outputs" / filename, frame, list(frame.columns))
     return outputs
@@ -927,12 +1062,18 @@ def _result_from_outputs(
     final_state: Mapping[str, Any] | None,
     final_b2_hashes: Mapping[str, str],
     completed: bool,
+    include_policy: bool = False,
 ) -> ReplayResult:
     predictions = outputs["asset_volatility_predictions.csv"]
     if not predictions.empty:
         predictions = predictions.reindex(columns=PREDICTION_COLUMNS)
     b3_hashes = dict(final_state.get("b3_state_sha256_by_ticker", {})) if final_state else {}
     adwin_hashes = dict(final_state.get("adwin_state_sha256_by_ticker", {})) if final_state else {}
+    policy_champ_hashes: dict[str, str] | None = None
+    if include_policy and final_state and "policy_state" in final_state:
+        policy_champ_hashes = dict(
+            final_state["policy_state"].get("active_champion_state_sha256_by_ticker", {})
+        )
     return ReplayResult(
         experiment_id=experiment_id,
         run_id=run_id,
@@ -950,6 +1091,13 @@ def _result_from_outputs(
         final_b2_state_sha256_by_ticker=dict(final_b2_hashes),
         final_adwin_state_sha256_by_ticker=adwin_hashes,
         completed=completed,
+        policy_forecasts=outputs.get("policy_forecasts.csv") if include_policy else None,
+        policy_evaluations=outputs.get("policy_evaluations.csv") if include_policy else None,
+        policy_detector_stream=outputs.get("policy_detector_stream.csv") if include_policy else None,
+        policy_decision_events=outputs.get("policy_decision_events.csv") if include_policy else None,
+        policy_champion_timeline=outputs.get("policy_champion_timeline.csv") if include_policy else None,
+        policy_failures=outputs.get("policy_failures.csv") if include_policy else None,
+        final_policy_champion_state_sha256_by_ticker=policy_champ_hashes,
     )
 
 
@@ -972,6 +1120,7 @@ def run_final_replay(
     """
     model_suite_version = _validate_model_names()
     replay_config = config or ReplayConfig.from_yaml()
+    is_policy = replay_config.is_champion_challenger
     effective_end = replay_config.data_cutoff if replay_end_date is None else _as_date(
         replay_end_date, "replay_end_date"
     )
@@ -996,7 +1145,7 @@ def run_final_replay(
     git_sha = _git_commit_sha()
     contract_identity = _contract_identity(prepared, labels)
     training_manifest_path = Path(initial_model_artifact_dir).expanduser().resolve() / "training_manifest.json"
-    stage4_artifact_identity = {
+    stage4_artifact_identity: dict[str, Any] = {
         "training_manifest_sha256": sha256_file(training_manifest_path),
         "initial_models_sha256": training_manifest["artifact_sha256"]["initial_models.joblib"],
         "selected_configs": training_manifest.get("selected_configs", []),
@@ -1006,6 +1155,17 @@ def run_final_replay(
             ticker: str(b4_models[ticker]["model_version"]) for ticker in SUPPORTED_TICKERS
         },
     }
+    initial_champion_selection: dict[str, Any] | None = None
+    if is_policy:
+        assert replay_config.champion_challenger is not None
+        initial_champion_selection, ic_hashes = load_initial_champion_artifact(
+            initial_model_artifact_dir,
+            training_manifest,
+            initial_tickers,
+            bundle["baselines"],
+            replay_config.champion_challenger,
+        )
+        stage4_artifact_identity.update(ic_hashes)
     semantic_identity = {
         "phase": "FINAL_REPLAY",
         "model_suite_version": model_suite_version,
@@ -1108,6 +1268,18 @@ def run_final_replay(
             "executions": [],
             "final_outputs_sha256": {},
         }
+        if is_policy:
+            assert replay_config.champion_challenger is not None
+            assert initial_champion_selection is not None
+            experiment_manifest.update(
+                {
+                    "checkpoint_version": POLICY_CHECKPOINT_VERSION,
+                    "champion_challenger_policy": replay_config.champion_challenger.as_dict(),
+                    "policy_config_fingerprint": replay_config.champion_challenger.fingerprint(),
+                    "initial_champion": initial_champion_selection["selected_by_ticker"],
+                    "initial_champion_summary": initial_champion_selection["tickers"],
+                }
+            )
 
     committed_dirs, _ = _load_existing_commits(
         checkpoint_root,
@@ -1116,12 +1288,23 @@ def run_final_replay(
     )
     if not resume and committed_dirs:
         raise FileExistsError("refusing to start over an experiment with existing committed sessions")
+    initial_scalers = {ticker: initial_tickers[ticker]["scaler"] for ticker in SUPPORTED_TICKERS}
     initial_runtime = _new_runtime_state(
         initial_tickers,
         initial_train_ends,
         seed_keys,
         replay_config.adwin_delta,
     )
+    if is_policy:
+        assert replay_config.champion_challenger is not None
+        assert initial_champion_selection is not None
+        initial_runtime.policy = new_policy_runtime_state(
+            initial_tickers,
+            bundle["baselines"],
+            initial_train_ends,
+            initial_champion_selection,
+            replay_config.champion_challenger,
+        )
     if committed_dirs:
         saved_state, _ = load_checkpoint(
             committed_dirs[-1], expected_experiment_id=experiment_id
@@ -1130,7 +1313,11 @@ def run_final_replay(
             saved_state,
             experiment_id=experiment_id,
             compatibility_fingerprint=compatibility_fingerprint,
+            replay_config=replay_config,
         )
+        if is_policy:
+            assert runtime.policy is not None
+            assert_policy_isolation(runtime.policy, runtime.b3_models, runtime.scalers, initial_scalers)
     else:
         runtime = initial_runtime
 
@@ -1151,11 +1338,18 @@ def run_final_replay(
                     "baseline": bundle["baselines"][ticker].get(
                         "b0_train_mean" if model_id == "B0" else "b1_feature"
                     ),
-                    "version": replay_config.replay_config_version,
+                    "version": BASELINE_CHECKPOINT_VERSION,
                 }
             )
             for model_id in ("B0", "B1")
         }
+        for ticker in SUPPORTED_TICKERS
+    }
+    features_by_ticker: dict[str, list[tuple[date, np.ndarray]]] = {
+        ticker: sorted(
+            ((anchor, values) for (anchor, row_ticker), values in feature_map.items() if row_ticker == ticker),
+            key=lambda item: item[0],
+        )
         for ticker in SUPPORTED_TICKERS
     }
     b2_version = dict(initial_hash_by_ticker)
@@ -1177,6 +1371,16 @@ def run_final_replay(
             session_drift_errors: list[dict[str, Any]] = []
             session_drift_alerts: list[dict[str, Any]] = []
             session_updates: list[dict[str, Any]] = []
+            session_policy_forecasts: list[dict[str, Any]] = []
+            session_policy_evaluations: list[dict[str, Any]] = []
+            session_policy_detector: list[dict[str, Any]] = []
+            session_policy_decisions: list[dict[str, Any]] = []
+            session_policy_timeline: list[dict[str, Any]] = []
+            session_policy_failures: list[dict[str, Any]] = []
+
+            if is_policy:
+                assert runtime.policy is not None
+                assert_policy_isolation(runtime.policy, runtime.b3_models, runtime.scalers, initial_scalers)
 
             # 1. Predict all eligible models from pre-update state.
             for ticker in SUPPORTED_TICKERS:
@@ -1325,9 +1529,39 @@ def run_final_replay(
                         }
                     )
 
+            if is_policy:
+                assert runtime.policy is not None
+                assert replay_config.champion_challenger is not None
+                p_forecasts, p_failures, p_timeline_init = run_policy_predict_session(
+                    runtime.policy,
+                    session_date=session_date,
+                    policy_cfg=replay_config.champion_challenger,
+                    replay_config=replay_config,
+                    experiment_id=experiment_id,
+                    run_id=run_id,
+                    input_snapshot_id=input_snapshot_id,
+                    utc_now_fn=_utc_now,
+                    feature_map=feature_map,
+                    feature_metadata=feature_metadata,
+                    calendar_index=calendar_index,
+                    calendar_sessions=calendar_sessions,
+                    split_name=_split_for_date(session_date),
+                )
+                session_policy_forecasts.extend(p_forecasts)
+                session_policy_failures.extend(p_failures)
+                session_policy_timeline.extend(p_timeline_init)
+
             _invoke_failure_hook(failure_injector, "after_predict", session_date)
             prediction_frame = _records_frame(session_predictions, PREDICTION_COLUMNS)
             stage_table(stage_dir, "predictions.csv", prediction_frame, PREDICTION_COLUMNS)
+            if is_policy:
+                policy_forecast_frame = _records_frame(session_policy_forecasts, POLICY_FORECAST_COLUMNS)
+                stage_table(
+                    stage_dir,
+                    "policy_forecasts.csv",
+                    policy_forecast_frame,
+                    POLICY_FORECAST_COLUMNS,
+                )
             _invoke_failure_hook(failure_injector, "after_forecast_staged", session_date)
             pending_ids = {row["prediction_id"] for row in runtime.pending_predictions}
             if any(row["prediction_id"] in pending_ids for row in session_predictions):
@@ -1452,12 +1686,41 @@ def run_final_replay(
             runtime.pending_predictions = remaining_pending
             _invoke_failure_hook(failure_injector, "after_adwin", session_date)
 
+            if is_policy:
+                assert runtime.policy is not None
+                assert replay_config.champion_challenger is not None
+                (
+                    p_evals,
+                    p_detector,
+                    p_decisions,
+                    p_timeline_decide,
+                    p_eval_failures,
+                ) = run_policy_evaluate_and_decide(
+                    runtime.policy,
+                    session_date=session_date,
+                    policy_cfg=replay_config.champion_challenger,
+                    experiment_id=experiment_id,
+                    run_id=run_id,
+                    label_map=label_map,
+                    audit_map=audit_map,
+                    calendar_index=calendar_index,
+                    calendar_sessions=calendar_sessions,
+                )
+                session_policy_evaluations.extend(p_evals)
+                session_policy_detector.extend(p_detector)
+                session_policy_decisions.extend(p_decisions)
+                session_policy_timeline.extend(p_timeline_decide)
+                session_policy_failures.extend(p_eval_failures)
+                _invoke_failure_hook(failure_injector, "after_policy_decision", session_date)
+
             # 3. Update B3 once per ETF with the complete deterministic mature batch.
             for ticker in SUPPORTED_TICKERS:
                 eligible_rows: list[tuple[date, np.ndarray, float, date]] = []
-                for key, values in feature_map.items():
-                    anchor, row_ticker = key
-                    if row_ticker != ticker or anchor > session_date or key in runtime.updated_label_keys:
+                for anchor, values in features_by_ticker[ticker]:
+                    if anchor > session_date:
+                        break
+                    key = (anchor, ticker)
+                    if key in runtime.updated_label_keys:
                         continue
                     eligible = _eligible_label(
                         key,
@@ -1516,6 +1779,16 @@ def run_final_replay(
                     runtime.last_b3_target_end_by_ticker[ticker],
                     max(item[3] for item in eligible_rows),
                 )
+                if is_policy:
+                    assert runtime.policy is not None
+                    update_shadow_b3_batch(
+                        runtime.policy,
+                        ticker=ticker,
+                        eligible_rows=eligible_rows,
+                    )
+            if is_policy:
+                assert runtime.policy is not None
+                assert_policy_isolation(runtime.policy, runtime.b3_models, runtime.scalers, initial_scalers)
             _invoke_failure_hook(failure_injector, "after_b3_update", session_date)
 
             # 4. Serialize post-update state and atomically publish this complete session.
@@ -1527,6 +1800,7 @@ def run_final_replay(
                 run_id=run_id,
                 last_committed_session=session_date,
                 initial_hash_by_ticker=initial_hash_by_ticker,
+                replay_config=replay_config,
             )
             state_summary = _state_summary(state)
             table_frames = {
@@ -1538,6 +1812,55 @@ def run_final_replay(
                 "forecast_failures.csv": (_records_frame(session_failures, FAILURE_COLUMNS), FAILURE_COLUMNS),
                 "coverage.csv": (_records_frame(session_coverage, DAILY_COVERAGE_COLUMNS), DAILY_COVERAGE_COLUMNS),
             }
+            if is_policy:
+                table_frames.update(
+                    {
+                        "policy_forecasts.csv": (policy_forecast_frame, POLICY_FORECAST_COLUMNS),
+                        "policy_evaluations.csv": (
+                            _records_frame(session_policy_evaluations, POLICY_EVALUATION_COLUMNS),
+                            POLICY_EVALUATION_COLUMNS,
+                        ),
+                        "policy_detector_stream.csv": (
+                            _records_frame(session_policy_detector, POLICY_DETECTOR_COLUMNS),
+                            POLICY_DETECTOR_COLUMNS,
+                        ),
+                        "policy_decision_events.csv": (
+                            _records_frame(session_policy_decisions, POLICY_DECISION_COLUMNS),
+                            POLICY_DECISION_COLUMNS,
+                        ),
+                        "policy_champion_timeline.csv": (
+                            _records_frame(session_policy_timeline, POLICY_TIMELINE_COLUMNS),
+                            POLICY_TIMELINE_COLUMNS,
+                        ),
+                        "policy_failures.csv": (
+                            _records_frame(session_policy_failures, POLICY_FAILURE_COLUMNS),
+                            POLICY_FAILURE_COLUMNS,
+                        ),
+                    }
+                )
+            manifest_fields: dict[str, Any] = {
+                "compatibility_fingerprint": compatibility_fingerprint,
+                "input_snapshot_id": input_snapshot_id,
+                "code_sha256": code_sha,
+                "git_commit_sha": git_sha,
+                "contract_identity": contract_identity,
+                "versions": versions,
+                "prediction_count": len(session_predictions),
+                "evaluation_count": len(session_evaluations),
+                "drift_error_count": len(session_drift_errors),
+                "update_count": len(session_updates),
+                "forecast_failure_count": len(session_failures),
+                "coverage_row_count": len(session_coverage),
+            }
+            if is_policy:
+                manifest_fields.update(
+                    {
+                        "policy_forecast_count": len(session_policy_forecasts),
+                        "policy_evaluation_count": len(session_policy_evaluations),
+                        "policy_detector_count": len(session_policy_detector),
+                        "policy_decision_count": len(session_policy_decisions),
+                    }
+                )
             commit_dir = commit_session(
                 checkpoint_root,
                 session_date=session_date,
@@ -1546,20 +1869,7 @@ def run_final_replay(
                 tables=table_frames,
                 state=state,
                 state_summary=state_summary,
-                manifest_fields={
-                    "compatibility_fingerprint": compatibility_fingerprint,
-                    "input_snapshot_id": input_snapshot_id,
-                    "code_sha256": code_sha,
-                    "git_commit_sha": git_sha,
-                    "contract_identity": contract_identity,
-                    "versions": versions,
-                    "prediction_count": len(session_predictions),
-                    "evaluation_count": len(session_evaluations),
-                    "drift_error_count": len(session_drift_errors),
-                    "update_count": len(session_updates),
-                    "forecast_failure_count": len(session_failures),
-                    "coverage_row_count": len(session_coverage),
-                },
+                manifest_fields=manifest_fields,
                 stage_dir=stage_dir,
                 before_checkpoint=failure_injector,
             )
@@ -1595,6 +1905,7 @@ def run_final_replay(
                 experiment_dir,
                 committed_dirs,
                 availability_cutoff=effective_end,
+                include_policy=is_policy,
             )
             experiment_manifest["final_outputs_sha256"] = {
                 filename: sha256_file(experiment_dir / "outputs" / filename)
@@ -1643,6 +1954,8 @@ def run_final_replay(
                 outputs["evaluation.csv"],
                 availability_cutoff=coverage_as_of,
             )
+            if is_policy:
+                outputs.update(_read_and_format_policy_outputs(committed_dirs))
         execution_status = "COMPLETED" if completed else "INTERRUPTED_AT_REQUESTED_SESSION"
         execution.update(
             {
@@ -1665,6 +1978,7 @@ def run_final_replay(
             final_state=latest_state,
             final_b2_hashes=final_b2_hashes,
             completed=completed,
+            include_policy=is_policy,
         )
     except Exception as error:
         execution.update(
