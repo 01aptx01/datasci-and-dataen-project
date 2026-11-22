@@ -66,8 +66,71 @@ test("financial decision defaults both scenarios to the same neutral example wei
   assert.deepEqual(state.scenarioA, [0.5, 0.3, 0.2]);
   assert.deepEqual(state.scenarioB, state.scenarioA);
   assert.equal(state.activeScenario, "A");
+  assert.equal(state.remainderAssetA, "GLD");
+  assert.equal(state.remainderAssetB, "GLD");
   assert.equal(state.budgetAnnualizedDecimal, null);
   assert.equal(state.activeTab, "risk");
+});
+
+test("scenario remainder assets round-trip in the URL", () => {
+  const createDefaultFinancialScenarioState = requireFunction("createDefaultFinancialScenarioState");
+  const serializeFinancialDecisionHash = requireFunction("serializeFinancialDecisionHash");
+  const parseFinancialDecisionParams = requireFunction("parseFinancialDecisionParams");
+  const state = { ...createDefaultFinancialScenarioState(), remainderAssetA: "SPY", remainderAssetB: "IEF" };
+  const hash = serializeFinancialDecisionHash("#/portfolio", state);
+  const route = selection.parseHashRoute(hash);
+  assert.equal(route.params.get("scenarioRemainderA"), "SPY");
+  assert.equal(route.params.get("scenarioRemainderB"), "IEF");
+  assert.deepEqual(parseFinancialDecisionParams(route.params), { status: "valid", state });
+});
+
+test("legacy scenario URLs default missing remainder assets to GLD", () => {
+  const parseFinancialDecisionParams = requireFunction("parseFinancialDecisionParams");
+  const params = new URLSearchParams("scenarioA=0.5,0.3,0.2&scenarioB=0.5,0.3,0.2&activeScenario=A&portfolioTab=risk");
+  const result = parseFinancialDecisionParams(params);
+  assert.equal(result.status, "valid");
+  assert.equal(result.state.remainderAssetA, "GLD");
+  assert.equal(result.state.remainderAssetB, "GLD");
+});
+
+test("scenario URL rejects unsupported remainder assets", () => {
+  const parseFinancialDecisionParams = requireFunction("parseFinancialDecisionParams");
+  const params = new URLSearchParams("scenarioA=0.5,0.3,0.2&scenarioB=0.5,0.3,0.2&activeScenario=A&portfolioTab=risk&scenarioRemainderA=TLT");
+  assert.equal(parseFinancialDecisionParams(params).status, "invalid");
+});
+
+test("editing one scenario weight recalculates only the selected remainder", () => {
+  const updateScenarioRemainderWeight = requireFunction("updateScenarioRemainderWeight");
+  const glDraw = updateScenarioRemainderWeight([0.5, 0.3, 0.2], "GLD", "SPY", 0.6);
+  assert.equal(glDraw[0], 0.6);
+  assert.equal(glDraw[1], 0.3);
+  assert.ok(Math.abs(glDraw[2] - 0.1) < 1e-12);
+  const spyRemainder = updateScenarioRemainderWeight([0.5, 0.3, 0.2], "SPY", "GLD", 0.4);
+  assert.ok(Math.abs(spyRemainder[0] - 0.3) < 1e-12);
+  assert.equal(spyRemainder[1], 0.3);
+  assert.equal(spyRemainder[2], 0.4);
+  assert.throws(() => updateScenarioRemainderWeight([0.5, 0.3, 0.2], "GLD", "GLD", 0.1), /remainder/i);
+});
+
+test("selecting a scenario remainder asset preserves both allocations and their risk", () => {
+  const createDefaultFinancialScenarioState = requireFunction("createDefaultFinancialScenarioState");
+  const setScenarioRemainderAsset = requireFunction("setScenarioRemainderAsset");
+  const weights = [0.5, 0.3, 0.2];
+  const covariance = [[0.01, 0, 0], [0, 0.04, 0], [0, 0, 0.09]];
+  const beforeRisk = portfolio.computePortfolioVolatility(covariance, weights);
+  const next = setScenarioRemainderAsset(createDefaultFinancialScenarioState(), "A", "IEF");
+  assert.deepEqual(next.scenarioA, weights);
+  assert.deepEqual(next.scenarioB, weights);
+  assert.equal(next.remainderAssetA, "IEF");
+  assert.equal(next.remainderAssetB, "GLD");
+  assert.equal(portfolio.computePortfolioVolatility(covariance, next.scenarioA), beforeRisk);
+});
+
+test("over-allocation and non-finite remainder weights remain invalid", () => {
+  const updateScenarioRemainderWeight = requireFunction("updateScenarioRemainderWeight");
+  const validateScenarioWeights = requireFunction("validateScenarioWeights");
+  assert.equal(validateScenarioWeights(updateScenarioRemainderWeight([0.5, 0.3, 0.2], "GLD", "SPY", 0.8)).status, "invalid");
+  assert.equal(validateScenarioWeights(updateScenarioRemainderWeight([0.5, 0.3, 0.2], "GLD", "SPY", Number.NaN)).status, "invalid");
 });
 
 test("scenario comparison reports annualized percentage-point and guarded relative changes", () => {
@@ -95,6 +158,17 @@ test("daily risk series filters future dates and breaks at source gaps", () => {
   assert.deepEqual(splitRiskTimelineSegments(retrospective).map((segment) => segment.map((point) => point.date)), [
     ["2025-01-01"], ["2025-01-03", "2025-01-04"],
   ]);
+});
+
+test("portfolio playback dates include every unique recorded Test row in chronological order", () => {
+  const portfolioRiskSourceDates = requireFunction("portfolioRiskSourceDates");
+  const rows = [
+    row("2025-01-03"),
+    row("2025-01-02", { status: "INCOMPLETE_INPUTS", missingInputs: ["IEF forecast"] }),
+    row("2025-01-03"),
+    row("2025-01-01", { modelName: "STATIC_SGD" }),
+  ];
+  assert.deepEqual(portfolioRiskSourceDates(rows, "ONLINE_SGD"), ["2025-01-02", "2025-01-03"]);
 });
 
 test("prior comparable risk names the previous valid source date and gap", () => {

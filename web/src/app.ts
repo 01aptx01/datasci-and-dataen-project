@@ -1,12 +1,12 @@
 import { filterForecastRows, loadSnapshot, selectRecordedSessions, type ForecastFilter, type SnapshotState } from "./data/loadSnapshot.js";
 import { modelId, modelLabel, type CoverageRow, type DriftTimelineRow, type ForecastAuditRow, type H1ScatterRow, type ModelMetricRow, type ModelName, type PortfolioRiskRow, type RollingMae20Row, type Ticker } from "./data/schemas.js";
-import type { PortfolioWeights } from "./data/portfolio.js";
-import { createDefaultFinancialScenarioState, parseFinancialDecisionParams, serializeFinancialDecisionHash, validateScenarioWeights, type FinancialScenarioState } from "./data/decisionLab.js";
+import { createDefaultFinancialScenarioState, parseFinancialDecisionParams, portfolioRiskSourceDates, serializeFinancialDecisionHash, setScenarioRemainderAsset, updateScenarioRemainderWeight, validateScenarioWeights, type FinancialScenarioState, type ScenarioAsset, type ScenarioRemainderAsset } from "./data/decisionLab.js";
 import { buildExportMetadata, buildForecastCsv } from "./data/export.js";
 import { resolveAsOfLabelView, selectSameDateForecasts } from "./data/replay.js";
 import { calculateDescriptiveRangeMetrics } from "./data/rangeMetrics.js";
 import { defaultExperimentSelection, isIsoCalendarDate, parseExperimentSelection, parseHashRoute, serializeSelectionHash, validateExperimentSelection, type ExperimentSelection, type SelectionSource } from "./data/selection.js";
 import { renderFinancialDecisionLab } from "./ui/financialDecisionLab.js";
+import { hypothesisDecisionThai, hypothesisMethodThai, renderHypothesisResultCard, summarizeH1EvidenceThai } from "./ui/researchEvidence.js";
 import { renderSessionChart } from "./ui/sessionChart.js";
 
 interface RouteDefinition {
@@ -263,9 +263,61 @@ function selectionContextSummary(state: ViewState): string {
 function validateFinancialDecisionState(state: FinancialScenarioState): boolean {
   return validateScenarioWeights(state.scenarioA).status === "valid" &&
     validateScenarioWeights(state.scenarioB).status === "valid" &&
+    ["SPY", "IEF", "GLD"].includes(state.remainderAssetA) &&
+    ["SPY", "IEF", "GLD"].includes(state.remainderAssetB) &&
     (state.budgetAnnualizedDecimal === null || (Number.isFinite(state.budgetAnnualizedDecimal) && state.budgetAnnualizedDecimal >= 0)) &&
     ["risk", "drivers", "scenarios"].includes(state.activeTab) &&
     ["A", "B"].includes(state.activeScenario);
+}
+
+function applyScenarioWeightInput(root: HTMLElement, state: ViewState, target: HTMLInputElement): { scenario: "A" | "B"; valid: boolean } | null {
+  const scenario = target.dataset.scenario;
+  const index = Number(target.dataset.index);
+  if ((scenario !== "A" && scenario !== "B") || !Number.isInteger(index) || index < 0 || index >= tickerNames.length) return null;
+  const weightsKey = scenario === "A" ? "scenarioA" : "scenarioB";
+  const remainderKey = scenario === "A" ? "remainderAssetA" : "remainderAssetB";
+  const remainderAsset = state.financialDecision[remainderKey];
+  const asset = tickerNames[index] as ScenarioAsset;
+  if (asset === remainderAsset) return null;
+
+  const decimal = target.value.trim() ? Number(target.value) / 100 : Number.NaN;
+  const next = updateScenarioRemainderWeight(state.financialDecision[weightsKey], remainderAsset, asset, decimal);
+  state.financialDecision[weightsKey] = next;
+
+  const remainderIndex = tickerNames.indexOf(remainderAsset);
+  const remainderOutput = root.querySelector<HTMLOutputElement>(`[data-scenario-remainder-value="${scenario}"]`);
+  const remainderWeight = next[remainderIndex];
+  if (remainderOutput) remainderOutput.textContent = Number.isFinite(remainderWeight) ? `${Math.round(remainderWeight * 100)}%` : "—";
+
+  const pairedField = target.dataset.field === "scenario-weight" ? "scenario-weight-slider" : "scenario-weight";
+  const pairedControl = root.querySelector<HTMLInputElement>(`[data-field="${pairedField}"][data-scenario="${scenario}"][data-index="${index}"]`);
+  if (pairedControl) pairedControl.value = target.dataset.field === "scenario-weight-slider"
+    ? target.value
+    : Number.isFinite(decimal) ? String(decimal * 100) : "0";
+
+  const editableIndices = tickerNames.map((_, itemIndex) => itemIndex).filter((itemIndex) => itemIndex !== remainderIndex);
+  for (const editableIndex of editableIndices) {
+    const otherIndex = editableIndices.find((itemIndex) => itemIndex !== editableIndex);
+    const otherWeight = otherIndex === undefined ? Number.NaN : next[otherIndex];
+    const maxPercent = Number.isFinite(otherWeight) ? Math.max(0, Math.min(100, (1 - otherWeight) * 100)) : 0;
+    const currentWeight = next[editableIndex];
+    const sliderMax = Number.isFinite(currentWeight) && currentWeight >= 0 && currentWeight <= 1 ? Math.max(maxPercent, currentWeight * 100) : maxPercent;
+    const numberInput = root.querySelector<HTMLInputElement>(`[data-field="scenario-weight"][data-scenario="${scenario}"][data-index="${editableIndex}"]`);
+    const slider = root.querySelector<HTMLInputElement>(`[data-field="scenario-weight-slider"][data-scenario="${scenario}"][data-index="${editableIndex}"]`);
+    numberInput?.setAttribute("max", String(maxPercent));
+    slider?.setAttribute("max", String(sliderMax));
+    if (slider) slider.disabled = !Number.isFinite(currentWeight) || currentWeight < 0 || currentWeight > 1;
+  }
+
+  const validation = validateScenarioWeights(next);
+  const totalOutput = root.querySelector<HTMLElement>(`[data-scenario-total="${scenario}"]`);
+  if (totalOutput) {
+    const total = next.reduce((sum, weight) => sum + (Number.isFinite(weight) ? weight : 0), 0);
+    totalOutput.textContent = `รวม ${(total * 100).toFixed(2)}%${validation.status === "invalid" ? ` · ${validation.message}` : " · น้ำหนักครบ 100%"}`;
+    totalOutput.classList.toggle("weight-error", validation.status === "invalid");
+    totalOutput.setAttribute("role", validation.status === "invalid" ? "alert" : "status");
+  }
+  return { scenario, valid: validation.status === "valid" };
 }
 
 function publishFinancialDecision(root: HTMLElement, state: ViewState, focusFallback: HTMLElement | null = null): void {
@@ -340,6 +392,10 @@ function sourceFooter(filename: string, split: string, selection: string, n: num
   return `<div class="data-source-footer"><span>Source <code>${escapeHtml(filename)}</code></span><span>Split <strong>${escapeHtml(split)}</strong></span><span>Selection <strong>${escapeHtml(selection)}</strong></span><span>N <strong>${n.toLocaleString()}</strong></span><span>Units <strong>${escapeHtml(units)}</strong></span><span>Evaluation <code>${escapeHtml(evaluationId.slice(0, 12))}…</code></span></div>`;
 }
 
+function researchSourceFooter(filename: string, split: string, selection: string, n: number, units: string, evaluationId: string): string {
+  return `<div class="data-source-footer"><span>แหล่งข้อมูล <code>${escapeHtml(filename)}</code></span><span>ชุดข้อมูล <strong>${escapeHtml(split)}</strong></span><span>ตัวกรอง <strong>${escapeHtml(selection)}</strong></span><span>จำนวนตัวอย่าง <strong>${n.toLocaleString()}</strong></span><span>หน่วย <strong>${escapeHtml(units)}</strong></span><span>รหัสชุดประเมิน <code>${escapeHtml(evaluationId.slice(0, 12))}…</code></span></div>`;
+}
+
 function copyValueButton(value: string, label: string): string {
   return `<button class="copy-value-button" type="button" data-action="copy-source-value" data-copy-value="${escapeHtml(value)}" data-copy-label="${escapeHtml(label)}" aria-label="คัดลอก ${escapeHtml(label)}"><span data-copy-status>คัดลอก</span></button>`;
 }
@@ -375,6 +431,10 @@ function coverageRowsFor(snapshot: Extract<SnapshotState, { status: "ready" }>, 
 
 function selectedPortfolioRow(snapshot: Extract<SnapshotState, { status: "ready" }>, date: string, model: ModelName): PortfolioRiskRow | undefined {
   return snapshot.portfolioRisk.find((row) => row.split === "test" && row.predictionDate === date && row.modelName === model && row.status === "OK" && row.covariance !== null && row.portfolioVol !== null && row.missingInputs.length === 0);
+}
+
+function recordedPortfolioRow(snapshot: Extract<SnapshotState, { status: "ready" }>, date: string, model: ModelName): PortfolioRiskRow | undefined {
+  return snapshot.portfolioRisk.find((row) => row.split === "test" && row.predictionDate === date && row.modelName === model);
 }
 
 function findTourRecord(snapshot: Extract<SnapshotState, { status: "ready" }>): TourRecord | null {
@@ -659,39 +719,66 @@ function setSessionIndex(root: HTMLElement, state: ViewState, index: number, his
   publishSelection(root, state, { ...state.selection, predictionDate: row.predictionDate, asOfDate: row.predictionDate }, historyMode);
 }
 
+function portfolioDateSequence(state: ViewState): string[] {
+  if (state.snapshot.status !== "ready" || !state.selection || state.routePath !== "/portfolio") return [];
+  return portfolioRiskSourceDates(state.snapshot.portfolioRisk, state.selection.modelName);
+}
+
+function setPortfolioDateIndex(root: HTMLElement, state: ViewState, index: number, historyMode: "push" | "replace" = "push"): void {
+  if (state.snapshot.status !== "ready" || !state.selection || state.routePath !== "/portfolio") return;
+  const dates = portfolioDateSequence(state);
+  const selectedIndex = Math.max(0, Math.min(index, dates.length - 1));
+  const date = dates[selectedIndex];
+  if (!date) return;
+  stopSessionPlayback(state);
+  publishSelection(root, state, { ...state.selection, predictionDate: date, asOfDate: date }, historyMode);
+}
+
+function playbackDateSequence(state: ViewState): string[] {
+  if (state.snapshot.status !== "ready" || !state.selection) return [];
+  if (state.routePath === "/forecasts") return selectionSessions(state.snapshot, state.selection).map((row) => row.predictionDate);
+  if (state.routePath === "/portfolio") return portfolioDateSequence(state);
+  return [];
+}
+
 function toggleSessionPlayback(root: HTMLElement, state: ViewState): void {
   if (state.sessionPlaying) {
     stopSessionPlayback(state);
     render(root, state);
     return;
   }
-  if (state.snapshot.status !== "ready" || !state.selection || state.routePath !== "/forecasts") return;
-  const available = selectionSessions(state.snapshot, state.selection);
-  if (available.length < 2) return;
-  const currentIndex = available.findIndex((row) => row.predictionDate === state.selection?.predictionDate);
-  if (currentIndex >= available.length - 1) setSessionIndex(root, state, 0, "replace");
+  if (state.snapshot.status !== "ready" || !state.selection || !["/forecasts", "/portfolio"].includes(state.routePath)) return;
+  const availableDates = playbackDateSequence(state);
+  if (availableDates.length < 2) return;
+  const currentIndex = availableDates.indexOf(state.selection.predictionDate);
+  if (currentIndex < 0) return;
+  if (currentIndex >= availableDates.length - 1) {
+    const firstDate = availableDates[0];
+    if (!firstDate) return;
+    publishSelection(root, state, { ...state.selection, predictionDate: firstDate, asOfDate: firstDate }, "replace");
+  }
   state.sessionPlaying = true;
   state.sessionTimer = window.setInterval(() => {
-    if (!root.isConnected || document.hidden || state.routePath !== "/forecasts" || state.snapshot.status !== "ready" || !state.selection || state.selectionError) {
+    if (!root.isConnected || document.hidden || !["/forecasts", "/portfolio"].includes(state.routePath) || state.snapshot.status !== "ready" || !state.selection || state.selectionError) {
       stopSessionPlayback(state);
       render(root, state);
       return;
     }
-    const currentRows = selectionSessions(state.snapshot, state.selection);
-    const index = currentRows.findIndex((row) => row.predictionDate === state.selection?.predictionDate);
-    if (index < 0 || index >= currentRows.length - 1) {
+    const currentDates = playbackDateSequence(state);
+    const index = currentDates.indexOf(state.selection.predictionDate);
+    if (index < 0 || index >= currentDates.length - 1) {
       stopSessionPlayback(state);
       render(root, state);
       return;
     }
-    const next = currentRows[index + 1];
+    const next = currentDates[index + 1];
     if (!next) {
       stopSessionPlayback(state);
       render(root, state);
       return;
     }
-    if (index + 1 >= currentRows.length - 1) stopSessionPlayback(state);
-    publishSelection(root, state, { ...state.selection, predictionDate: next.predictionDate, asOfDate: next.predictionDate }, "replace");
+    if (index + 1 >= currentDates.length - 1) stopSessionPlayback(state);
+    publishSelection(root, state, { ...state.selection, predictionDate: next, asOfDate: next }, "replace");
   }, state.sessionSpeedMs);
   render(root, state);
 }
@@ -760,11 +847,10 @@ function portfolioPage(state: ViewState): string {
   if (snapshot.status !== "ready") return snapshot.status === "error" ? errorState(snapshot.message) : emptyState("Portfolio source ยังโหลดไม่ได้", "ต้องตรวจสอบ portfolio_risk.csv และ stored covariance ให้ครบก่อน");
   const selection = state.selection;
   if (!selection) return selectionUnavailable(state);
-  const row = selectedPortfolioRow(snapshot, selection.predictionDate, selection.modelName);
-  if (!row || row.covariance === null || row.portfolioVol === null || !row.correlationReady || row.missingInputs.length > 0) return selectionUnavailable({ ...state, selectionError: `ไม่มีแถว portfolio ที่ครบและตรวจแล้วสำหรับ ${selection.predictionDate} · ${modelId(selection.modelName)}` });
-  const validRows = snapshot.portfolioRisk.filter((item) => item.split === "test" && item.status === "OK" && item.covariance !== null && item.correlationReady && item.missingInputs.length === 0);
-  const availableDates = [...new Set(validRows.filter((item) => item.modelName === selection.modelName).map((item) => item.predictionDate))].sort((left, right) => right.localeCompare(left));
-  const availableModels = modelNames.filter((model) => selectedPortfolioRow(snapshot, selection.predictionDate, model) !== undefined);
+  const row = recordedPortfolioRow(snapshot, selection.predictionDate, selection.modelName);
+  if (!row) return selectionUnavailable({ ...state, selectionError: `ไม่มี recorded portfolio row สำหรับ ${selection.predictionDate} · ${modelId(selection.modelName)}` });
+  const availableDates = portfolioRiskSourceDates(snapshot.portfolioRisk, selection.modelName);
+  const availableModels = modelNames.filter((model) => recordedPortfolioRow(snapshot, selection.predictionDate, model) !== undefined);
   return `${selectionContextSummary(state)}${renderFinancialDecisionLab({
     rows: snapshot.portfolioRisk,
     selectedRow: row,
@@ -772,6 +858,8 @@ function portfolioPage(state: ViewState): string {
     decision: state.financialDecision,
     availableDates,
     availableModels,
+    sessionPlaying: state.sessionPlaying,
+    sessionSpeedMs: state.sessionSpeedMs,
     modelMetrics: snapshot.modelMetrics,
     coverage: snapshot.coverage,
     unit: state.unit,
@@ -842,21 +930,21 @@ function driftPage(state: ViewState): string {
 }
 
 function scatterChart(rows: H1ScatterRow[], ticker: Ticker): string {
-  if (rows.length === 0) return emptyState("ไม่มี H1 Train points", `ไม่พบแถว Train สำหรับ ${ticker}`);
+  if (rows.length === 0) return emptyState("ไม่พบข้อมูล H1 ในชุด Train", `ไม่มีข้อมูลที่ตรวจสอบแล้วสำหรับ ${ticker}`);
   const xValues = rows.map((row) => row.rv5);
   const yValues = rows.map((row) => row.targetRealizedVol5d);
   const xMin = Math.min(...xValues), xMax = Math.max(...xValues), yMin = Math.min(...yValues), yMax = Math.max(...yValues);
   const x = (value: number) => 42 + (value - xMin) / Math.max(xMax - xMin, Number.EPSILON) * 690;
   const y = (value: number) => 190 - (value - yMin) / Math.max(yMax - yMin, Number.EPSILON) * 154;
-  const circles = rows.map((row) => `<circle cx="${x(row.rv5)}" cy="${y(row.targetRealizedVol5d)}" r="2.2" fill="#2e62a5" fill-opacity="0.48"><title>${row.date} · ${ticker} Train · RV5 ${row.rv5.toFixed(4)} · Forward RV5 ${row.targetRealizedVol5d.toFixed(4)} · target end ${row.targetEndDate}</title></circle>`).join("");
+  const circles = rows.map((row) => `<circle cx="${x(row.rv5)}" cy="${y(row.targetRealizedVol5d)}" r="2.2" fill="#2e62a5" fill-opacity="0.48"><title>วันทำนาย ${row.date} · ${ticker} · ชุด Train · RV5 ย้อนหลัง ${row.rv5.toFixed(4)} · ความผันผวนจริง 5 วันถัดไป ${row.targetRealizedVol5d.toFixed(4)} · วันสิ้นสุดช่วง ${row.targetEndDate}</title></circle>`).join("");
   const tableRows = rows.map((row) => `<tr><th scope="row">${escapeHtml(row.date)}</th><td>${row.rv5.toFixed(6)}</td><td>${row.targetRealizedVol5d.toFixed(6)}</td><td>${escapeHtml(row.targetEndDate)}</td></tr>`);
-  return `<div class="chart-scroll"><svg class="scatter-chart" role="img" aria-label="H1 Train scatter plot for ${ticker}" viewBox="0 0 770 236"><line x1="42" y1="190" x2="742" y2="190" class="chart-axis"/><line x1="42" y1="36" x2="42" y2="190" class="chart-axis"/>${circles}<text x="390" y="222" text-anchor="middle" class="chart-date-label">RV5 predictor · annualized decimal</text><text x="10" y="40" class="chart-date-label">Forward RV5</text><text x="42" y="207" class="chart-date-label">${xMin.toFixed(2)}</text><text x="742" y="207" text-anchor="end" class="chart-date-label">${xMax.toFixed(2)}</text><text x="735" y="43" text-anchor="end" class="chart-date-label">${rows.length.toLocaleString()} Train anchors</text></svg></div>${chartDataTable(`H1 Train scatter values for ${ticker}`, ["Prediction date", "RV5 predictor", "Forward RV5", "Target end"], tableRows)}`;
+  return `<div class="chart-scroll"><svg class="scatter-chart" role="img" aria-label="กราฟกระจาย H1 ชุด Train ของ ${ticker}" viewBox="0 0 770 236"><line x1="42" y1="190" x2="742" y2="190" class="chart-axis"/><line x1="42" y1="36" x2="42" y2="190" class="chart-axis"/>${circles}<text x="390" y="222" text-anchor="middle" class="chart-date-label">RV5 ย้อนหลัง · หน่วยทศนิยมรายปี</text><text x="10" y="40" class="chart-date-label">ความผันผวนจริง 5 วันถัดไป</text><text x="42" y="207" class="chart-date-label">${xMin.toFixed(2)}</text><text x="742" y="207" text-anchor="end" class="chart-date-label">${xMax.toFixed(2)}</text><text x="735" y="43" text-anchor="end" class="chart-date-label">${rows.length.toLocaleString()} จุดใน Train</text></svg></div>${chartDataTable(`ค่า RV5 ย้อนหลังและ Forward RV5 ในชุด Train สำหรับ ${ticker}`, ["วันทำนาย", "RV5 ย้อนหลัง", "Forward RV5", "วันสิ้นสุดช่วงจริง"], tableRows)}`;
 }
 
 function researchPage(state: ViewState): string {
   const snapshot = state.snapshot;
   if (snapshot.status === "loading") return loadingState();
-  if (snapshot.status !== "ready") return snapshot.status === "error" ? errorState(snapshot.message) : emptyState("Research sources ยังโหลดไม่ได้", "H1–H3 tables, bootstrap diagnostics และ high-vol metrics ต้องผ่าน verification ก่อน");
+  if (snapshot.status !== "ready") return snapshot.status === "error" ? errorState(snapshot.message) : emptyState("ยังโหลดผลการวิจัยไม่ได้", "ตาราง H1–H3 และข้อมูลประกอบต้องผ่านการตรวจสอบก่อนจึงจะแสดงได้");
   const scatterRows = snapshot.h1Scatter.filter((row) => row.ticker === state.researchTicker);
   const h1Rows = snapshot.h1Results.filter((row) => row.ticker === state.researchTicker);
   const sensitivity = snapshot.h1Sensitivity.filter((row) => row.ticker === state.researchTicker).sort((left, right) => left.hacMaxlags - right.hacMaxlags);
@@ -864,16 +952,19 @@ function researchPage(state: ViewState): string {
   const bootstrapRows = snapshot.bootstrapDiagnostics;
   const highVol = snapshot.highVolatilityMetrics.filter((row) => row.split === "test" && row.ticker === state.researchTicker).sort((left, right) => modelNames.indexOf(left.modelName) - modelNames.indexOf(right.modelName));
   const h1Result = h1Rows[0];
-  const h1Table = h1Result ? `<div class="table-scroll"><table class="data-table"><caption class="visually-hidden">H1 Train primary HAC lag 5 result for ${state.researchTicker}</caption><thead><tr><th scope="col">Split</th><th scope="col">N</th><th scope="col">Beta</th><th scope="col">95% CI</th><th scope="col">HAC lag</th><th scope="col">Adjusted p</th><th scope="col">Decision</th></tr></thead><tbody><tr><th scope="row">Train</th><td>${h1Result.n.toLocaleString()}</td><td>${h1Result.beta.toFixed(6)}</td><td>[${h1Result.ci95.map((value) => value.toFixed(6)).join(", ")}]</td><td>${h1Result.hacLag}</td><td>${h1Result.pHolm.toExponential(3)}</td><td>${escapeHtml(h1Result.decision)}</td></tr></tbody></table></div><p class="chart-note">${escapeHtml(h1Result.interpretation)}</p>` : emptyState("H1 primary result unavailable", "No verified H1_results.csv row matches this ticker.");
-  const hypothesisComparisons: Record<string, string> = { H2: "B3 เทียบ B2", H3: "B3 เทียบ B1" };
+  const h1Method = hypothesisMethodThai("H1", `OLS + Newey-West HAC maxlags=${h1Result?.hacLag ?? 5}; one-sided normal tail; Holm across SPY/IEF/GLD`);
+  const h1Table = h1Result
+    ? `<div class="table-scroll"><table class="data-table"><caption class="visually-hidden">ผลหลัก H1 จากชุด Train สำหรับ ${state.researchTicker}</caption><thead><tr><th scope="col">ชุดข้อมูล</th><th scope="col">จำนวนจุด (N)</th><th scope="col">เบตา (β)</th><th scope="col">ช่วงความเชื่อมั่น 95%</th><th scope="col">HAC ย้อนหลัง (วัน)</th><th scope="col">ค่า p หลังปรับ Holm</th><th scope="col">ข้อสรุป</th></tr></thead><tbody><tr><th scope="row">Train</th><td>${h1Result.n.toLocaleString()}</td><td>${h1Result.beta.toFixed(6)}</td><td>[${h1Result.ci95.map((value) => value.toFixed(6)).join(", ")}]</td><td>${h1Result.hacLag}</td><td>${h1Result.pHolm.toExponential(3)}</td><td>${escapeHtml(hypothesisDecisionThai(h1Result.decision))}</td></tr></tbody></table></div><p class="research-interpretation"><strong>อ่านผล:</strong> ${escapeHtml(summarizeH1EvidenceThai(h1Result))}</p><p class="chart-note"><strong>วิธีคำนวณ:</strong> ${escapeHtml(h1Method)}</p>`
+    : emptyState("ไม่มีผลหลัก H1 สำหรับสินทรัพย์นี้", "ไม่พบแถวที่ผ่านการตรวจสอบใน H1_results.csv");
   const h2h3Cards = macroHypotheses.length
-    ? `<div class="research-hypothesis-list">${macroHypotheses.map((row) => `<article class="research-hypothesis-card"><div class="section-card-heading"><div><span class="section-overline">${row.hypothesisId} · ${escapeHtml(row.datasetSplit.toUpperCase())} · MACRO</span><h4>คำถาม · ${hypothesisComparisons[row.hypothesisId] ?? row.hypothesisId}</h4></div><span class="pill pill-neutral">${escapeHtml(row.decision)}</span></div><dl class="research-result-grid"><div><dt>Effect · ΔMAE (${state.unit})</dt><dd>${formatVol(row.effectSize, state.unit)}</dd></div><div><dt>95% confidence interval</dt><dd>[${row.confidenceInterval95.map((value) => formatVol(value, state.unit)).join(", ")}]</dd></div><div><dt>Paired N</dt><dd>${row.nPaired.toLocaleString()} / ${row.nExpected.toLocaleString()}</dd></div><div><dt>Adjusted p</dt><dd>${row.adjustedPValue.toExponential(3)}</dd></div><div><dt>Method · source</dt><dd>${escapeHtml(row.method)}</dd></div><div><dt>Statistical status</dt><dd>${escapeHtml(row.statisticalStatus)}</dd></div></dl><p class="research-interpretation"><strong>ผลตาม source:</strong> ${escapeHtml(row.interpretation)}</p></article>`).join("")}</div>`
-    : emptyState("H2/H3 results unavailable", "No verified Test hypothesis rows are available in the pinned snapshot.");
-  const bootstrapTable = `<div class="table-scroll"><table class="data-table"><caption class="visually-hidden">Bootstrap sensitivity diagnostics from source</caption><thead><tr><th scope="col">Hypothesis</th><th scope="col">Block length</th><th scope="col">Replicates</th><th scope="col">SE</th><th scope="col">95% CI</th><th scope="col">p (raw)</th><th scope="col">N by ETF</th></tr></thead><tbody>${bootstrapRows.map((row) => `<tr><th scope="row">${row.hypothesisId} sensitivity</th><td>${row.blockLength} XNYS</td><td>${row.replicates.toLocaleString()}</td><td>${formatVol(row.standardError, state.unit)}</td><td>[${row.ci95.map((value) => formatVol(value, state.unit)).join(", ")}]</td><td>${row.pRaw.toExponential(3)}</td><td>${escapeHtml(Object.entries(row.nByTicker).map(([ticker, n]) => `${ticker} ${n}`).join(" · "))}</td></tr>`).join("")}</tbody></table></div>`;
-  const highVolTable = `<div class="table-scroll"><table class="data-table"><caption class="visually-hidden">Test high-volatility subset metrics for ${state.researchTicker}</caption><thead><tr><th scope="col">Model</th><th scope="col">Train p80 threshold</th><th scope="col">High-vol N</th><th scope="col">Common evaluable N</th><th scope="col">MAE</th><th scope="col">RMSE</th></tr></thead><tbody>${highVol.map((row) => `<tr><th scope="row">${modelId(row.modelName)}</th><td>${formatVol(row.trainThreshold, state.unit)}</td><td>${row.highVolAnchorCount}</td><td>${row.highVolCommonEvaluableN}</td><td>${row.highVolCommonEvaluableN === 0 ? "Insufficient Evidence (n=0)" : formatVol(row.mae, state.unit)}</td><td>${row.highVolCommonEvaluableN === 0 ? "—" : formatVol(row.rmse, state.unit)}</td></tr>`).join("")}</tbody></table></div><p class="chart-note">The high-volatility threshold is stored from Train. A zero-size Test subset has no MAE or RMSE score.</p>`;
-  return `<div class="page-stack"><section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">H1 · TRAIN ONLY · PRIMARY HAC LAG 5</span><h2 class="analysis-title">RV5 association evidence</h2><p>Scatter uses recorded Train observations. Results, p-values, intervals, and decisions are read from Stage 06.</p></div></div><label class="field-label">Asset<select data-field="research-ticker">${tickerNames.map((ticker) => `<option value="${ticker}" ${ticker === state.researchTicker ? "selected" : ""}>${ticker}</option>`).join("")}</select></label>${scatterChart(scatterRows, state.researchTicker)}${sourceFooter("H1_scatter_data.csv", "Train", state.researchTicker, scatterRows.length, "annualized decimal", snapshot.manifest.evaluationId)}${h1Table}${sourceFooter("H1_results.csv", "Train · primary HAC lag 5", state.researchTicker, h1Result?.n ?? 0, "beta in annualized decimal", snapshot.manifest.evaluationId)}<details class="research-progressive-details" data-persist-open><summary>ดู lag sensitivity · HAC maxlags 5, 10, 20</summary><div class="table-scroll"><table class="data-table"><caption class="visually-hidden">H1 HAC lag sensitivity</caption><thead><tr><th scope="col">HAC maxlags</th><th scope="col">N</th><th scope="col">Beta</th><th scope="col">95% CI</th><th scope="col">p (raw)</th></tr></thead><tbody>${sensitivity.map((row) => `<tr><th scope="row">${row.hacMaxlags}${row.hacMaxlags === 5 ? " · primary" : " · sensitivity"}</th><td>${row.n}</td><td>${row.beta.toFixed(6)}</td><td>[${row.ci95.map((value) => value.toFixed(6)).join(", ")}]</td><td>${row.pRaw.toExponential(3)}</td></tr>`).join("")}</tbody></table></div>${sourceFooter("H1_sensitivity.csv", "Train", `${state.researchTicker} · HAC 5/10/20`, sensitivity.length, "stored statistics", snapshot.manifest.evaluationId)}</details></section>
-    <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">H2 / H3 · TEST ONLY · MACRO</span><h3>Hypothesis results</h3><p>Research question, scope, paired N, effect, uncertainty, decision, and source method stay together. No inference runs in the browser.</p></div></div>${h2h3Cards}${sourceFooter("hypothesis_results.csv", "Test", "H2/H3 · MACRO", macroHypotheses.length, "annualized decimal effect / p-value", snapshot.manifest.evaluationId)}<details class="research-progressive-details" data-persist-open><summary>ดู bootstrap diagnostics · sensitivity</summary>${bootstrapTable}${sourceFooter("bootstrap_diagnostics.csv", "Test · sensitivity", "H2/H3 · block lengths 5 and 20", bootstrapRows.length, "annualized decimal effect / p-value", snapshot.manifest.evaluationId)}</details></section>
-    <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">HIGH-VOLATILITY TEST SUBSET</span><h3>${state.researchTicker} · Train p80 threshold</h3><p>Threshold is learned and pinned from Train; rows with n=0 remain unscored.</p></div></div>${highVolTable}${sourceFooter("high_volatility_metrics.csv", "Test", `${state.researchTicker} · B0–B3`, highVol.length, `annualized decimal · threshold ${state.unit}`, snapshot.manifest.evaluationId)}</section><section class="limitation-card"><span class="limitation-mark">i</span><p>These are results from one frozen experiment snapshot. p-values, confidence intervals, and decisions are displayed from the saved source and are not recomputed here.</p></section></div>`;
+    ? `<div class="research-hypothesis-list">${macroHypotheses.map((row) => renderHypothesisResultCard(row, state.unit)).join("")}</div>`
+    : emptyState("ไม่มีผล H2/H3", "ไม่พบผลทดสอบ Test ที่ผ่านการตรวจสอบใน snapshot นี้");
+  const bootstrapTable = `<div class="table-scroll"><table class="data-table"><caption class="visually-hidden">ผลตรวจความไวของ bootstrap จากข้อมูลต้นทาง</caption><thead><tr><th scope="col">สมมติฐาน</th><th scope="col">ความยาวช่วง (วัน)</th><th scope="col">จำนวนรอบสุ่ม</th><th scope="col">ค่าคลาดเคลื่อนมาตรฐาน (SE)</th><th scope="col">ช่วงความเชื่อมั่น 95%</th><th scope="col">ค่า p ก่อนปรับ</th><th scope="col">จำนวนคู่ข้อมูลแยกตาม ETF</th></tr></thead><tbody>${bootstrapRows.map((row) => `<tr><th scope="row">${row.hypothesisId} · ตรวจความไว</th><td>${row.blockLength}</td><td>${row.replicates.toLocaleString()}</td><td>${formatVol(row.standardError, state.unit)}</td><td>[${row.ci95.map((value) => formatVol(value, state.unit)).join(", ")}]</td><td>${row.pRaw.toExponential(3)}</td><td>${escapeHtml(Object.entries(row.nByTicker).map(([ticker, n]) => `${ticker} ${n}`).join(" · "))}</td></tr>`).join("")}</tbody></table></div>`;
+  const highVolTable = `<div class="table-scroll"><table class="data-table"><caption class="visually-hidden">ผลโมเดลในกลุ่มวันที่ความผันผวนสูง ชุด Test สำหรับ ${state.researchTicker}</caption><thead><tr><th scope="col">โมเดล</th><th scope="col">เกณฑ์ความผันผวนสูงจาก Train (p80)</th><th scope="col">จำนวนวันที่เข้าเกณฑ์</th><th scope="col">จำนวนวันที่คำนวณร่วมได้</th><th scope="col">MAE</th><th scope="col">RMSE</th></tr></thead><tbody>${highVol.map((row) => `<tr><th scope="row">${modelId(row.modelName)}</th><td>${formatVol(row.trainThreshold, state.unit)}</td><td>${row.highVolAnchorCount}</td><td>${row.highVolCommonEvaluableN}</td><td>${row.highVolCommonEvaluableN === 0 ? "ข้อมูลไม่เพียงพอ (N=0)" : formatVol(row.mae, state.unit)}</td><td>${row.highVolCommonEvaluableN === 0 ? "—" : formatVol(row.rmse, state.unit)}</td></tr>`).join("")}</tbody></table></div><p class="chart-note">เกณฑ์ความผันผวนสูงคำนวณและตรึงไว้จากชุด Train หากชุด Test ไม่มีข้อมูลที่ใช้ได้ จะไม่รายงาน MAE หรือ RMSE</p>`;
+  const units = state.unit === "percent" ? "เปอร์เซ็นต์ความผันผวนรายปี" : "ทศนิยมความผันผวนรายปี";
+  return `<div class="page-stack"><section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">H1 · ชุด Train เท่านั้น · ผลหลัก HAC 5 วัน</span><h2 class="analysis-title">RV5 บอกความผันผวนใน 5 วันถัดไปได้หรือไม่?</h2><p>แต่ละจุดในกราฟคือข้อมูลที่บันทึกไว้จากชุด Train; ตารางแสดงผลทดสอบที่คำนวณและบันทึกไว้แล้ว</p></div></div><label class="field-label">เลือก ETF<select data-field="research-ticker">${tickerNames.map((ticker) => `<option value="${ticker}" ${ticker === state.researchTicker ? "selected" : ""}>${ticker}</option>`).join("")}</select></label>${scatterChart(scatterRows, state.researchTicker)}${researchSourceFooter("H1_scatter_data.csv", "Train", state.researchTicker, scatterRows.length, "ทศนิยมรายปี", snapshot.manifest.evaluationId)}${h1Table}${researchSourceFooter("H1_results.csv", "Train · ผลหลัก HAC 5 วัน", state.researchTicker, h1Result?.n ?? 0, "ค่าสัมประสิทธิ์เบตา", snapshot.manifest.evaluationId)}<details class="research-progressive-details" data-persist-open><summary>ดูผลเมื่อเปลี่ยนจำนวนวันย้อนหลังของ HAC (5, 10, 20 วัน)</summary><div class="table-scroll"><table class="data-table"><caption class="visually-hidden">ผลตรวจความไวของจำนวนวันย้อนหลังสำหรับ H1 ชุด Train</caption><thead><tr><th scope="col">จำนวนวันย้อนหลังของ HAC</th><th scope="col">จำนวนจุด (N)</th><th scope="col">เบตา (β)</th><th scope="col">ช่วงความเชื่อมั่น 95%</th><th scope="col">ค่า p ก่อนปรับ</th></tr></thead><tbody>${sensitivity.map((row) => `<tr><th scope="row">${row.hacMaxlags}${row.hacMaxlags === 5 ? " · ผลหลัก" : " · ตรวจความไว"}</th><td>${row.n.toLocaleString()}</td><td>${row.beta.toFixed(6)}</td><td>[${row.ci95.map((value) => value.toFixed(6)).join(", ")}]</td><td>${row.pRaw.toExponential(3)}</td></tr>`).join("")}</tbody></table></div>${researchSourceFooter("H1_sensitivity.csv", "Train", `${state.researchTicker} · HAC 5/10/20 วัน`, sensitivity.length, "ค่าสถิติจากแหล่งข้อมูล", snapshot.manifest.evaluationId)}</details></section>
+    <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">H2 / H3 · ชุด Test เท่านั้น · รวม ETF</span><h3>เปรียบเทียบความคลาดเคลื่อนของโมเดล</h3><p>ดูว่า B3 แม่นกว่า baseline ที่กำหนดหรือไม่ โดยเทียบวันที่มีข้อมูลครบเป็นคู่กันในชุด Test</p></div></div>${h2h3Cards}${researchSourceFooter("hypothesis_results.csv", "Test", "H2/H3 · รวม ETF", macroHypotheses.length, units, snapshot.manifest.evaluationId)}<details class="research-progressive-details" data-persist-open><summary>ดูผลตรวจความไวของการสุ่มข้อมูล (Bootstrap)</summary><p class="chart-note">ตารางนี้ใช้ตรวจว่าผลเปลี่ยนไปมากหรือไม่เมื่อเปลี่ยนจำนวนวันต่อบล็อก เป็นข้อมูลประกอบผลหลัก</p>${bootstrapTable}${researchSourceFooter("bootstrap_diagnostics.csv", "Test · ตรวจความไว", "H2/H3 · บล็อก 5 และ 20 วัน", bootstrapRows.length, units, snapshot.manifest.evaluationId)}</details></section>
+    <section class="analysis-card"><div class="section-card-heading"><div><span class="section-overline">ผลเฉพาะช่วงผันผวนสูง · ชุด Test</span><h3>${state.researchTicker} · ใช้เกณฑ์ p80 จากชุด Train</h3><p>เกณฑ์แบ่งช่วงผันผวนสูงมาจากชุด Train และตรึงไว้; หากไม่มีข้อมูล Test ที่ใช้ได้จะแสดงว่าไม่มีคะแนน</p></div></div>${highVolTable}${researchSourceFooter("high_volatility_metrics.csv", "Test", `${state.researchTicker} · B0–B3`, highVol.length, units, snapshot.manifest.evaluationId)}</section><section class="limitation-card"><span class="limitation-mark">i</span><p>ผล H1–H3 อ่านจาก snapshot การทดลองชุดเดียว ค่า p ช่วงความเชื่อมั่น และข้อสรุปเป็นค่าที่บันทึกไว้แล้ว หน้านี้ไม่คำนวณสถิติใหม่ · H1 ใช้ Train ส่วน H2/H3 ใช้ Test และผลจากชุดนี้ไม่ได้รับรองผลในอนาคต</p></section></div>`;
 }
 
 function forecastExplorerChart(rows: ForecastAuditRow[], state: ViewState): string {
@@ -1268,6 +1359,15 @@ export function startApp(root: HTMLElement): void {
         break;
       }
       case "toggle-session-play": toggleSessionPlayback(root, state); break;
+      case "portfolio-date-step": {
+        const selection = state.selection;
+        if (!selection) break;
+        const dates = portfolioDateSequence(state);
+        const currentIndex = dates.indexOf(selection.predictionDate);
+        const step = button.dataset.direction === "previous" ? -1 : 1;
+        setPortfolioDateIndex(root, state, currentIndex + step);
+        break;
+      }
       case "open-portfolio": {
         if (state.snapshot.status === "ready" && state.selection && selectedPortfolioRow(state.snapshot, state.selection.predictionDate, state.selection.modelName)) {
           navigateRoute(state, "/portfolio");
@@ -1356,6 +1456,14 @@ export function startApp(root: HTMLElement): void {
   root.addEventListener("change", (event) => {
     const target = event.target;
     if (target instanceof HTMLSelectElement) {
+      if (target.dataset.field === "scenario-remainder") {
+        const scenario = target.dataset.scenario;
+        if ((scenario === "A" || scenario === "B") && tickerNames.includes(target.value as Ticker)) {
+          state.financialDecision = setScenarioRemainderAsset(state.financialDecision, scenario, target.value as ScenarioRemainderAsset);
+          publishFinancialDecision(root, state);
+        }
+        return;
+      }
       if (target.dataset.field === "ticker" && tickerNames.includes(target.value as Ticker) && state.selection) {
         stopSessionPlayback(state);
         publishSelection(root, state, { ...state.selection, ticker: target.value as Ticker });
@@ -1375,7 +1483,15 @@ export function startApp(root: HTMLElement): void {
         publishSelection(root, state, { ...state.selection, asOfDate: target.value });
         return;
       }
-      if (target.dataset.field === "session-speed" && [450, 900, 1600].includes(Number(target.value))) state.sessionSpeedMs = Number(target.value);
+      if (target.dataset.field === "session-speed" && [450, 900, 1600].includes(Number(target.value))) {
+        const resumePlayback = state.sessionPlaying;
+        if (resumePlayback) stopSessionPlayback(state);
+        state.sessionSpeedMs = Number(target.value);
+        if (resumePlayback) {
+          toggleSessionPlayback(root, state);
+          return;
+        }
+      }
       if (target.dataset.field === "unit" && ["decimal", "percent"].includes(target.value)) state.unit = target.value as DisplayUnit;
       if (target.dataset.field === "metric" && ["mae", "rmse"].includes(target.value)) state.metric = target.value as MetricName;
       if (target.dataset.field === "range-metric" && ["mae", "rmse"].includes(target.value)) state.rangeMetric = target.value as MetricName;
@@ -1406,10 +1522,12 @@ export function startApp(root: HTMLElement): void {
       if (target.dataset.field === "forecast-status" && ["all", "mature", "pending", "invalid"].includes(target.value)) state.forecastStatus = target.value as ForecastFilter["status"];
       if (target.dataset.field === "forecast-models") state.forecastModels = Array.from(target.selectedOptions).map((option) => option.value).filter((model): model is ModelName => modelNames.includes(model as ModelName));
       if (target.dataset.field === "portfolio-date" && state.selection) {
+        stopSessionPlayback(state);
         publishSelection(root, state, { ...state.selection, predictionDate: target.value, asOfDate: target.value });
         return;
       }
       if (target.dataset.field === "portfolio-model" && modelNames.includes(target.value as ModelName) && state.selection) {
+        stopSessionPlayback(state);
         publishSelection(root, state, { ...state.selection, modelName: target.value as ModelName });
         return;
       }
@@ -1448,22 +1566,9 @@ export function startApp(root: HTMLElement): void {
       if (target.dataset.field === "drift-from") state.driftFrom = target.value;
       if (target.dataset.field === "drift-to") state.driftTo = target.value;
       if (target.dataset.field === "scenario-weight" || target.dataset.field === "scenario-weight-slider") {
-        const scenario = target.dataset.scenario;
-        const index = Number(target.dataset.index);
-        if ((scenario === "A" || scenario === "B") && Number.isInteger(index) && index >= 0 && index < 3) {
-          const key = scenario === "A" ? "scenarioA" : "scenarioB";
-          const next = [...state.financialDecision[key]] as PortfolioWeights;
-          next[index] = target.value.trim() ? Number(target.value) / 100 : Number.NaN;
-          state.financialDecision[key] = next;
-          const validation = validateScenarioWeights(next);
-          const output = root.querySelector<HTMLElement>(`[data-scenario-total="${scenario}"]`);
-          if (output) {
-            const total = next.reduce((sum, weight) => sum + (Number.isFinite(weight) ? weight : 0), 0);
-            output.textContent = `รวม ${(total * 100).toFixed(2)}%${validation.status === "invalid" ? ` · ${validation.message}` : " · น้ำหนักครบ 100%"}`;
-            output.classList.toggle("weight-error", validation.status === "invalid");
-            output.setAttribute("role", validation.status === "invalid" ? "alert" : "status");
-          }
-          if (validation.status === "valid") publishFinancialDecision(root, state, target);
+        const result = applyScenarioWeightInput(root, state, target);
+        if (result) {
+          if (result.valid) publishFinancialDecision(root, state, target);
           else render(root, state, target);
           return;
         }
@@ -1517,24 +1622,7 @@ export function startApp(root: HTMLElement): void {
       return;
     }
     if (target.dataset.field !== "scenario-weight" && target.dataset.field !== "scenario-weight-slider") return;
-    const scenario = target.dataset.scenario;
-    const index = Number(target.dataset.index);
-    if ((scenario !== "A" && scenario !== "B") || !Number.isInteger(index) || index < 0 || index > 2) return;
-    const key = scenario === "A" ? "scenarioA" : "scenarioB";
-    const next = [...state.financialDecision[key]] as PortfolioWeights;
-    next[index] = target.value.trim() ? Number(target.value) / 100 : Number.NaN;
-    state.financialDecision[key] = next;
-    const pairedField = target.dataset.field === "scenario-weight" ? "scenario-weight-slider" : "scenario-weight";
-    const pairedInput = root.querySelector<HTMLInputElement>(`[data-field="${pairedField}"][data-scenario="${scenario}"][data-index="${index}"]`);
-    if (pairedInput) pairedInput.value = target.dataset.field === "scenario-weight-slider" ? target.value : Number.isFinite(next[index]) ? String(next[index]! * 100) : "0";
-    const validation = validateScenarioWeights(next);
-    const output = root.querySelector<HTMLElement>(`[data-scenario-total="${scenario}"]`);
-    if (output) {
-      const total = next.reduce((sum, weight) => sum + (Number.isFinite(weight) ? weight : 0), 0);
-      output.textContent = `รวม ${(total * 100).toFixed(2)}%${validation.status === "invalid" ? ` · ${validation.message}` : " · น้ำหนักครบ 100%"}`;
-      output.classList.toggle("weight-error", validation.status === "invalid");
-      output.setAttribute("role", validation.status === "invalid" ? "alert" : "status");
-    }
+    applyScenarioWeightInput(root, state, target);
   });
   if (!window.location.hash) window.location.hash = "/overview";
   render(root, state);
