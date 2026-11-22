@@ -136,6 +136,11 @@ test("Portfolio date controls expose adjacent recorded dates and opt-in playback
     availableDates: ["2025-01-01", "2025-01-02", "2025-01-03"],
     sessionPlaying: true,
   });
+  const dateDock = html.match(/<nav class="portfolio-date-dock" aria-label="Portfolio date navigation">([\s\S]*?)<\/nav>/)?.[1];
+  assert.ok(dateDock, "date navigation should live in a dock that can stay visible while scrolling the lab");
+  assert.match(dateDock, /data-action="portfolio-date-step" data-direction="previous"/);
+  assert.match(dateDock, /data-field="portfolio-date"/);
+  assert.match(dateDock, /data-action="portfolio-date-step" data-direction="next"/);
   assert.match(html, /data-action="portfolio-date-step" data-direction="previous"/);
   assert.match(html, /data-field="portfolio-date"/);
   assert.match(html, /data-action="portfolio-date-step" data-direction="next"/);
