@@ -159,22 +159,47 @@
 
 ## Session 6 — รันจริง
 
-- [ ] บันทึก Git revision, hashes และ run IDs ตรวจ inputs → artifacts → ZIP → policy
-- [ ] เปิด build จาก snapshot จริง ตรวจ B4 บนหน้าจอเทียบกับ artifact
-- [ ] สรุปผล B4 ราย ETF และ macro พร้อม coverage, panels, baseline และข้อจำกัด
+- [x] บันทึก Git revision, hashes และ run IDs ตรวจ inputs → artifacts → ZIP → policy
+- [x] เปิด build จาก snapshot จริง ตรวจ B4 บนหน้าจอเทียบกับ artifact
+- [x] สรุปผล B4 ราย ETF และ macro พร้อม coverage, panels, baseline และข้อจำกัด
 
 ### หลักฐาน Session 6
-- **สถานะ**: `BLOCKED`
-- **คำสั่งและผลตรวจ**:
-  - ตรวจ Session 1–5 ใน [todo.md](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/tasks/todo.md): Sessions 1–4 `PASS`, **Session 5 `BLOCKED`** (ยังไม่ได้ตรวจหน้าเว็บจริงใน Chrome เพราะไม่พบ `DevToolsActivePort`)
-  - ตรวจ Git revision & exporter Git HEAD verification: `git rev-parse HEAD` → `2b5c947d8dbc0c701ff1411134f1547f8b1bcac3` (`feature/add-model`, clean); ทดสอบ `verify_source_artifacts(..., repo_root=Path("."))` บน Stage 06 `b90df6ae...` → `ArtifactVerificationError: Stage 06 code hashes do not match the current Git source` (เนื่องจากไฟล์ `src/ml_evaluation/*.py` บน Windows เป็น CRLF ขณะที่ `git show HEAD:src/ml_evaluation/*.py` เป็น LF)
-- **Artifacts / run IDs ที่พร้อมอยู่ (จาก Sessions 1–5)**:
-  - Source/Features/Targets: `run_20261122_143125_b6e5`, `feat_20261122T143142_ad87117a`, `target_20261122T143149_c9b24e99`
-  - H1 / Training / Replay / Evaluation: `stage03_h1_b4_20261122_01`, `stage04_b4_20261122_01`, `b39bd163e0176a90aad5b8b1accb4adacaca5af8bfacb8cb937676f25da32101`, `b90df6ae5a3a2445f68e533a346c9aa24bdb248b67a4888142911de34b5125ec`
-  - Handoff ZIP (non-Git-HEAD export จาก Session 5): `data/processed/handoff_b4/ml-results-handoff-b4-b90df6ae.zip` (`sha256=9818537d1ecf2843ce8c0a00764245d7ffb546fa3baf42fab77ae7af07c6b34c`), policy [snapshot.b4.policy.json](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/snapshot.b4.policy.json)
-- **เกณฑ์ที่ยังไม่ผ่านและสิ่งที่ขาด**:
-  1. Session 5 ยัง `BLOCKED` (ต้องเปิด Chrome remote debugging `chrome://inspect/#remote-debugging` เพื่อตรวจหน้าเว็บจริงให้ผ่านก่อน)
-  2. Git HEAD code-hash mismatch ของ `scripts/export_ml_results_handoff.py` บน Windows (`CRLF` บนดิสก์ vs `LF` ใน `git show HEAD:`) ทำให้ `export_results_bundle(..., repo_root=Path("."))` หยุดที่ขั้นตอน verify Git identity ของ exporter (ต้องรันบน LF working tree หรือให้ exporter/evaluation เทียบ line-ending ให้ตรงกันก่อนรันรอบ Export จริงใน Session 6)
+- **สถานะ**: `PASS`
+- **Git Revision, Config & Source Hashes, Run IDs (รอบจริง)**:
+  - Git HEAD ที่ export ตรวจสอบผ่าน (clean `src/ml_evaluation`): `175db305f39a9fa19fb4ba3cdb47bed037d26abb` (`feature/add-model`)
+  - Input Snapshot & Cutoff: `input_snapshot_id = b7ad726cd1cbe4116cd0177edf3aff65948a059a75ff9298dfc4094192531f3d`, `strict_data_cutoff = 2026-09-25`, splits `train [2021-09-27, 2024-09-30]`, `validation [2024-10-01, 2025-09-30]`, `test [2025-10-01, 2026-09-25]`, `point_in_time_source_availability_verified = false`
+  - Upstream Batches / Manifests: `yf_20261122_143125_b6e5` (`source_input_sha256=044ed39a...`), `feat_20261122T143142_ad87117a` (`feature_parquet_sha256=9ced880a...`), `target_20261122T143149_c9b24e99` (`target_parquet_sha256=b380152d...`)
+  - Config Hashes: `evaluation_config_sha256 = c5b8191fbc58f463417961648c98655418711a15feb76fa2b340cbfdaddf7e2e` (`1.1.0`), `hypothesis_config_sha256 = 5a25e2b245a58090b41cb247f6f35b5be5b56c0325e6acada667cd1efa629ed6`, `analysis_config_id = 770351957e18cd6cc74d7c6fdd8ab56e644126be3af6c7b249fbc5a51caec292`
+  - Stage Run IDs:
+    - Stage 03 H1: `stage03_h1_b4_20261122_s6` (`H1_results.csv` `sha256=7f2777f1...`, Train `n=752` per ETF)
+    - Stage 04 Training: `stage04_b4_20261122_s6` (`training_run_id=5f25db18-300c-4ebf-aad2-3edfd417f8e7`, feature order `['ret_1d_t', 'ret_lag_1d', 'ret_lag_2d', 'ret_trailing_5d', 'ret_trailing_20d', 'rv_5d', 'rv_20d', 'rv_60d']`, `last_training_target_end_date=2024-09-30`)
+    - Stage 05 Final Replay: `23616e7bab42de22ca0bb3153dfec8b695ea1d51ff9ad816bd02e14f849acfe6` (`current_run_id=b0780fe4-a293-4c61-a13c-451eb2f546e1`, `model_suite_version=1.1.0`, `b2_frozen_state_verified=True`, `b4_frozen_state_verified=True`, `last_fully_committed_session=2026-09-25`)
+    - Stage 06 Evaluation: `ae5cc8cc1cc6a1245ed7a0c789037c9545614868023e67f9b0bfbf84ee594e1b`
+- **คำสั่งและผลตรวจ (Pipeline → Export → Snapshot → Web Preview)**:
+  - Stage 06 CLI: `.venv\Scripts\python.exe -m src.ml_evaluation.run --config config/ml_evaluation.yaml` → `COMPLETED` (`test_evaluable_rows=3645`, `test_coverage_rows=15`, `portfolio_rows=2490`, `hypothesis_rows=5`)
+  - Export with Git HEAD verification: `.venv\Scripts\python.exe scripts/export_ml_results_handoff.py --source-dir data\processed\ml_evaluation\experiments\ae5cc8cc... --replay-dir data\processed\ml_replay\experiments\23616e7b... --output-dir data\processed\handoff_b4_s6\bundle` → `SOURCE VERIFIED` (`30` files, `handoff_schema_version=1.1.0`, `baseline_git_commit=175db305f39a9fa19fb4ba3cdb47bed037d26abb`)
+  - Archive & Snapshot Policy: `data/processed/handoff_b4_s6/ml-results-handoff-b4-ae5cc8cc.zip` (`size=1947928`, `sha256=4a471c360aeb28d7cc6b817600e32c2ee877a557c44043d75bc2bf1fde07c43c`), แยกจาก ZIP เดิม [ml-results-handoff-82572c84.zip](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/docs/ml-results/downloads/ml-results-handoff-82572c84.zip) และ [snapshot.policy.json](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/snapshot.policy.json); `.venv\Scripts\python.exe scripts/web/prepare_snapshot.py --repo-root . --policy web/snapshot.b4.policy.json --output web/public/snapshots` → `SNAPSHOT VERIFIED` (`test_pending_rows=75`)
+  - Web Build & Tests: `Push-Location web; npm test` → **33/33 passed**
+  - Live Web UI Verification (`npm run preview` on `http://localhost:4173` serving Session 6 `web/dist` via `agent-browser`, 0 console/page errors):
+    - `#/evidence`: ยืนยัน `Evaluation ID ae5cc8cc1cc6a1245ed7a0c789037c9545614868023e67f9b0bfbf84ee594e1b`, `Replay ID 23616e7bab42de22ca0bb3153dfec8b695ea1d51ff9ad816bd02e14f849acfe6`, `Simulated Historical Replay`, และ `ยังไม่ได้ยืนยันความพร้อมของข้อมูลต้นทาง ณ เวลาจริง`
+    - `#/portfolio?model=HAR_X_OLS`: วันที่ `2026-09-25` แสดง `9.442% ต่อปี` (`SPY 11.526%`, `IEF 7.010%`, `GLD 14.759%`) ตรงกับ `portfolio_risk.csv` (`0.094420`, `0.115256`, `0.070104`, `0.147587`); ไม่มีวันข้อมูลไม่ครบใน snapshot จริง (`OK=248/248`) ส่วนพฤติกรรม `INCOMPLETE_INPUTS` ตรวจผ่านใน [b4.test.mjs](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/web/tests/b4.test.mjs)
+    - `#/forecasts` (เลือก `B4 · HAR-X (OLS)` + `เปิด Actual ที่ครบกำหนด`): แถว `2025-10-01` (`SPY`) แสดง `Forecast RV5 8.085%`, `Actual RV5 5.648%`, `Absolute error 2.437%` ตรงกับ `forecast_audit.csv` (`0.080847`, `0.056476`, `0.024371`); `Pending=5` ต่อ ETF (`15` สำหรับ B4, `75` รวม 5 โมเดล)
+    - `#/replay?model=HAR_X_OLS&date=2026-09-25`: ตรวจทั้งมุมมองรายวันและรายเดือน แสดง `1.623%` (5-day scaled = `0.115256 * sqrt(5/252)`), `Actual —`, `Abs Error —`, `VALID / PENDING / PENDING_LABEL`
+    - `#/models` & `#/monitoring`: แสดง `B0–B4`, ตาราง `B4` retrospective comparisons และสถานะ `Static (Frozen)` แยกจาก `ADWIN Monitor-only` ของ `B3`
+- **สรุปผล B4 (`HAR_X_OLS`), B0–B3 Baseline Parity & ข้อจำกัด**:
+  - **Coverage & Panels**: `Test` คาดหมาย `248` anchors/ETF (`744` macro), forecast valid `248/248` (`100%`), mature evaluable `243/248` (`97.98%`, Pending `5` วันปลายช่วง `2026-09-21..2026-09-25`); `Validation` `250/250` (`100%`). เนื่องจาก B4 valid ครบทั้งหมด `common B0–B4` (`243`/ETF, `729` macro) เท่ากับ `reference B0–B3` ทุกตัว (`max diff = 0.0`)
+  - **B4 (`HAR_X_OLS`) Test Metrics**: `SPY MAE=0.036457, RMSE=0.046306` | `IEF MAE=0.014575, RMSE=0.017595` | `GLD MAE=0.102163, RMSE=0.156288` | `MACRO (equal ETF weight) MAE=0.051065, RMSE=0.094657` (`Validation`: `SPY MAE=0.067789`, `IEF MAE=0.017875`, `GLD MAE=0.049415`, `n=245`, `cov=1.0`)
+  - **Retrospective Pairwise Comparisons (Test, `paired_n=243`/ETF, `729` macro, `DeltaMAE = Comparator - B4`)**:
+    - `B4_VS_B2` (`STATIC_SGD`): `MACRO +0.001415` (`+2.70%`) — `SPY +0.002685` (`+6.86%`), `IEF -0.003065` (`-26.63%`), `GLD +0.004624` (`+4.33%`)
+    - `B4_VS_B3` (`ONLINE_SGD`): `MACRO -0.002172` (`-4.44%`) — `SPY +0.002100` (`+5.45%`), `IEF -0.003072` (`-26.71%`), `GLD -0.005545` (`-5.74%`)
+    - `B4_VS_B1` (`ROLLING_20D`): `MACRO +0.008276` (`+13.95%`) — `SPY +0.008277` (`+18.50%`), `IEF -0.002332` (`-19.05%`), `GLD +0.018882` (`+15.60%`)
+  - **Baseline Parity & Hypotheses (H1–H3)**:
+    - `model_metrics.csv` (`B0–B3`): `B0 MACRO 0.075853`, `B1 0.059340`, `B2 0.052479`, `B3 0.048892`; เทียบกับ ZIP อ้างอิง `82572c84` (`feat_readiness_20261115_01`) ต่างระดับข้อมูลดึงใหม่ไม่เกิน `2.2e-7` (`paired_n` และ `coverage` ตรงกัน `0` diff)
+    - `H1 (Train)`: `SPY beta=0.5671`, `IEF 0.2750`, `GLD 0.1900` (`p_holm`: `1.50e-17`, `2.94e-6`, `0.0024`, all `Reject H₀`)
+    - `H2 (Test B3 vs B2)`: `effect_size=0.003587`, `CI95 [0.001789, 0.005652]`, `p_holm=0.0020` (`Reject H₀`)
+    - `H3 (Test B3 vs B1)`: `effect_size=0.010448`, `CI95 [0.002738, 0.019148]`, `p_holm=0.0060` (`Reject H₀`)
+  - **ข้อจำกัดสำคัญ**: (1) Test นี้เคยถูกเปิดดูระหว่างงาน B0–B3 มาก่อน ผลของ B4 บน Test จึงเป็น **retrospective post-hoc evaluation** ไม่ถือเป็น fresh prospective evidence และไม่รวม B4 เข้าใน confirmatory H2/H3, (2) `point_in_time_source_availability_verified = false` (ยืนยันเฉพาะ simulated historical replay บน frozen snapshot ไม่ได้พิสูจน์ความพร้อมของข้อมูล ณ เวลาจริงในอดีต).
+- **เกณฑ์ที่ยังไม่ผ่านและสิ่งที่ขาด**: ไม่มี (ครบทั้ง Sessions 1–6).
 
 รูปแบบหลักฐานต่อ session
 
