@@ -114,7 +114,8 @@ def synthetic_stage04(tmp_path_factory: pytest.TempPathFactory) -> tuple[object,
         replay_date=date(2026, 9, 25),
     )
     artifact_dir = tmp_path_factory.mktemp("stage04") / "initial-models"
-    run_training_selection(prepared, labels, artifact_dir=artifact_dir)
+    # Synthetic fixture has 5 Train rows (< 9 required for B4 OLS); B4 replay is wired in Session 3.
+    run_training_selection(prepared, labels, artifact_dir=artifact_dir, include_b4=False)
     return prepared, labels, artifact_dir
 
 

@@ -42,9 +42,29 @@
 
 ## Session 2 — Training
 
-- [ ] Train keys, X/y และ scaler ตรงกับ B2 ต่อ ETF และไม่เกิน cutoff
-- [ ] Fit ครบสาม ETF ตรวจกรณี Train ไม่พอ, rank deficiency และ invalid forecasts
-- [ ] บันทึกและโหลด artifact ได้ ตรวจ forecast, rerun และผล Validation พร้อม coverage
+- [x] Train keys, X/y และ scaler ตรงกับ B2 ต่อ ETF และไม่เกิน cutoff
+- [x] Fit ครบสาม ETF ตรวจกรณี Train ไม่พอ, rank deficiency และ invalid forecasts
+- [x] บันทึกและโหลด artifact ได้ ตรวจ forecast, rerun และผล Validation พร้อม coverage
+
+### หลักฐาน Session 2
+- **สถานะ**: `PASS`
+- **โค้ดที่เพิ่ม/แก้**:
+  - [pipeline.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/src/ml_training/pipeline.py): เพิ่ม `fit_b4_ols`, `evaluate_b4_validation`, `b4_state_sha256`, `scaler_state_sha256`, `_train_keys_fingerprint` และเชื่อมใน `run_training_selection(..., include_b4=True)` กับ `_persist_artifacts` (บันทึก `b4_models` ลง `initial_models.joblib`, `b4_validation_evaluations.csv` พร้อม SHA-256 และ metadata ใน `training_manifest.json`)
+  - [__init__.py](file:///f:/ComSci\Coding\Project\datasci-and-dataen-project\src\ml_training\__init__.py): export สัญลักษณ์ B4
+  - [test_ml_training.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/tests/test_ml_training.py) และ [test_ml_replay.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/tests/test_ml_replay.py): เพิ่ม 6 unit tests ของ B4 และคง `include_b4=False` ใน fixture 5 แถวเดิมของ Replay จนถึง Session 3
+- **คำสั่งและผลตรวจ**:
+  - Unit tests: `.venv\Scripts\python.exe -m pytest tests\test_ml_training.py tests\test_ml_replay.py -v` → **25 passed** (ครอบคลุม parity กับ B2, reload/rerun `atol=1e-15`, `n_train < 9`, `rank < 9`, `cond > 1e8` warning, non-finite inputs, invalid/negative forecast rejection และ B2/B3 selection ไม่เปลี่ยน)
+  - Real data Training & Validation (`run_training_selection(prepared, inputs.labels, artifact_dir=...)` บน `feat_20261122T143142_ad87117a` / `target_20261122T143149_c9b24e99`):
+    - **B2/B3 Selected Configs** (ไม่ถูกกระทบโดย B4): `SPY` `eta0=0.0001;alpha=0.001;max_iter=20` (`joint_mae=0.058424`), `IEF` `eta0=0.0001;alpha=0.001;max_iter=20` (`joint_mae=0.015972`), `GLD` `eta0=0.0001;alpha=1e-05;max_iter=50` (`joint_mae=0.047363`), `paired_coverage=1.0` ทุก ETF
+    - **B4 (`HAR_X_OLS`, `b4_ols_v1.0.0`) Validation ต่อ ETF** (`train_keys_count=752`, `last_training_target_end_date=2024-09-30`, `design_rank=9`, `ill_conditioned=false`, `invalid_count=0`, `coverage=1.0`):
+      - `SPY`: `MAE=0.0677885`, `RMSE=0.1124468`, `valid=245/245`, `cond=6.7274`
+      - `IEF`: `MAE=0.0178751`, `RMSE=0.0214478`, `valid=245/245`, `cond=4.1858`
+      - `GLD`: `MAE=0.0494148`, `RMSE=0.0679756`, `valid=245/245`, `cond=3.6950`
+    - **Artifact Reload & Rerun Parity**: `scaler_match_b2=True`, `state_hash_match=True`, `max_diff_disk=0.00e+00`, `max_diff_rerun=0.00e+00` ครบทั้ง 3 ETF
+- **Artifacts / run IDs**:
+  - `data/processed/ml_training/run_id=stage04_b4_20261122_01` (`initial_models.joblib`, `training_manifest.json`, `b4_validation_evaluations.csv`, `validation_candidate_evaluations.csv`, `selected_configs.json`, `training_config.json`)
+  - Rerun verification: `data/processed/ml_training/run_id=stage04_b4_20261122_01_rerun`
+- **เกณฑ์ที่ยังไม่ผ่านและสิ่งที่ขาด**: ไม่มี (พร้อมสำหรับ Session 3).
 
 ## Session 3 — Replay
 
