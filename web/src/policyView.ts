@@ -74,7 +74,7 @@ export function renderReplayPolicyCard(
       : "—";
   return `<section class="st-card st-policy-replay-card">`
     + `<div class="st-section-heading"><div><h2>Champion–Challenger Policy (Exploratory v${esc(policyState.manifest.policyVersion)})</h2><span class="st-fd-context">Simulated Historical Replay · ${esc(ticker)} · ${esc(day.date)} · แยกจาก H1–H3</span></div><span class="st-fd-status st-fd-no-signal">Active: ${esc(activeModel)}</span></div>`
-    + `<div class="st-fd-selected-metrics"><div><span>Active Champion ณ วันนี้</span><strong>${esc(activeModel)}</strong></div><div><span>Served Forecast</span><strong>${esc(servedText)}</strong></div><div><span>Shadow B3 Forecast</span><strong>${esc(shadowText)}</strong></div></div>`
+    + `<div class="st-fd-selected-metrics"><div><span>โมเดลหลักที่ใช้ในวันนี้</span><strong>${esc(activeModel)}</strong></div><div><span>ค่าพยากรณ์จากโมเดลหลัก</span><strong>${esc(servedText)}</strong></div><div><span>ค่าพยากรณ์จาก B3 ที่ใช้เปรียบเทียบ</span><strong>${esc(shadowText)}</strong></div></div>`
     + `<p class="st-fd-method-note">${esc(dayAlert)} · ค่าเสิร์ฟมาจาก frozen champion snapshot ขณะที่ Shadow B3 อัปเดตต่อเนื่องแยกต่างหาก</p>`
     + `<a class="st-fd-detail-link" href="${link}">เปิดดูรายละเอียด Policy &amp; Timeline →</a>`
     + `</section>`;

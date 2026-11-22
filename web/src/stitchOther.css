@@ -132,3 +132,15 @@
   .st-fd-distribution { padding: 14px; }
   .st-fd-feature-table { min-width: 620px; }
 }
+/* Replay diagnostics: consistent cards with readable context and metrics. */
+.st-replay-advanced .st-replay-lower-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.st-replay-advanced .st-card { min-width: 0; padding: 20px; }
+.st-replay-advanced .st-section-heading { gap: 12px; margin-bottom: 16px; }
+.st-replay-advanced .st-section-heading h2 { font-size: 17px; }
+.st-replay-advanced .st-fd-context, .st-replay-advanced .st-fd-method-note, .st-replay-advanced .st-fd-model-note { display: block; font-size: 12px; line-height: 1.7; color: var(--st-ink-soft); }
+.st-replay-advanced .st-fd-selected-metrics > div { min-width: 0; padding: 14px; }
+.st-replay-advanced .st-fd-selected-metrics strong { overflow-wrap: anywhere; }
+.st-replay-advanced .st-fd-top-features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 0; list-style: none; }
+.st-replay-advanced .st-fd-top-features > li { min-width: 0; padding: 14px; border: 1px solid var(--st-border); border-radius: 8px; background: #f8fafd; }
+.st-replay-advanced .st-fd-detail-link { display: inline-flex; margin-top: 12px; }
+@media (max-width: 760px) { .st-replay-advanced .st-fd-top-features, .st-replay-advanced .st-fd-selected-metrics { grid-template-columns: 1fr; } }

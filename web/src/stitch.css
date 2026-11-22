@@ -2849,3 +2849,14 @@ body { margin: 0; }
 .st-replay-metric-value { font-size: 20px; }
 .st-replay-history, .st-replay-chart-panel .st-source-details summary { font-size: 12px; }
 .st-replay-inspector > .st-source-note { display: block; margin: 0; font-size: 12px; }
+.st-replay-table-details { margin-top: 14px; border: 1px solid var(--st-border); border-radius: var(--st-radius-sm); background: #fff; }
+.st-replay-chart-panel .st-replay-table-details summary { cursor: pointer; padding: 11px 14px; color: var(--st-primary); font-size: 12px; font-weight: 700; }
+.st-replay-table-details[open] summary { border-bottom: 1px solid var(--st-border); }
+.st-replay-table-details .st-table-wrap { margin: 0; }
+.st-replay-history { margin-top: 10px; padding: 10px 14px; gap: 6px 20px; flex-wrap: wrap; line-height: 1.5; }
+.st-replay-history span { text-align: right; }
+@media (max-width: 620px) { .st-replay-history span { text-align: left; } }
+.st-replay-comparison { border: 1px solid var(--st-border); border-radius: var(--st-radius-lg); background: var(--st-surface); padding: 16px; }
+.st-replay-comparison > summary { cursor: pointer; color: var(--st-ink); font-weight: 700; }
+.st-replay-comparison > .st-table-wrap { margin-top: 16px; }
+.st-replay-explanation { margin: 0; padding: 0 4px; color: var(--st-ink-soft); font-size: 12px; line-height: 1.7; }
