@@ -96,9 +96,36 @@
 
 ## Session 4 — Evaluation
 
-- [ ] แสดง paired panels, common B0–B4 และชุดอ้างอิง B0–B3 พร้อม N และ coverage
-- [ ] ตรวจ MAE/RMSE, equal ETF weighting, DeltaMAE และกรณี B4 invalid
-- [ ] ตรวจ H1–H3 เทียบ reference และส่งออกข้อมูล B4 สำหรับ downstream พร้อม portfolio
+- [x] แสดง paired panels, common B0–B4 และชุดอ้างอิง B0–B3 พร้อม N และ coverage
+- [x] ตรวจ MAE/RMSE, equal ETF weighting, DeltaMAE และกรณี B4 invalid
+- [x] ตรวจ H1–H3 เทียบ reference และส่งออกข้อมูล B4 สำหรับ downstream พร้อม portfolio
+
+### หลักฐาน Session 4
+- **สถานะ**: `PASS`
+- **ตรวจ Session 3 Replay Manifest ก่อนเริ่ม**: `data/processed/ml_replay/experiments/b39bd163e0176a90aad5b8b1accb4adacaca5af8bfacb8cb937676f25da32101/experiment_manifest.json` (`status=COMPLETED`, `b2_frozen_state_verified=True`, `b4_frozen_state_verified=True`, `model_suite_version=1.1.0`)
+- **โค้ดที่อัปเดต**:
+  - [config.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/src/ml_evaluation/config.py) & [ml_evaluation.yaml](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/config/ml_evaluation.yaml): `evaluation_config_version="1.1.0"`, เพิ่ม `HAR_X_OLS` ใน `MODEL_NAMES`
+  - [pipeline.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/src/ml_evaluation/pipeline.py): รองรับ 5 โมเดลใน `forecast_audit.csv`, `coverage.csv`, `model_metrics.csv` (`common B0-B4 matured valid anchors`), `high_volatility_metrics.csv`, `monthly_metrics.csv`, `yearly_metrics.csv`, `rolling_mae20.csv`, `portfolio_risk.csv`; เพิ่ม `reference_b0_b3_metrics.csv` และ `b4_comparisons.csv` (แยกบทบาท retrospective ของ B4 ออกจาก H2/H3 ใน `hypothesis_results.csv` และ `pair_comparisons.csv`, นิยาม `delta_mae_comparator_minus_b4 = comparator_MAE - B4_MAE`)
+  - [test_ml_evaluation.py](file:///f:/ComSci/Coding/Project/datasci-and-dataen-project/tests/test_ml_evaluation.py): เพิ่ม unit tests คำนวณ MAE/RMSE, equal-ETF Macro และ DeltaMAE ด้วยมือ และทดสอบ B4 invalid ลดชุดร่วม 5 โมเดลโดยไม่ลดชุดอ้างอิง B0–B3 และ pending ไม่ถูกคิดคะแนน
+- **คำสั่งและผลตรวจ**:
+  - Unit tests: `.venv\Scripts\python.exe -m pytest tests\test_ml_evaluation.py -v` → **19 passed**
+  - Real H1 & Stage 06 Evaluation (`analyze_h1` + `run_final_evaluation` บน Replay `b39bd163...`):
+    - **Common B0–B4 & Reference B0–B3** (`paired_n=729`, `243/248` ต่อ ETF, `paired_coverage=0.979839`, pending 15 แถวไม่ถูกคิดคะแนน):
+      - `CONSTANT_BASELINE`: `MAE=0.075853`, `RMSE=0.119245`
+      - `ROLLING_20D_BASELINE`: `MAE=0.059340`, `RMSE=0.099953`
+      - `STATIC_SGD`: `MAE=0.052479`, `RMSE=0.099039`
+      - `ONLINE_SGD`: `MAE=0.048892`, `RMSE=0.093403`
+      - `HAR_X_OLS` (`B4`): `MAE=0.051065`, `RMSE=0.094657`
+    - **B4 Retrospective Paired Comparisons (`b4_comparisons.csv`)** (`DeltaMAE = comparator_MAE - B4_MAE`):
+      - `B4_VS_B2`: `MACRO DeltaMAE=+0.001415` (`+2.70%`), `SPY +0.002685`, `IEF -0.003065`, `GLD +0.004624`
+      - `B4_VS_B3`: `MACRO DeltaMAE=-0.002172` (`-4.44%`), `SPY +0.002100`, `IEF -0.003072`, `GLD -0.005545`
+      - `B4_VS_B1`: `MACRO DeltaMAE=+0.008276` (`+13.95%`), `SPY +0.008277`, `IEF -0.002332`, `GLD +0.018882`
+    - **H1–H3 Parity เทียบ ZIP อ้างอิง**: `H2` (`n=729`, `effect=0.003587`, `p_adj=0.001999`, `Reject H₀`) และ `H3` (`n=729`, `effect=0.010448`, `p_adj=0.005997`, `Reject H₀`) ตรง ZIP อ้างอิง; `H1` (`n=752` ต่อ ETF) `Reject H₀` ทั้ง 3 ETF
+    - **Portfolio Risk**: `498` แถว (`OK`) ครบทั้ง 5 โมเดลรวม `HAR_X_OLS` ใช้ correlations ชุดเดียวกัน
+- **Artifacts / run IDs**:
+  - H1: `data/audit/ml_dataset/run_id=stage03_h1_b4_20261122_01`
+  - Evaluation: `data/processed/ml_evaluation/experiments/b90df6ae5a3a2445f68e533a346c9aa24bdb248b67a4888142911de34b5125ec` (`b4_comparisons.csv`, `reference_b0_b3_metrics.csv`, `model_metrics.csv`, `portfolio_risk.csv`, `hypothesis_results.csv`, `execution_manifest.json`)
+- **เกณฑ์ที่ยังไม่ผ่านและสิ่งที่ขาด**: ไม่มี (พร้อมสำหรับ Session 5).
 
 ## Session 5 — Handoff และ Dashboard
 
