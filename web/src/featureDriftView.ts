@@ -5,6 +5,7 @@ import {
   type DriftWindowSize,
   type FeatureDriftMetric,
   type FeatureDriftState,
+  type LocalFeatureDriftSummary,
 } from "./data/featureDrift.js";
 import type { ModelName } from "./data/schemas.js";
 
@@ -38,6 +39,22 @@ const featureLabels: Record<string, string> = {
   rv_20d: "ความผันผวน 20 วัน",
   rv_60d: "ความผันผวน 60 วัน",
 };
+
+function renderLocalOverview(summary: LocalFeatureDriftSummary): string {
+  const tickers = [...new Set(summary.rows.map(row => row.ticker))];
+  const features = [...new Set(summary.rows.map(row => row.feature))];
+  const chart = (metric: "w1" | "psi", title: string) => {
+    const maximum = Math.max(0, ...summary.rows.map(row => row[metric]));
+    const rows = features.map(feature => `<div class="st-fd-bar-group"><div class="st-fd-bar-label">${escapeHtml(featureLabels[feature] ?? feature)} <small>${escapeHtml(feature)}</small></div>${tickers.map((ticker, index) => {
+      const row = summary.rows.find(item => item.feature === feature && item.ticker === ticker);
+      if (!row || !Number.isFinite(row[metric])) return `<div class="st-fd-bar-row"><span>${escapeHtml(ticker)}</span><span>ไม่มีข้อมูล</span></div>`;
+      const width = maximum > 0 ? Math.max(0, Math.min(100, row[metric] / maximum * 100)) : 0;
+      return `<div class="st-fd-bar-row"><span>${escapeHtml(ticker)}</span><div class="st-fd-bar-track"><i class="st-fd-bar-${index % 3}" style="width:${width.toFixed(2)}%"></i></div><strong>${formatMetric(row[metric])}</strong></div>`;
+    }).join("")}</div>`).join("");
+    return `<section class="st-fd-bar-chart" aria-label="${title} แยกตาม ETF และ feature"><h4>${title}</h4><p>ความยาวแท่งเทียบกับค่าสูงสุด ${formatMetric(maximum)} ในกราฟนี้</p>${rows}</section>`;
+  };
+  return `<div class="st-fd-tab-panel"><h3>ภาพรวม Feature Drift</h3><p>เปรียบเทียบ 60 วันซื้อขายล่าสุดกับช่วงอ้างอิง ${escapeHtml(summary.referenceStart)} ถึง ${escapeHtml(summary.referenceEnd)} · ชุดข้อมูลนี้แยกจาก Stage 06 และไม่ได้ยืนยันว่าเป็นข้อมูลชุดเดียวกัน</p><p>วันที่ล่าสุด: ${escapeHtml([...new Set(summary.rows.map(row => row.date))].join(", "))} · Feature run: ${escapeHtml(summary.sourceRunIds.join(", "))}</p><div class="st-fd-bar-grid">${chart("w1", "W1 / IQR")}${chart("psi", "PSI")}</div><p>W1 หารด้วย IQR ของช่วงอ้างอิง; PSI ใช้ quantile bins และ smoothing 0.5 ผลนี้เป็นข้อมูลย้อนหลังและยังไม่มีเกณฑ์แจ้งเตือนที่ปรับจาก Validation</p><details><summary>ดูช่วงข้อมูลและแหล่งที่มา</summary><p>SHA-256: ${escapeHtml(summary.sourceSha256)}</p><div class="st-table-wrap"><table class="st-table"><thead><tr><th>ETF</th><th>Feature</th><th>ช่วงล่าสุด</th><th>W1 / IQR</th><th>PSI</th></tr></thead><tbody>${summary.rows.map(row => `<tr><td>${escapeHtml(row.ticker)}</td><td>${escapeHtml(featureLabels[row.feature] ?? row.feature)} · ${escapeHtml(row.feature)}</td><td>${escapeHtml(row.windowStart)} ถึง ${escapeHtml(row.date)}</td><td>${formatMetric(row.w1)}</td><td>${formatMetric(row.psi)}</td></tr>`).join("")}</tbody></table></div></details></div>`;
+}
 const statusLabels: Record<string, string> = {
   DRIFT_SIGNAL: "W1 เกินเกณฑ์",
   NO_SIGNAL: "W1 ไม่เกินเกณฑ์",
@@ -225,6 +242,7 @@ export function renderMonitoringFeatureDrift(
   const tabs = `<div class="st-fd-tabs" role="tablist" aria-label="ชนิดการติดตาม"><button id="monitor-feature-tab" type="button" role="tab" aria-selected="${selection.tab === "feature"}" aria-controls="monitor-feature-panel" tabindex="${selection.tab === "feature" ? "0" : "-1"}" data-action="monitoring-tab" data-tab="feature">Feature Drift</button>${policyTabButton}</div>`;
   const featureContent = drift.status === "ready" ? renderFeaturePanel(drift, selection)
     : drift.status === "loading" ? `<p>กำลังโหลดผลตรวจ Feature Drift…</p>`
+      : drift.status === "missing" && drift.localSummary ? renderLocalOverview(drift.localSummary)
       : `<p class="st-fd-empty">${drift.status === "error" ? `ผลตรวจไม่ผ่านการตรวจสอบ: ${escapeHtml(drift.message)}` : escapeHtml(drift.message)}</p>`;
   const featureTab = `<div role="tabpanel" id="monitor-feature-panel" aria-labelledby="monitor-feature-tab"${selection.tab === "feature" ? "" : " hidden"}>${featureContent}</div>`;
   const policyTab = hasPolicyTab

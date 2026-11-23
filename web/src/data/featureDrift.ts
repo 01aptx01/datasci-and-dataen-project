@@ -135,7 +135,7 @@ export interface FeatureDriftIdentity {
 
 export type FeatureDriftState =
   | { status: "loading" }
-  | { status: "missing"; message: string }
+  | { status: "missing"; message: string; localSummary?: LocalFeatureDriftSummary }
   | { status: "error"; message: string }
   | {
       status: "ready";
@@ -145,6 +145,11 @@ export type FeatureDriftState =
       referenceSummary: FeatureDriftReferenceSummary[];
       calibrations: FeatureDriftCalibration[];
     };
+
+export interface LocalFeatureDriftSummary {
+  sourceRunIds: string[]; sourceSha256: string; referenceStart: string; referenceEnd: string;
+  rows: { ticker: string; feature: string; w1: number; psi: number; date: string; windowStart: string }[];
+}
 
 export class FeatureDriftLoadError extends Error {
   constructor(message: string, readonly kind: "missing" | "integrity" | "network") {
@@ -573,7 +578,18 @@ export async function loadFeatureDrift(
   } catch {
     return { status: "missing", message: "ยังไม่มีผลตรวจ Feature Drift ใน build นี้" };
   }
-  if (manifestResponse.status === 404) return { status: "missing", message: "ยังไม่มีผลตรวจ Feature Drift ที่ตรวจสอบกับ Stage 06 ชุดนี้" };
+  if (manifestResponse.status === 404) {
+    try {
+      const response = await fetcher(assetUrl("feature-drift/local-summary.json"));
+      if (response.ok) {
+        const summary = await response.json() as LocalFeatureDriftSummary;
+        if (Array.isArray(summary.rows) && summary.rows.length && Array.isArray(summary.sourceRunIds)) {
+          return { status: "missing", message: "ผลตรวจจากฟีเจอร์ในเครื่อง", localSummary: summary };
+        }
+      }
+    } catch { /* The optional local summary is unavailable. */ }
+    return { status: "missing", message: "ยังไม่มีผลตรวจ Feature Drift ที่ตรวจสอบกับ Stage 06 ชุดนี้" };
+  }
   if (!manifestResponse.ok) return { status: "error", message: `โหลด Feature Drift manifest ไม่สำเร็จ (HTTP ${manifestResponse.status})` };
   try {
     const manifestBytes = new Uint8Array(await manifestResponse.arrayBuffer());
