@@ -52,3 +52,4 @@ internal-docs/
 .impeccable/
 .playwright-cli/
 tasks/
+sites/
